@@ -1,0 +1,15 @@
+# Rust/Cargo
+/target
+**/target
+**/Cargo.lock
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+
+# Mac
+.DS_Store
+
+# backups
+*.bak
