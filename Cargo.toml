@@ -14,9 +14,21 @@ path = "src/lib.rs"
 # Core building blocks - NO regex crate!
 memchr = "2.7"
 aho-corasick = "1.1"
-once_cell = "1"
 
 [dev-dependencies]
 criterion = "0.5"
+regex = "1"  # For benchmark comparisons only
+
+[[bench]]
+name = "rexile_benchmark"
+harness = false
+
+[[bench]]
+name = "comparison_benchmark"
+harness = false
+
+[[bench]]
+name = "quick_comparison"
+harness = false
 
 [workspace]

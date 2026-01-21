@@ -1,56 +1,73 @@
-# ReXile 🦎# ReXile
+# ReXile 🦎
 
+**A fast regex-lite engine built on `memchr` and `aho-corasick`**
 
+ReXile is a **zero-dependency regex alternative** (no `regex` crate!) designed for use cases where you need:
 
-**A fast regex-lite engine built on `memchr` and `aho-corasick`**ReXile — a small, focused crate to help migrate away from ad-hoc `regex` usage in
+- ✅ **Fast literal searches** (using `memchr`)
+- ✅ **Multi-pattern matching** (using `aho-corasick`)
+- ✅ **Character classes** (`[a-z]`, `[0-9]`, `[^abc]`)
+- ✅ **Quantifiers** (`*`, `+`, `?`)
+- ✅ **Simple anchoring** (`^start`, `end$`)
+- ✅ **Minimal dependencies**
+- ✅ **Predictable performance**
 
-rust-rule-engine's legacy parser. It's intentionally minimal: a cached-regex
-
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)wrapper today, and a place to experiment with faster, literal-first matching
-
-strategies later.
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
 
 ## 🎯 Purpose
 
-Usage example
+ReXile is a **full-featured regex engine** built from scratch without using the `regex` crate. Goals:
 
-ReXile is a **zero-dependency regex alternative** designed for use cases where you need:
+- 🎯 **Complete regex support** - All standard regex features (quantifiers, groups, lookahead, etc.)
+- ⚡ **Maximum performance** - Literal-first matching, SIMD acceleration, smart optimizations
+- 📦 **Minimal dependencies** - Only `memchr` and `aho-corasick` for low-level primitives
+- 🔧 **Full control** - Custom optimizations for parsers, lexers, and rule engines
+- 🚀 **Better compilation speed** - 100x faster pattern compilation than `regex` crate
 
-```rust
+**Current Status:** Phase 2 complete (character classes + quantifiers working!)
 
-- ✅ **Fast literal searches** (using `memchr`)let r = rexile::get_regex("^rule\\s+").unwrap();
+**Current Status:**
+- ✅ Phase 0: Literals, alternation, anchors
+- ✅ Phase 1: Character classes `[a-z]`, `[0-9]`, `[^abc]`
+- ✅ Phase 2: Quantifiers `*`, `+`, `?`
+- ✅ Phase 3: Escape sequences `\d`, `\w`, `\s`, etc.
+- ✅ Phase 4: Sequences `ab+c*`, `\d+\w*`
+- ✅ Phase 5: Groups `(abc)`, `(?:...)`, `(foo|bar)+` (basic)
+- 🔄 Phase 6+: Word boundaries, lookahead, captures (see [ROADMAP_FULL_REGEX.md](ROADMAP_FULL_REGEX.md))
 
-- ✅ **Multi-pattern matching** (using `aho-corasick`)assert!(r.is_match("rule foo"));
-
-- ✅ **Simple anchoring** (`^start`, `end$`)```
-
-- ✅ **Minimal dependencies**
-
-- ✅ **Predictable performance**Next steps
-
-
-
-ReXile is **NOT** a full regex replacement. It's intentionally minimal and focused on common patterns used in parsers, lexers, and rule engines.- Expand API to support zero-allocation matching helpers
-
-- Add optional global registry for `'static` lifetime reuse
-
-## 🚀 Quick Start- Add feature flags for advanced backends (literal-search optimized)
-
+## 🚀 Quick Start
 
 ```rust
-use rexile::Pattern;
+use rexile::ReXile;  // or use rexile::Pattern
 
-// Compile once, reuse many times
-let pattern = Pattern::new("hello").unwrap();
+// Literal matching
+let pattern = ReXile::new("hello").unwrap();
 assert!(pattern.is_match("hello world"));
 assert_eq!(pattern.find("say hello"), Some((4, 9)));
 
 // Multi-pattern matching (fast!)
-let multi = Pattern::new("foo|bar|baz").unwrap();
+let multi = ReXile::new("foo|bar|baz").unwrap();
 assert!(multi.is_match("the bar is open"));
 
+// Character classes
+let digits = ReXile::new("[0-9]+").unwrap();
+let matches = digits.find_all("Order #12345 costs $67.89");
+// Returns: [(7, 12), (20, 22), (23, 25)]
+
+// Escape sequences
+let word = ReXile::new("\\w+").unwrap();
+assert!(word.is_match("hello123"));
+
+// Sequences
+let pattern = ReXile::new("ab+c*").unwrap();
+assert!(pattern.is_match("abbcc"));
+
+// Groups and alternation
+let protocol = ReXile::new("(http|https|ftp)").unwrap();
+assert!(protocol.is_match("http://example.com"));
+
 // Anchors
-let exact = Pattern::new("^hello$").unwrap();
+let exact = ReXile::new("^hello$").unwrap();
 assert!(exact.is_match("hello"));
 assert!(!exact.is_match("hello world"));
 ```
@@ -76,21 +93,43 @@ assert_eq!(rexile::find("world", "hello world").unwrap(), Some((6, 11)));
 | Start anchor | `^start` | ✅ Supported |
 | End anchor | `end$` | ✅ Supported |
 | Exact match | `^exact$` | ✅ Supported |
-| Character classes | `[a-z]`, `[0-9]` | 🚧 Planned |
-| Quantifiers | `*`, `+`, `?` | 🚧 Planned |
-| Escape sequences | `\.`, `\d`, `\w` | 🚧 Planned |
+| Character classes | `[a-z]`, `[0-9]`, `[^abc]` | ✅ Supported (Phase 1) |
+| Basic quantifiers | `*`, `+`, `?` | ✅ Supported (Phase 2) |
+| Escape sequences | `\d`, `\w`, `\s`, `\.` | ✅ Supported (Phase 3) |
+| Sequences | `ab+c*`, `\d+\w*` | ✅ Supported (Phase 4) |
+| Groups | `(abc)`, `(?:...)`, `(foo\|bar)` | ✅ Supported (Phase 5, basic) |
+| Quantified groups | `(ab)+`, `(xyz)*` | ✅ Supported (Phase 5) |
+| Bounded quantifiers | `{n}`, `{n,m}` | 🚧 Phase 2b |
+| Capturing groups | `(group)` extraction | 🚧 Phase 5b |
+| Word boundaries | `\b`, `\B` | 🚧 Phase 6 |
+| Lookahead/lookbehind | `(?=...)`, `(?<=...)` | 🚧 Phase 7 |
+| Backreferences | `\1`, `\2` | 🚧 Phase 8 |
+| Unicode properties | `\p{L}`, `\p{N}` | 🚧 Phase 9 |
 
-## 🚫 NOT Supported (by design)
+## 🔄 Full Regex Engine Roadmap
 
-ReXile intentionally does **NOT** support:
+ReXile is being built into a **complete regex engine** from scratch! We're taking a phased approach:
 
-- ❌ Lookahead/lookbehind assertions
-- ❌ Backreferences
-- ❌ Capturing groups (use plain `find()` instead)
-- ❌ Unicode property classes (use explicit ranges)
-- ❌ Complex nested patterns
+**✅ COMPLETED:**
+- ✅ Phase 0: Literals, alternation, anchors
+- ✅ Phase 1: Character classes with ASCII bitmap optimization
+- ✅ Phase 2: Basic quantifiers with greedy backtracking
 
-**Why?** These features require a full regex engine. If you need them, use the excellent [`regex`](https://docs.rs/regex) crate instead.
+**🚀 IN PROGRESS:**
+- 🔄 **Phase 3** - Escape sequences (`\d`, `\w`, `\s`, `\.`, `\\`, `\n`, `\t`)
+- 🔄 **Phase 4** - Sequences and grouping (`ab+c*`, `(a|b)`, `(?:...)`)
+- 🔄 **Phase 5** - Capturing groups with extraction API
+
+**📋 PLANNED:**
+- Phase 6: Word boundaries (`\b`, `\B`)
+- Phase 7: Assertions (lookahead/lookbehind)
+- Phase 8: Backreferences
+- Phase 9: Unicode support
+- Phase 10: DFA compilation & optimizations
+
+See [ROADMAP_FULL_REGEX.md](ROADMAP_FULL_REGEX.md) for the complete 4-8 week implementation plan.
+
+**Why build from scratch?** Maximum performance, minimal dependencies, and full control over optimizations like literal-first matching and SIMD acceleration.
 
 ## 📊 Performance
 
@@ -98,8 +137,38 @@ ReXile is built on:
 
 - **`memchr`** - SIMD-accelerated substring search (faster than naive loops)
 - **`aho-corasick`** - Efficient multi-pattern matching (faster than multiple regex alternations)
+- **ASCII bitmap optimization** - Fast character class matching
 
-Benchmarks coming soon!
+### Benchmark Results vs regex Crate
+
+| Scenario | ReXile | regex | Winner |
+|----------|--------|-------|--------|
+| **Multi-pattern (2)** | 16ns | 21ns | ✅ ReXile **1.3x faster** |
+| **Multi-pattern (4+)** | 18-25ns | 35-50ns | ✅ ReXile **~2x faster** |
+| **Multi-pattern (10+)** | 40-80ns | 200-400ns | ✅ ReXile **5-10x faster** |
+| Literal search | 14ns | 12ns | regex 1.2x faster |
+| **Compilation (literal)** | <100ns | ~10µs | ✅ ReXile **100x faster** |
+| **Compilation (multi)** | 1-2µs | 20-50µs | ✅ ReXile **20x faster** |
+
+*Benchmarks on x86_64 Linux. See [BENCHMARK_COMPARISON.md](BENCHMARK_COMPARISON.md) for full analysis.*
+
+### Key Takeaways
+
+- ✅ **ReXile excels at multi-pattern matching** - advantage grows with more patterns
+- ✅ **Dramatically faster compilation** - critical for dynamic pattern creation
+- ✅ **Competitive single-literal performance** - within 20% of regex
+- ✅ **Character classes with quantifiers work great** - `[0-9]+`, `[a-z]*`
+
+**🔬 Run benchmarks yourself:**
+```bash
+# Quick comparison (3-5 minutes)
+cargo bench --bench quick_comparison --manifest-path /path/to/rexile/Cargo.toml
+
+# Full analysis (10-20 minutes)
+cargo bench --bench comparison_benchmark --manifest-path /path/to/rexile/Cargo.toml
+```
+
+**📈 Full benchmark docs:** See [benches/README.md](benches/README.md) and [BENCHMARK_COMPARISON.md](BENCHMARK_COMPARISON.md)
 
 ## 🏗️ Architecture
 
@@ -172,6 +241,18 @@ rexile::is_match("keyword", "another keyword").unwrap();
 rexile::is_match("keyword", "more keyword text").unwrap();
 ```
 
+**📚 More examples:** See [examples/](examples/) directory for:
+- [`basic_usage.rs`](examples/basic_usage.rs) - Core API walkthrough
+- [`parser_lexer.rs`](examples/parser_lexer.rs) - Using ReXile in parsers
+- [`log_processing.rs`](examples/log_processing.rs) - Log analysis patterns
+- [`performance.rs`](examples/performance.rs) - Performance comparison
+
+Run examples with:
+```bash
+cargo run --example basic_usage
+cargo run --example log_processing
+```
+
 ## 🔧 Use Cases
 
 ReXile is ideal for:
@@ -184,13 +265,19 @@ ReXile is ideal for:
 
 ## 🤝 Contributing
 
-Contributions welcome! This is an early-stage project.
+Contributions welcome! ReXile is actively being built into a full regex engine.
 
-Priority areas:
-- Character classes `[a-z]`, `[0-9]`
-- Simple quantifiers `*`, `+`, `?`
-- Escape sequences `\.`, `\n`, `\t`
-- Performance benchmarks vs `regex` crate
+**Current priorities:**
+- ✅ ~~Character classes~~ (DONE - Phase 1)
+- ✅ ~~Basic quantifiers~~ (DONE - Phase 2)
+- 🔄 **Escape sequences** (`\d`, `\w`, `\s`) - Phase 3 (HIGH PRIORITY)
+- 🔄 **Sequences** (`ab+c*`) - Phase 4
+- 🔄 **Grouping** (`(a|b)`, `(?:...)`) - Phase 4
+- 📋 **Capturing groups** - Phase 5
+- 📋 **Word boundaries** (`\b`) - Phase 6
+- 📋 **Lookahead/lookbehind** - Phase 7
+
+See [ROADMAP_FULL_REGEX.md](ROADMAP_FULL_REGEX.md) for full implementation plan.
 
 ## 📜 License
 
@@ -206,12 +293,15 @@ at your option.
 Built on top of:
 - [`memchr`](https://docs.rs/memchr) by Andrew Gallant
 - [`aho-corasick`](https://docs.rs/aho-corasick) by Andrew Gallant
-- [`once_cell`](https://docs.rs/once_cell) by Aleksey Kladov
 
 Inspired by the need for a lightweight regex alternative in the [rust-rule-engine](https://github.com/KSD-CO/rust-rule-engine) project.
 
 ---
 
-**Status:** 🚧 Early Development (v0.1) - API may change
+**Status:** � Active Development - Building Full Regex Engine
 
-For full regex features, use the [`regex`](https://docs.rs/regex) crate.
+- ✅ Phase 0-2 Complete: Literals, alternation, anchors, character classes, quantifiers
+- 🔄 Phase 3+ In Progress: Escape sequences, grouping, captures, lookahead, etc.
+- 📋 See [ROADMAP_FULL_REGEX.md](ROADMAP_FULL_REGEX.md) for complete 10-phase plan
+
+**Goal:** Feature-complete regex engine with better performance than `regex` crate!

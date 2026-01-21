@@ -360,7 +360,7 @@ dependencies = [
  "aho-corasick",
  "criterion",
  "memchr",
- "once_cell",
+ "regex",
 ]
 
 [[package]]
