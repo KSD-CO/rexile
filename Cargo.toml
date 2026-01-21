@@ -4,14 +4,16 @@ version = "0.1.0"
 edition = "2021"
 authors = ["You <you@example.com>"]
 license = "MIT OR Apache-2.0"
-description = "ReXile — a fast, ergonomic replacement for regex usage in the GRL parser ecosystem."
+description = "ReXile — a fast regex-lite engine built on memchr and aho-corasick (zero regex crate dependency)"
 
 [lib]
 name = "rexile"
 path = "src/lib.rs"
 
 [dependencies]
-regex = "1"
+# Core building blocks - NO regex crate!
+memchr = "2.7"
+aho-corasick = "1.1"
 once_cell = "1"
 
 [dev-dependencies]
