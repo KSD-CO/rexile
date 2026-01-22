@@ -110,34 +110,62 @@ impl Pattern {
                 let mut all_matched = true;
                 
                 for element in elements {
-                    let (matcher, group_num_opt) = match element {
-                        CompiledCaptureElement::Capture(m, num) => (m, Some(*num)),
-                        CompiledCaptureElement::NonCapture(m) => (m, None),
-                    };
-                    
-                    if let Some((rel_start, rel_end)) = matcher.find(&text[pos..]) {
-                        if rel_start != 0 {
-                            // Element must match at current position
-                            all_matched = false;
-                            break;
-                        }
-                        
-                        let abs_start = pos;
-                        let abs_end = pos + rel_end;
-                        
-                        // If this is a capture group, record its position
-                        if let Some(group_num) = group_num_opt {
-                            // Ensure we have enough space
-                            while capture_positions.len() < group_num {
-                                capture_positions.push((0, 0));
+                    match element {
+                        CompiledCaptureElement::Capture(m, num) => {
+                            if let Some((rel_start, rel_end)) = m.find(&text[pos..]) {
+                                if rel_start != 0 {
+                                    all_matched = false;
+                                    break;
+                                }
+                                
+                                let abs_start = pos;
+                                let abs_end = pos + rel_end;
+                                
+                                // Record capture position
+                                while capture_positions.len() < *num {
+                                    capture_positions.push((0, 0));
+                                }
+                                capture_positions[*num - 1] = (abs_start, abs_end);
+                                pos = abs_end;
+                            } else {
+                                all_matched = false;
+                                break;
                             }
-                            capture_positions[group_num - 1] = (abs_start, abs_end);
                         }
-                        
-                        pos = abs_end;
-                    } else {
-                        all_matched = false;
-                        break;
+                        CompiledCaptureElement::NonCapture(m) => {
+                            // Check if this is a Backreference
+                            if let Matcher::Backreference(ref_num) = m {
+                                // Get the captured text for this backreference
+                                if *ref_num > 0 && *ref_num <= capture_positions.len() {
+                                    let (cap_start, cap_end) = capture_positions[*ref_num - 1];
+                                    let captured_text = &text[cap_start..cap_end];
+                                    
+                                    // Check if remaining text starts with the captured text
+                                    if text[pos..].starts_with(captured_text) {
+                                        pos += captured_text.len();
+                                    } else {
+                                        all_matched = false;
+                                        break;
+                                    }
+                                } else {
+                                    // Invalid backreference or not captured yet
+                                    all_matched = false;
+                                    break;
+                                }
+                            } else {
+                                // Normal non-capture element
+                                if let Some((rel_start, rel_end)) = m.find(&text[pos..]) {
+                                    if rel_start != 0 {
+                                        all_matched = false;
+                                        break;
+                                    }
+                                    pos += rel_end;
+                                } else {
+                                    all_matched = false;
+                                    break;
+                                }
+                            }
+                        }
                     }
                 }
                 
@@ -522,6 +550,7 @@ enum Ast {
     Capture(Box<Ast>, usize),  // Phase 8: Capture group (pattern, group_index)
     CombinedWithLookaround { prefix: Box<Ast>, lookaround: Lookaround },  // Phase 7.2: foo(?=bar)
     PatternWithCaptures { elements: Vec<CaptureElement>, total_groups: usize },  // Phase 8.1: Hello (\w+)
+    Backreference(usize),  // Phase 9: Backreference to capture group (\1, \2, etc.)
 }
 
 /// Parse patterns that contain groups combined with other elements
@@ -942,6 +971,7 @@ enum Matcher {
     Capture(Box<Matcher>, usize),  // Phase 8: Capture matcher (inner pattern, group_index)
     CombinedWithLookaround { prefix: Box<Matcher>, lookaround: Box<Lookaround>, lookaround_matcher: Box<Matcher> },  // Phase 7.2
     PatternWithCaptures { elements: Vec<CompiledCaptureElement>, total_groups: usize },  // Phase 8.1
+    Backreference(usize),  // Phase 9: Backreference to capture group
 }
 
 /// Compiled capture element
@@ -1017,7 +1047,26 @@ impl Matcher {
                 }
             }
             Matcher::PatternWithCaptures { elements, .. } => {
-                // Check if all elements match in sequence
+                // Check if pattern contains backreferences
+                let has_backreference = elements.iter().any(|elem| {
+                    match elem {
+                        CompiledCaptureElement::NonCapture(Matcher::Backreference(_)) => true,
+                        _ => false,
+                    }
+                });
+                
+                if has_backreference {
+                    // Need to use capture-aware matching
+                    // Try to match at any position in text
+                    for start_pos in 0..text.len() {
+                        if Self::match_pattern_with_backreferences(text, start_pos, elements).is_some() {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+                
+                // Fast path: no backreferences, simple sequential matching
                 let mut pos = 0;
                 for element in elements {
                     let matcher = match element {
@@ -1031,6 +1080,12 @@ impl Matcher {
                     }
                 }
                 true
+            }
+            Matcher::Backreference(_) => {
+                // Backreferences cannot be matched without context
+                // They need access to captured groups, which is_match doesn't have
+                // Return false - backreferences only work in captures() method
+                false
             }
         }
     }
@@ -1107,6 +1162,73 @@ impl Matcher {
         }
         
         captures
+    }
+    
+    /// Match pattern with backreferences, tracking captures as we go
+    /// Returns Some(end_pos) if match succeeds, None otherwise
+    fn match_pattern_with_backreferences(
+        text: &str,
+        start_pos: usize,
+        elements: &[CompiledCaptureElement],
+    ) -> Option<usize> {
+        let mut pos = start_pos;
+        let mut capture_positions: Vec<(usize, usize)> = Vec::new();
+        
+        for element in elements {
+            match element {
+                CompiledCaptureElement::Capture(m, num) => {
+                    if let Some((rel_start, rel_end)) = m.find(&text[pos..]) {
+                        if rel_start != 0 {
+                            return None; // Must match at current position
+                        }
+                        
+                        let abs_start = pos;
+                        let abs_end = pos + rel_end;
+                        
+                        // Record capture position
+                        while capture_positions.len() < *num {
+                            capture_positions.push((0, 0));
+                        }
+                        capture_positions[*num - 1] = (abs_start, abs_end);
+                        pos = abs_end;
+                    } else {
+                        return None;
+                    }
+                }
+                CompiledCaptureElement::NonCapture(m) => {
+                    // Check if this is a Backreference
+                    if let Matcher::Backreference(ref_num) = m {
+                        // Get the captured text for this backreference
+                        if *ref_num > 0 && *ref_num <= capture_positions.len() {
+                            let (cap_start, cap_end) = capture_positions[*ref_num - 1];
+                            let captured_text = &text[cap_start..cap_end];
+                            
+                            // Check if remaining text starts with the captured text
+                            if text[pos..].starts_with(captured_text) {
+                                pos += captured_text.len();
+                            } else {
+                                return None;
+                            }
+                        } else {
+                            // Invalid backreference or not captured yet
+                            return None;
+                        }
+                    } else {
+                        // Normal non-capture element
+                        if let Some((rel_start, rel_end)) = m.find(&text[pos..]) {
+                            if rel_start != 0 {
+                                return None;
+                            }
+                            pos += rel_end;
+                        } else {
+                            return None;
+                        }
+                    }
+                }
+            }
+        }
+        
+        Some(pos)
     }
     
     /// Specialized fast path for \d+ pattern
@@ -1265,6 +1387,10 @@ impl Matcher {
                         return Some((start_pos, pos));
                     }
                 }
+                None
+            }
+            Matcher::Backreference(_) => {
+                // Backreferences cannot find without capture context
                 None
             }
         }
@@ -1446,6 +1572,10 @@ impl Matcher {
                 
                 matches
             }
+            Matcher::Backreference(_) => {
+                // Backreferences cannot find_all without capture context
+                vec![]
+            }
         }
     }
     
@@ -1609,6 +1739,9 @@ fn compile_ast(ast: &Ast) -> Result<Matcher, PatternError> {
                 elements: compiled_elements,
                 total_groups: *total_groups,
             })
+        }
+        Ast::Backreference(group_num) => {
+            Ok(Matcher::Backreference(*group_num))
         }
     }
 }
@@ -1812,12 +1945,46 @@ fn parse_pattern_with_captures_inner(pattern: &str, group_counter: &mut usize) -
                 return Err(PatternError::ParseError("Unmatched parenthesis".to_string()));
             }
         } else {
-            // Find the next capture group or end of pattern
+            // Check for backreference \1, \2, etc. AT CURRENT POSITION
+            if pattern[pos..].starts_with('\\') && pos + 1 < pattern.len() {
+                let next_char = pattern.chars().nth(pos + 1);
+                if let Some(ch) = next_char {
+                    if ch.is_ascii_digit() {
+                        // This is a backreference like \1
+                        let digit = ch.to_digit(10).unwrap() as usize;
+                        elements.push(CaptureElement::NonCapture(Ast::Backreference(digit)));
+                        pos += 2;  // Skip \1
+                        continue;
+                    }
+                }
+            }
+            
+            // Find the next capture group, backreference, or end of pattern
             let next_paren = pattern[pos..].find('(').map(|i| pos + i).unwrap_or(pattern.len());
             
-            if next_paren > pos {
-                // There's a literal or other pattern before the next capture
-                let segment = &pattern[pos..next_paren];
+            // Find next backreference \digit (search from current position + 1 to avoid finding current char)
+            let mut search_pos = pos;
+            let mut next_backref = pattern.len();
+            
+            while search_pos < pattern.len() {
+                if pattern[search_pos..].starts_with('\\') && search_pos + 1 < pattern.len() {
+                    let next_ch = pattern.chars().nth(search_pos + 1);
+                    if next_ch.map(|c| c.is_ascii_digit()).unwrap_or(false) {
+                        next_backref = search_pos;
+                        break;
+                    }
+                    search_pos += 2; // Skip this escape
+                } else {
+                    search_pos += 1;
+                }
+            }
+            
+            // Take the minimum of next_paren and next_backref
+            let next_boundary = next_paren.min(next_backref);
+            
+            if next_boundary > pos {
+                // There's a literal or other pattern before the next capture/backref
+                let segment = &pattern[pos..next_boundary];
                 
                 // Parse segment without going through capture detection
                 let segment_ast = if segment.is_empty() {
@@ -1828,7 +1995,7 @@ fn parse_pattern_with_captures_inner(pattern: &str, group_counter: &mut usize) -
                 };
                 
                 elements.push(CaptureElement::NonCapture(segment_ast));
-                pos = next_paren;
+                pos = next_boundary;
             } else {
                 // Move forward
                 pos += 1;

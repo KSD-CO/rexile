@@ -78,7 +78,7 @@ fn test_nested_capture_groups() {
 }
 
 #[test]
-#[ignore] // Complex feature - implement in phase 8.2
+#[test]
 fn test_backreference() {
     // Match same word twice: (\w+)\s+\1
     let pattern = Pattern::new(r"(\w+)\s+\1").unwrap();
