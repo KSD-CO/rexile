@@ -3,7 +3,7 @@
 //! Supports: [abc], [a-z], [0-9], [^abc] (negation), [A-Za-z0-9_]
 
 /// Represents a character class pattern like [a-z] or [^0-9]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CharClass {
     /// Individual characters to match (e.g., 'a', 'b', 'c' from [abc])
     pub(crate) chars: Vec<char>,  // Made pub(crate) for optimization checks

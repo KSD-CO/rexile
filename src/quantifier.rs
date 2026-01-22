@@ -6,7 +6,7 @@ use crate::charclass::CharClass;
 use crate::escape::{parse_escape, starts_with_escape};
 
 /// Represents a quantified pattern element
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum QuantifiedElement {
     /// A literal character
     Char(char),
@@ -56,7 +56,7 @@ pub enum Quantifier {
 }
 
 /// A quantified pattern: element + quantifier
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct QuantifiedPattern {
     pub element: QuantifiedElement,
     pub quantifier: Quantifier,

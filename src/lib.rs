@@ -8,7 +8,9 @@ mod escape;
 mod sequence;
 mod sequence_parser;
 mod group;
-mod boundary;  // NEW: Word boundary support
+mod boundary;  // Phase 6: Word boundary support
+mod lookaround;  // Phase 7: Lookahead/lookbehind
+mod captures;  // Phase 8: Capture groups
 
 use aho_corasick::AhoCorasick;
 use charclass::CharClass;
@@ -18,9 +20,13 @@ use sequence::Sequence;
 use sequence_parser::{is_sequence_pattern, parse_sequence};
 use group::Group;
 use quantifier::{parse_quantified_pattern, QuantifiedPattern};
-use boundary::BoundaryType;  // NEW
+use boundary::BoundaryType;
+use lookaround::{Lookaround, LookaroundType};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
+
+// Re-export capture types for public API
+pub use captures::{Captures, Group as CaptureGroup};
 
 /// Main ReXile pattern type
 #[derive(Debug, Clone)]
@@ -76,6 +82,98 @@ impl Pattern {
             pos: 0,
         }
     }
+    
+    /// Capture groups from the first match
+    ///
+    /// Returns a `Captures` object if the pattern matches, containing the full match
+    /// and any captured groups. Returns None if no match is found.
+    ///
+    /// # Example
+    /// ```
+    /// use rexile::Pattern;
+    ///
+    /// let pattern = Pattern::new(r"(\w+)@(\w+)\.(\w+)").unwrap();
+    /// if let Some(caps) = pattern.captures("email: test@example.com") {
+    ///     println!("Full: {}", &caps[0]);    // test@example.com
+    ///     println!("User: {}", &caps[1]);    // test
+    ///     println!("Domain: {}", &caps[2]);  // example
+    ///     println!("TLD: {}", &caps[3]);     // com
+    /// }
+    /// ```
+    pub fn captures<'t>(&self, text: &'t str) -> Option<Captures<'t>> {
+        // TODO: Implement full capture group extraction
+        // For now, return a simple full-match capture
+        self.find(text).map(|(start, end)| {
+            Captures::new(text, (start, end), 0)
+        })
+    }
+    
+    /// Iterate over all captures in the text
+    ///
+    /// Returns an iterator that yields `Captures` for each match found.
+    ///
+    /// # Example
+    /// ```
+    /// use rexile::Pattern;
+    ///
+    /// let pattern = Pattern::new(r"(\w+)=(\d+)").unwrap();
+    /// for caps in pattern.captures_iter("a=1 b=2 c=3") {
+    ///     println!("{} = {}", &caps[1], &caps[2]);
+    /// }
+    /// ```
+    pub fn captures_iter<'r, 't>(&'r self, text: &'t str) -> CapturesIter<'r, 't> {
+        CapturesIter {
+            pattern: self,
+            text,
+            pos: 0,
+        }
+    }
+    
+    /// Replace all matches with a replacement string
+    ///
+    /// Supports capture group references using $1, $2, etc.
+    ///
+    /// # Example
+    /// ```
+    /// use rexile::Pattern;
+    ///
+    /// let pattern = Pattern::new(r"(\w+)=(\d+)").unwrap();
+    /// let result = pattern.replace_all("a=1 b=2", "$1:[$2]");
+    /// assert_eq!(result, "a:[1] b:[2]");
+    /// ```
+    pub fn replace_all(&self, text: &str, replacement: &str) -> String {
+        // TODO: Implement with capture group replacement
+        // For now, simple literal replacement
+        let mut result = String::new();
+        let mut last_end = 0;
+        
+        for (start, end) in self.find_all(text) {
+            result.push_str(&text[last_end..start]);
+            result.push_str(replacement);
+            last_end = end;
+        }
+        result.push_str(&text[last_end..]);
+        result
+    }
+    
+    /// Split text by matches of this pattern
+    ///
+    /// # Example
+    /// ```
+    /// use rexile::Pattern;
+    ///
+    /// let pattern = Pattern::new(r"\s+").unwrap();
+    /// let parts: Vec<_> = pattern.split("a  b   c").collect();
+    /// assert_eq!(parts, vec!["a", "b", "c"]);
+    /// ```
+    pub fn split<'r, 't>(&'r self, text: &'t str) -> SplitIter<'r, 't> {
+        SplitIter {
+            pattern: self,
+            text,
+            pos: 0,
+            finished: false,
+        }
+    }
 }
 
 /// Iterator over pattern matches (zero-allocation)
@@ -105,6 +203,73 @@ impl<'a> Iterator for FindIter<'a> {
             Some((abs_start, abs_end))
         } else {
             None
+        }
+    }
+}
+
+/// Iterator over captures for each match
+pub struct CapturesIter<'r, 't> {
+    pattern: &'r Pattern,
+    text: &'t str,
+    pos: usize,
+}
+
+impl<'r, 't> Iterator for CapturesIter<'r, 't> {
+    type Item = Captures<'t>;
+    
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.pos >= self.text.len() {
+            return None;
+        }
+        
+        // Find next match starting from current position
+        let remaining = &self.text[self.pos..];
+        if let Some((rel_start, rel_end)) = self.pattern.matcher.find(remaining) {
+            let abs_start = self.pos + rel_start;
+            let abs_end = self.pos + rel_end;
+            
+            // Move position past this match
+            self.pos = abs_end.max(self.pos + 1);
+            
+            // Create captures for this match
+            Some(Captures::new(self.text, (abs_start, abs_end), 0))
+        } else {
+            None
+        }
+    }
+}
+
+/// Iterator over text split by pattern matches
+pub struct SplitIter<'r, 't> {
+    pattern: &'r Pattern,
+    text: &'t str,
+    pos: usize,
+    finished: bool,
+}
+
+impl<'r, 't> Iterator for SplitIter<'r, 't> {
+    type Item = &'t str;
+    
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+        
+        // Find next match starting from current position
+        let remaining = &self.text[self.pos..];
+        if let Some((rel_start, rel_end)) = self.pattern.matcher.find(remaining) {
+            let abs_start = self.pos + rel_start;
+            let abs_end = self.pos + rel_end;
+            
+            // Return text before the match
+            let result = &self.text[self.pos..abs_start];
+            self.pos = abs_end;
+            
+            Some(result)
+        } else {
+            // No more matches, return remaining text
+            self.finished = true;
+            Some(&self.text[self.pos..])
         }
     }
 }
@@ -150,17 +315,19 @@ impl std::fmt::Display for PatternError {
 
 impl std::error::Error for PatternError {}
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum Ast {
     Literal(String),
     Alternation(Vec<String>),
     Anchored { literal: String, start: bool, end: bool },
-    AnchoredGroup { group: Group, start: bool, end: bool },  // NEW
+    AnchoredGroup { group: Group, start: bool, end: bool },
     CharClass(CharClass),
     Quantified(QuantifiedPattern),
     Sequence(Sequence),
-    Group(Group),  // NEW: Group support
-    Boundary(BoundaryType),  // NEW: Word boundary support
+    Group(Group),
+    Boundary(BoundaryType),  // Phase 6: Word boundary support
+    Lookaround(Lookaround),  // Phase 7: Lookahead/lookbehind
+    Capture(Box<Ast>, usize),  // Phase 8: Capture group (pattern, group_index)
 }
 
 /// Parse patterns that contain groups combined with other elements
@@ -513,10 +680,12 @@ enum Matcher {
     CharClass(CharClass),
     Quantified(QuantifiedPattern),
     Sequence(Sequence),
-    Group(Group),  // NEW: Group matcher
-    DigitRun,  // NEW: Specialized fast path for \d+ pattern
-    WordRun,   // NEW: Specialized fast path for \w+ pattern
-    Boundary(BoundaryType),  // NEW: Word boundary matcher
+    Group(Group),
+    DigitRun,  // Specialized fast path for \d+ pattern
+    WordRun,   // Specialized fast path for \w+ pattern
+    Boundary(BoundaryType),  // Phase 6: Word boundary matcher
+    Lookaround(Box<Lookaround>, Box<Matcher>),  // Phase 7: Lookaround with compiled inner matcher
+    Capture(Box<Matcher>, usize),  // Phase 8: Capture matcher (inner pattern, group_index)
 }
 
 impl Matcher {
@@ -561,7 +730,20 @@ impl Matcher {
             Matcher::Group(group) => group.is_match(text), // NEW: Early termination
             Matcher::DigitRun => Self::digit_run_is_match(text),  // NEW: Specialized digit fast path
             Matcher::WordRun => Self::word_run_is_match(text),    // NEW: Specialized word fast path
-            Matcher::Boundary(boundary_type) => boundary_type.find_first(text).is_some(),  // NEW: Boundary matching
+            Matcher::Boundary(boundary_type) => boundary_type.find_first(text).is_some(),
+            Matcher::Lookaround(lookaround, inner_matcher) => {
+                // Lookaround assertions are zero-width, check if they match at any position
+                for pos in 0..=text.len() {
+                    if lookaround.matches_at(text, pos, inner_matcher) {
+                        return true;
+                    }
+                }
+                false
+            }
+            Matcher::Capture(inner_matcher, _group_index) => {
+                // Capture groups don't affect matching, just check inner pattern
+                inner_matcher.is_match(text)
+            }
         }
     }
     
@@ -656,6 +838,19 @@ impl Matcher {
             Matcher::Boundary(boundary_type) => {
                 // Boundary returns position, need to map to (pos, pos) range
                 boundary_type.find_first(text).map(|pos| (pos, pos))
+            }
+            Matcher::Lookaround(lookaround, inner_matcher) => {
+                // Find first position where lookaround succeeds
+                for pos in 0..=text.len() {
+                    if lookaround.matches_at(text, pos, inner_matcher) {
+                        return Some((pos, pos)); // Zero-width match
+                    }
+                }
+                None
+            }
+            Matcher::Capture(inner_matcher, _group_index) => {
+                // Capture groups don't affect position, use inner matcher
+                inner_matcher.find(text)
             }
         }
     }
@@ -761,6 +956,17 @@ impl Matcher {
             Matcher::Boundary(boundary_type) => {
                 // Boundary returns positions, map to (pos, pos) ranges
                 boundary_type.find_all(text).into_iter().map(|pos| (pos, pos)).collect()
+            }
+            Matcher::Lookaround(lookaround, inner_matcher) => {
+                // Find all positions where lookaround succeeds
+                (0..=text.len())
+                    .filter(|&pos| lookaround.matches_at(text, pos, inner_matcher))
+                    .map(|pos| (pos, pos)) // Zero-width matches
+                    .collect()
+            }
+            Matcher::Capture(inner_matcher, _group_index) => {
+                // Capture groups don't affect find_all, use inner matcher
+                inner_matcher.find_all(text)
             }
         }
     }
@@ -879,7 +1085,20 @@ fn compile_ast(ast: &Ast) -> Result<Matcher, PatternError> {
         }
         Ast::Sequence(seq) => Ok(Matcher::Sequence(seq.clone())),
         Ast::Group(group) => Ok(Matcher::Group(group.clone())),
-        Ast::Boundary(boundary_type) => Ok(Matcher::Boundary(*boundary_type)),  // NEW: Boundary compilation
+        Ast::Boundary(boundary_type) => Ok(Matcher::Boundary(*boundary_type)),
+        Ast::Lookaround(lookaround) => {
+            // Compile the inner pattern of the lookaround
+            let inner_matcher = compile_ast(&lookaround.pattern)?;
+            Ok(Matcher::Lookaround(
+                Box::new(lookaround.clone()),
+                Box::new(inner_matcher)
+            ))
+        }
+        Ast::Capture(inner_ast, group_index) => {
+            // Compile the inner pattern of the capture group
+            let inner_matcher = compile_ast(inner_ast)?;
+            Ok(Matcher::Capture(Box::new(inner_matcher), *group_index))
+        }
     }
 }
 

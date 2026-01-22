@@ -33,7 +33,8 @@ ReXile is a **full-featured regex engine** built from scratch without using the 
 - ✅ Phase 3: Escape sequences `\d`, `\w`, `\s`, etc.
 - ✅ Phase 4: Sequences `ab+c*`, `\d+\w*`
 - ✅ Phase 5: Groups `(abc)`, `(?:...)`, `(foo|bar)+` (basic)
-- 🔄 Phase 6+: Word boundaries, lookahead, captures (see [ROADMAP_FULL_REGEX.md](ROADMAP_FULL_REGEX.md))
+- ✅ Phase 6: Word boundaries `\b`, `\B` (zero-width assertions)
+- 🔄 Phase 7+: Lookahead, lookbehind, captures (see future roadmap)
 
 ## 🚀 Quick Start
 
@@ -70,6 +71,12 @@ assert!(protocol.is_match("http://example.com"));
 let exact = ReXile::new("^hello$").unwrap();
 assert!(exact.is_match("hello"));
 assert!(!exact.is_match("hello world"));
+
+// Word boundaries (Phase 6!)
+let boundary = ReXile::new("\\b").unwrap();
+let text = "hello world";
+let boundaries = boundary.find_all(text);
+// Returns: [(0,0), (5,5), (6,6), (11,11)] - all word boundary positions
 ```
 
 ### Cached API (Recommended)
@@ -101,7 +108,7 @@ assert_eq!(rexile::find("world", "hello world").unwrap(), Some((6, 11)));
 | Quantified groups | `(ab)+`, `(xyz)*` | ✅ Supported (Phase 5) |
 | Bounded quantifiers | `{n}`, `{n,m}` | 🚧 Phase 2b |
 | Capturing groups | `(group)` extraction | 🚧 Phase 5b |
-| Word boundaries | `\b`, `\B` | 🚧 Phase 6 |
+| Word boundaries | `\b`, `\B` | ✅ Phase 6 |
 | Lookahead/lookbehind | `(?=...)`, `(?<=...)` | 🚧 Phase 7 |
 | Backreferences | `\1`, `\2` | 🚧 Phase 8 |
 | Unicode properties | `\p{L}`, `\p{N}` | 🚧 Phase 9 |
@@ -121,7 +128,7 @@ ReXile is being built into a **complete regex engine** from scratch! We're takin
 - 🔄 **Phase 5** - Capturing groups with extraction API
 
 **📋 PLANNED:**
-- Phase 6: Word boundaries (`\b`, `\B`)
+- Phase 6: Word boundaries (`\b`, `\B`) ✅
 - Phase 7: Assertions (lookahead/lookbehind)
 - Phase 8: Backreferences
 - Phase 9: Unicode support

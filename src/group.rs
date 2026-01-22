@@ -11,7 +11,7 @@ use crate::sequence_parser::{is_sequence_pattern, parse_sequence};
 use crate::quantifier::Quantifier;
 
 /// A group in a pattern
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Group {
     /// The content of the group (can be alternation or sequence)
     pub content: GroupContent,
@@ -22,7 +22,7 @@ pub struct Group {
 }
 
 /// Content inside a group
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum GroupContent {
     /// Single pattern (like "abc" in (abc))
     Single(String),

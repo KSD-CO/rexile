@@ -9,7 +9,7 @@ use crate::charclass::CharClass;
 use crate::quantifier::Quantifier;
 
 /// A single element in a sequence
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SequenceElement {
     /// A literal character (e.g., 'a' in "abc")
     Char(char),
@@ -126,7 +126,7 @@ fn quantifier_bounds(q: &Quantifier) -> (usize, usize) {
 }
 
 /// A sequence of pattern elements
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Sequence {
     pub elements: Vec<SequenceElement>,
 }
