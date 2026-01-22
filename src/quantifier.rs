@@ -15,11 +15,25 @@ pub enum QuantifiedElement {
 }
 
 impl QuantifiedElement {
-    /// Check if a character matches this element
+    /// Check if a character matches this element (OPTIMIZED with fast paths)
+    #[inline(always)]
     pub fn matches(&self, ch: char) -> bool {
         match self {
             QuantifiedElement::Char(c) => *c == ch,
             QuantifiedElement::CharClass(cc) => cc.matches(ch),
+        }
+    }
+    
+    /// Fast check for ASCII characters (inlined for performance)
+    #[inline(always)]
+    pub fn matches_byte(&self, byte: u8) -> bool {
+        if byte >= 128 {
+            return false; // Non-ASCII, use slow path
+        }
+        
+        match self {
+            QuantifiedElement::Char(c) => (*c as u32) == (byte as u32),
+            QuantifiedElement::CharClass(cc) => cc.matches(byte as char),
         }
     }
 }
@@ -49,20 +63,51 @@ pub struct QuantifiedPattern {
 }
 
 impl QuantifiedPattern {
-    /// Match this quantified pattern at the start of text
-    /// Returns the number of characters consumed if matched
+    /// Match this quantified pattern at the start of text (OPTIMIZED)
+    /// Returns the number of bytes consumed if matched
     pub fn match_at(&self, text: &str) -> Option<usize> {
-        let mut chars: Vec<char> = text.chars().collect();
-        let mut matches = Vec::new();
+        let bytes = text.as_bytes();
         
-        // Greedy matching: try to match as many as possible
-        let mut pos = 0;
-        while pos < chars.len() && self.element.matches(chars[pos]) {
-            matches.push(chars[pos]);
-            pos += 1;
+        // Fast path: ASCII-only text - use byte scanning (SIMD-friendly)
+        if bytes.iter().all(|&b| b < 128) {
+            let mut byte_len = 0;
+            let mut match_count = 0;
+            
+            // OPTIMIZED: Direct byte scanning for ASCII
+            for &byte in bytes {
+                if self.element.matches_byte(byte) {
+                    byte_len += 1;
+                    match_count += 1;
+                } else {
+                    break;
+                }
+            }
+            
+            // Check quantifier constraints
+            let valid = match self.quantifier {
+                Quantifier::ZeroOrMore => true,
+                Quantifier::OneOrMore => match_count >= 1,
+                Quantifier::ZeroOrOne => match_count <= 1,
+                Quantifier::Exactly(n) => match_count == n,
+                Quantifier::AtLeast(n) => match_count >= n,
+                Quantifier::Between(min, max) => match_count >= min && match_count <= max,
+            };
+            
+            return if valid { Some(byte_len) } else { None };
         }
         
-        let match_count = matches.len();
+        // Slow path: UTF-8 text - scan char by char
+        let mut byte_len = 0;
+        let mut match_count = 0;
+        
+        for ch in text.chars() {
+            if self.element.matches(ch) {
+                byte_len += ch.len_utf8();
+                match_count += 1;
+            } else {
+                break; // Stop at first non-match
+            }
+        }
         
         // Check if quantifier constraints are satisfied
         let valid = match self.quantifier {
@@ -75,12 +120,33 @@ impl QuantifiedPattern {
         };
         
         if valid {
-            // Calculate byte length consumed
-            let byte_len = matches.iter().map(|c| c.len_utf8()).sum();
             Some(byte_len)
         } else {
             None
         }
+    }
+    
+    /// Check if this pattern matches anywhere in text (optimized for speed)
+    /// Returns immediately on first match without computing position
+    pub fn is_match(&self, text: &str) -> bool {
+        // Fast path: Try match at start first
+        if self.match_at(text).is_some() {
+            return true;
+        }
+        
+        // Only scan forward if no match at start
+        let chars: Vec<(usize, char)> = text.char_indices().collect();
+        
+        for (start_byte, _) in &chars {
+            if *start_byte == 0 {
+                continue; // Already tried
+            }
+            if self.match_at(&text[*start_byte..]).is_some() {
+                return true; // Early termination!
+            }
+        }
+        
+        false
     }
     
     /// Find first position in text where this pattern matches

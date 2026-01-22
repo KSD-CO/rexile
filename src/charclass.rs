@@ -127,7 +127,7 @@ impl CharClass {
     pub fn matches(&self, ch: char) -> bool {
         let ch_val = ch as u32;
         
-        // Fast path: ASCII bitmap lookup
+        // Fast path: ASCII bitmap lookup (uses bit operations, very fast)
         if ch_val < 128 {
             if let Some(bitmap) = &self.ascii_bitmap {
                 let idx = ch_val as usize;
@@ -160,6 +160,36 @@ impl CharClass {
         } else {
             matched
         }
+    }
+    
+    /// Find first character in text that matches this class (SIMD-optimized for ASCII)
+    /// Returns byte position if found, None otherwise
+    pub fn find_first(&self, text: &str) -> Option<usize> {
+        let bytes = text.as_bytes();
+        
+        // Fast path for ASCII-only text with bitmap
+        if let Some(bitmap) = &self.ascii_bitmap {
+            // Check if text is ASCII-only by scanning in chunks
+            if bytes.iter().all(|&b| b < 128) {
+                // SIMD-friendly: Process bytes directly using bitmap
+                for (idx, &byte) in bytes.iter().enumerate() {
+                    let bit_set = (bitmap[byte as usize / 64] & (1u64 << (byte % 64))) != 0;
+                    let matches = if self.negated { !bit_set } else { bit_set };
+                    if matches {
+                        return Some(idx);
+                    }
+                }
+                return None;
+            }
+        }
+        
+        // Fallback: UTF-8 aware character-by-character scan
+        for (idx, ch) in text.char_indices() {
+            if self.matches(ch) {
+                return Some(idx);
+            }
+        }
+        None
     }
     
     /// Check if text starts with a character matching this class

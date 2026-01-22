@@ -152,6 +152,29 @@ impl Sequence {
         Some(pos)
     }
 
+    /// Check if the sequence matches anywhere in text (optimized)
+    /// Returns immediately on first match without computing position
+    pub fn is_match(&self, text: &str) -> bool {
+        // Fast path: Try match at start first
+        if self.match_at(text).is_some() {
+            return true;
+        }
+        
+        // Only scan forward if no match at start
+        let byte_positions: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
+        
+        for &start_pos in &byte_positions {
+            if start_pos == 0 {
+                continue; // Already tried
+            }
+            if self.match_at(&text[start_pos..]).is_some() {
+                return true; // Early termination!
+            }
+        }
+        
+        false
+    }
+
     /// Find the sequence anywhere in text
     pub fn find(&self, text: &str) -> Option<(usize, usize)> {
         let byte_positions: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();

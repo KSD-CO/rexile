@@ -7,6 +7,7 @@
 /// - Quantified groups: (abc)+
 
 use crate::sequence::{Sequence, SequenceElement};
+use crate::sequence_parser::{is_sequence_pattern, parse_sequence};
 use crate::quantifier::Quantifier;
 
 /// A group in a pattern
@@ -129,6 +130,29 @@ impl Group {
         }
     }
 
+    /// Check if group matches anywhere in text (optimized)
+    /// Returns immediately on first match without computing position
+    pub fn is_match(&self, text: &str) -> bool {
+        // Fast path: Try match at start first
+        if self.match_at(text, 0).is_some() {
+            return true;
+        }
+        
+        // Only scan forward if no match at start
+        let byte_positions: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
+        
+        for &start_pos in &byte_positions {
+            if start_pos == 0 {
+                continue; // Already tried
+            }
+            if self.match_at(text, start_pos).is_some() {
+                return true; // Early termination!
+            }
+        }
+        
+        false
+    }
+
     /// Find the group pattern anywhere in text
     pub fn find(&self, text: &str) -> Option<(usize, usize)> {
         let byte_positions: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
@@ -216,11 +240,28 @@ pub fn parse_group(pattern: &str) -> Result<(Group, usize), String> {
 
     // Parse group content
     let content = if content_str.contains('|') {
-        // Alternation
+        // Alternation - check if each alternative is a sequence
         let parts: Vec<String> = content_str.split('|').map(|s| s.to_string()).collect();
-        GroupContent::Alternation(parts)
+        
+        // Check if any part is a sequence pattern
+        let has_sequences = parts.iter().any(|p| is_sequence_pattern(p) || has_quantified_element(p));
+        
+        if has_sequences {
+            // Parse each alternative as a potential sequence
+            // For now, store as alternation of strings
+            // TODO: Support sequences in alternation
+            GroupContent::Alternation(parts)
+        } else {
+            GroupContent::Alternation(parts)
+        }
+    } else if is_sequence_pattern(content_str) || has_quantified_element(content_str) {
+        // Sequence pattern like \d+, [a-z]+, ab+c*, or single quantified element
+        match parse_sequence(content_str) {
+            Ok(seq) => GroupContent::Sequence(seq),
+            Err(_) => GroupContent::Single(content_str.to_string()),
+        }
     } else {
-        // Single pattern
+        // Single literal pattern
         GroupContent::Single(content_str.to_string())
     };
 
@@ -253,6 +294,34 @@ fn parse_simple_quantifier(ch: char) -> Option<Quantifier> {
         '?' => Some(Quantifier::ZeroOrOne),
         _ => None,
     }
+}
+
+/// Check if pattern has quantified elements like \d+, [a-z]*, etc.
+fn has_quantified_element(pattern: &str) -> bool {
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut i = 0;
+    
+    while i < chars.len() {
+        if chars[i] == '\\' && i + 1 < chars.len() {
+            // Escape sequence - check for quantifier after
+            i += 2;
+            if i < chars.len() && matches!(chars[i], '*' | '+' | '?') {
+                return true;
+            }
+        } else if chars[i] == '[' {
+            // Character class - find end and check for quantifier
+            while i < chars.len() && chars[i] != ']' {
+                i += 1;
+            }
+            i += 1; // Skip ']'
+            if i < chars.len() && matches!(chars[i], '*' | '+' | '?') {
+                return true;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    false
 }
 
 #[cfg(test)]

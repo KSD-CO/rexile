@@ -108,21 +108,22 @@ impl EscapeSequence {
     }
 }
 
-/// Parse an escape sequence from a pattern string
+/// Parse an escape sequence from a pattern string (OPTIMIZED)
 /// Returns (EscapeSequence, bytes_consumed)
+#[inline]
 pub fn parse_escape(pattern: &str) -> Result<(EscapeSequence, usize), String> {
-    let chars: Vec<char> = pattern.chars().collect();
+    let bytes = pattern.as_bytes();
     
-    if chars.is_empty() || chars[0] != '\\' {
+    if bytes.is_empty() || bytes[0] != b'\\' {
         return Err("Pattern must start with backslash".to_string());
     }
     
-    if chars.len() < 2 {
+    if bytes.len() < 2 {
         return Err("Incomplete escape sequence".to_string());
     }
     
-    let escape_char = chars[1];
-    let bytes_consumed = '\\'.len_utf8() + escape_char.len_utf8();
+    let escape_char = bytes[1] as char;
+    let bytes_consumed = 2; // \d, \w, etc are always 2 bytes in ASCII
     
     let seq = match escape_char {
         'd' => EscapeSequence::Digit,
@@ -144,9 +145,11 @@ pub fn parse_escape(pattern: &str) -> Result<(EscapeSequence, usize), String> {
     Ok((seq, bytes_consumed))
 }
 
-/// Check if a pattern starts with an escape sequence
+/// Check if a pattern starts with an escape sequence (OPTIMIZED)
+#[inline(always)]
 pub fn starts_with_escape(pattern: &str) -> bool {
-    pattern.starts_with('\\') && pattern.len() >= 2
+    let bytes = pattern.as_bytes();
+    bytes.len() >= 2 && bytes[0] == b'\\'
 }
 
 #[cfg(test)]

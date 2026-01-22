@@ -15,6 +15,10 @@ path = "src/lib.rs"
 memchr = "2.7"
 aho-corasick = "1.1"
 
+# Optional SIMD support for character classes
+# packed_simd can be enabled for even faster character class matching
+# Currently using stdlib + memchr SIMD which is already very fast
+
 [dev-dependencies]
 criterion = "0.5"
 regex = "1"  # For benchmark comparisons only
@@ -25,6 +29,10 @@ harness = false
 
 [[bench]]
 name = "comparison_benchmark"
+harness = false
+
+[[bench]]
+name = "rexile_vs_regex_benchmark"
 harness = false
 
 [[bench]]

@@ -1,0 +1,836 @@
+warning: unused import: `SequenceElement`
+ --> src/group.rs:9:33
+  |
+9 | use crate::sequence::{Sequence, SequenceElement};
+  |                                 ^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: variable does not need to be mutable
+  --> src/charclass.rs:62:13
+   |
+62 |         let mut pattern_chars: Vec<char> = pattern.chars().collect();
+   |             ----^^^^^^^^^^^^^
+   |             |
+   |             help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` on by default
+
+warning: variable does not need to be mutable
+  --> src/quantifier.rs:55:13
+   |
+55 |         let mut chars: Vec<char> = text.chars().collect();
+   |             ----^^^^^
+   |             |
+   |             help: remove this `mut`
+
+warning: unused variable: `bytes`
+  --> src/sequence_parser.rs:63:9
+   |
+63 |     let bytes = pattern.as_bytes();
+   |         ^^^^^ help: if this is intentional, prefix it with an underscore: `_bytes`
+   |
+   = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `base_match_size`
+   --> src/group.rs:105:9
+    |
+105 |         base_match_size: usize,
+    |         ^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_base_match_size`
+
+warning: unused variable: `start_pos`
+   --> src/lib.rs:478:38
+    |
+478 |                         if let Some((start_pos, end_pos)) = group.find(text) {
+    |                                      ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_start_pos`
+
+warning: method `match_at` is never used
+   --> src/charclass.rs:167:12
+    |
+18  | impl CharClass {
+    | -------------- method in this implementation
+...
+167 |     pub fn match_at(&self, text: &str, pos: usize) -> Option<usize> {
+    |            ^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` on by default
+
+warning: field `capturing` is never read
+  --> src/group.rs:19:9
+   |
+15 | pub struct Group {
+   |            ----- field in this struct
+...
+19 |     pub capturing: bool,
+   |         ^^^^^^^^^
+   |
+   = note: `Group` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: `rexile` (lib) generated 8 warnings (run `cargo fix --lib -p rexile` to apply 3 suggestions)
+    Finished `bench` profile [optimized] target(s) in 0.02s
+     Running benches/rexile_vs_regex_benchmark.rs (target/release/deps/rexile_vs_regex_benchmark-6980cf2a55298612)
+Gnuplot not found, using plotters backend
+Benchmarking Literal Patterns/rexile/Simple literal
+Benchmarking Literal Patterns/rexile/Simple literal: Warming up for 3.0000 s
+Benchmarking Literal Patterns/rexile/Simple literal: Collecting 100 samples in estimated 5.0001 s (470M iterations)
+Benchmarking Literal Patterns/rexile/Simple literal: Analyzing
+Literal Patterns/rexile/Simple literal
+                        time:   [10.948 ns 10.980 ns 11.013 ns]
+                        change: [-89.013% -88.920% -88.799%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 9 outliers among 100 measurements (9.00%)
+  5 (5.00%) low mild
+  2 (2.00%) high mild
+  2 (2.00%) high severe
+Benchmarking Literal Patterns/regex/Simple literal
+Benchmarking Literal Patterns/regex/Simple literal: Warming up for 3.0000 s
+Benchmarking Literal Patterns/regex/Simple literal: Collecting 100 samples in estimated 5.0000 s (355M iterations)
+Benchmarking Literal Patterns/regex/Simple literal: Analyzing
+Literal Patterns/regex/Simple literal
+                        time:   [13.449 ns 13.644 ns 13.858 ns]
+                        change: [+1.9841% +2.9548% +4.0794%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 13 outliers among 100 measurements (13.00%)
+  5 (5.00%) high mild
+  8 (8.00%) high severe
+Benchmarking Literal Patterns/rexile/Another literal
+Benchmarking Literal Patterns/rexile/Another literal: Warming up for 3.0000 s
+Benchmarking Literal Patterns/rexile/Another literal: Collecting 100 samples in estimated 5.0003 s (34M iterations)
+Benchmarking Literal Patterns/rexile/Another literal: Analyzing
+Literal Patterns/rexile/Another literal
+                        time:   [147.40 ns 148.61 ns 149.77 ns]
+                        change: [+9.9244% +11.574% +13.248%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 4 outliers among 100 measurements (4.00%)
+  2 (2.00%) high mild
+  2 (2.00%) high severe
+Benchmarking Literal Patterns/regex/Another literal
+Benchmarking Literal Patterns/regex/Another literal: Warming up for 3.0000 s
+Benchmarking Literal Patterns/regex/Another literal: Collecting 100 samples in estimated 5.0001 s (362M iterations)
+Benchmarking Literal Patterns/regex/Another literal: Analyzing
+Literal Patterns/regex/Another literal
+                        time:   [12.978 ns 13.015 ns 13.055 ns]
+                        change: [+0.1270% +0.4796% +0.8658%] (p = 0.01 < 0.05)
+                        Change within noise threshold.
+Found 2 outliers among 100 measurements (2.00%)
+  1 (1.00%) high mild
+  1 (1.00%) high severe
+Benchmarking Literal Patterns/rexile/Multi-word literal
+Benchmarking Literal Patterns/rexile/Multi-word literal: Warming up for 3.0000 s
+Benchmarking Literal Patterns/rexile/Multi-word literal: Collecting 100 samples in estimated 5.0001 s (220M iterations)
+Benchmarking Literal Patterns/rexile/Multi-word literal: Analyzing
+Literal Patterns/rexile/Multi-word literal
+                        time:   [21.990 ns 23.219 ns 24.897 ns]
+                        change: [-82.715% -82.187% -81.542%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 13 outliers among 100 measurements (13.00%)
+  8 (8.00%) high mild
+  5 (5.00%) high severe
+Benchmarking Literal Patterns/regex/Multi-word literal
+Benchmarking Literal Patterns/regex/Multi-word literal: Warming up for 3.0000 s
+Benchmarking Literal Patterns/regex/Multi-word literal: Collecting 100 samples in estimated 5.0000 s (355M iterations)
+Benchmarking Literal Patterns/regex/Multi-word literal: Analyzing
+Literal Patterns/regex/Multi-word literal
+                        time:   [13.565 ns 13.757 ns 13.985 ns]
+                        change: [+2.5745% +4.7171% +7.1702%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 15 outliers among 100 measurements (15.00%)
+  5 (5.00%) high mild
+  10 (10.00%) high severe
+
+Benchmarking Anchored Patterns/rexile/Start anchor
+Benchmarking Anchored Patterns/rexile/Start anchor: Warming up for 3.0000 s
+Benchmarking Anchored Patterns/rexile/Start anchor: Collecting 100 samples in estimated 5.0000 s (1.1B iterations)
+Benchmarking Anchored Patterns/rexile/Start anchor: Analyzing
+Anchored Patterns/rexile/Start anchor
+                        time:   [4.5502 ns 4.6383 ns 4.7414 ns]
+                        change: [-4.2688% -3.2033% -2.0789%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 7 outliers among 100 measurements (7.00%)
+  1 (1.00%) high mild
+  6 (6.00%) high severe
+Benchmarking Anchored Patterns/regex/Start anchor
+Benchmarking Anchored Patterns/regex/Start anchor: Warming up for 3.0000 s
+Benchmarking Anchored Patterns/regex/Start anchor: Collecting 100 samples in estimated 5.0000 s (353M iterations)
+Benchmarking Anchored Patterns/regex/Start anchor: Analyzing
+Anchored Patterns/regex/Start anchor
+                        time:   [14.234 ns 14.438 ns 14.669 ns]
+                        change: [-1.1973% -0.0995% +1.0066%] (p = 0.88 > 0.05)
+                        No change in performance detected.
+Found 12 outliers among 100 measurements (12.00%)
+  5 (5.00%) high mild
+  7 (7.00%) high severe
+Benchmarking Anchored Patterns/rexile/End anchor
+Benchmarking Anchored Patterns/rexile/End anchor: Warming up for 3.0000 s
+Benchmarking Anchored Patterns/rexile/End anchor: Collecting 100 samples in estimated 5.0000 s (1.1B iterations)
+Benchmarking Anchored Patterns/rexile/End anchor: Analyzing
+Anchored Patterns/rexile/End anchor
+                        time:   [4.1035 ns 4.1279 ns 4.1526 ns]
+                        change: [-2.8518% -1.9992% -1.1905%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 7 outliers among 100 measurements (7.00%)
+  7 (7.00%) high mild
+Benchmarking Anchored Patterns/regex/End anchor
+Benchmarking Anchored Patterns/regex/End anchor: Warming up for 3.0000 s
+Benchmarking Anchored Patterns/regex/End anchor: Collecting 100 samples in estimated 5.0000 s (195M iterations)
+Benchmarking Anchored Patterns/regex/End anchor: Analyzing
+Anchored Patterns/regex/End anchor
+                        time:   [23.933 ns 24.486 ns 25.133 ns]
+                        change: [-2.0506% -1.0650% +0.2714%] (p = 0.06 > 0.05)
+                        No change in performance detected.
+Found 6 outliers among 100 measurements (6.00%)
+  2 (2.00%) high mild
+  4 (4.00%) high severe
+Benchmarking Anchored Patterns/rexile/Start with phrase
+Benchmarking Anchored Patterns/rexile/Start with phrase: Warming up for 3.0000 s
+Benchmarking Anchored Patterns/rexile/Start with phrase: Collecting 100 samples in estimated 5.0000 s (1.1B iterations)
+Benchmarking Anchored Patterns/rexile/Start with phrase: Analyzing
+Anchored Patterns/rexile/Start with phrase
+                        time:   [4.4881 ns 4.5230 ns 4.5627 ns]
+                        change: [-11.581% -10.143% -8.6624%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 5 outliers among 100 measurements (5.00%)
+  1 (1.00%) low mild
+  2 (2.00%) high mild
+  2 (2.00%) high severe
+Benchmarking Anchored Patterns/regex/Start with phrase
+Benchmarking Anchored Patterns/regex/Start with phrase: Warming up for 3.0000 s
+Benchmarking Anchored Patterns/regex/Start with phrase: Collecting 100 samples in estimated 5.0001 s (262M iterations)
+Benchmarking Anchored Patterns/regex/Start with phrase: Analyzing
+Anchored Patterns/regex/Start with phrase
+                        time:   [17.043 ns 17.095 ns 17.158 ns]
+                        change: [-6.1885% -2.7848% +0.1160%] (p = 0.11 > 0.05)
+                        No change in performance detected.
+Found 3 outliers among 100 measurements (3.00%)
+  1 (1.00%) high mild
+  2 (2.00%) high severe
+
+Benchmarking Character Classes/rexile/Lowercase letters
+Benchmarking Character Classes/rexile/Lowercase letters: Warming up for 3.0000 s
+Benchmarking Character Classes/rexile/Lowercase letters: Collecting 100 samples in estimated 5.0002 s (54M iterations)
+Benchmarking Character Classes/rexile/Lowercase letters: Analyzing
+Character Classes/rexile/Lowercase letters
+                        time:   [90.177 ns 90.684 ns 91.293 ns]
+                        change: [-50.396% -50.123% -49.796%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 3 outliers among 100 measurements (3.00%)
+  1 (1.00%) high mild
+  2 (2.00%) high severe
+Benchmarking Character Classes/regex/Lowercase letters
+Benchmarking Character Classes/regex/Lowercase letters: Warming up for 3.0000 s
+Benchmarking Character Classes/regex/Lowercase letters: Collecting 100 samples in estimated 5.0000 s (371M iterations)
+Benchmarking Character Classes/regex/Lowercase letters: Analyzing
+Character Classes/regex/Lowercase letters
+                        time:   [13.344 ns 13.595 ns 13.914 ns]
+                        change: [-0.3250% +0.5118% +1.6038%] (p = 0.33 > 0.05)
+                        No change in performance detected.
+Found 6 outliers among 100 measurements (6.00%)
+  1 (1.00%) high mild
+  5 (5.00%) high severe
+Benchmarking Character Classes/rexile/Digits
+Benchmarking Character Classes/rexile/Digits: Warming up for 3.0000 s
+Benchmarking Character Classes/rexile/Digits: Collecting 100 samples in estimated 5.0004 s (12M iterations)
+Benchmarking Character Classes/rexile/Digits: Analyzing
+Character Classes/rexile/Digits
+                        time:   [400.18 ns 410.08 ns 422.06 ns]
+                        change: [-0.8750% +0.4858% +1.8105%] (p = 0.52 > 0.05)
+                        No change in performance detected.
+Found 15 outliers among 100 measurements (15.00%)
+  4 (4.00%) high mild
+  11 (11.00%) high severe
+Benchmarking Character Classes/regex/Digits
+Benchmarking Character Classes/regex/Digits: Warming up for 3.0000 s
+Benchmarking Character Classes/regex/Digits: Collecting 100 samples in estimated 5.0001 s (140M iterations)
+Benchmarking Character Classes/regex/Digits: Analyzing
+Character Classes/regex/Digits
+                        time:   [34.851 ns 35.457 ns 36.275 ns]
+                        change: [+0.6915% +2.8120% +5.6753%] (p = 0.01 < 0.05)
+                        Change within noise threshold.
+Found 12 outliers among 100 measurements (12.00%)
+  1 (1.00%) high mild
+  11 (11.00%) high severe
+Benchmarking Character Classes/rexile/All letters
+Benchmarking Character Classes/rexile/All letters: Warming up for 3.0000 s
+Benchmarking Character Classes/rexile/All letters: Collecting 100 samples in estimated 5.0004 s (54M iterations)
+Benchmarking Character Classes/rexile/All letters: Analyzing
+Character Classes/rexile/All letters
+                        time:   [90.197 ns 90.745 ns 91.313 ns]
+                        change: [-50.701% -49.758% -48.853%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 8 outliers among 100 measurements (8.00%)
+  3 (3.00%) high mild
+  5 (5.00%) high severe
+Benchmarking Character Classes/regex/All letters
+Benchmarking Character Classes/regex/All letters: Warming up for 3.0000 s
+Benchmarking Character Classes/regex/All letters: Collecting 100 samples in estimated 5.0001 s (363M iterations)
+Benchmarking Character Classes/regex/All letters: Analyzing
+Character Classes/regex/All letters
+                        time:   [13.329 ns 13.389 ns 13.457 ns]
+                        change: [-1.6703% -1.0889% -0.5780%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 4 outliers among 100 measurements (4.00%)
+  2 (2.00%) high mild
+  2 (2.00%) high severe
+Benchmarking Character Classes/rexile/Non-digits
+Benchmarking Character Classes/rexile/Non-digits: Warming up for 3.0000 s
+Benchmarking Character Classes/rexile/Non-digits: Collecting 100 samples in estimated 5.0004 s (54M iterations)
+Benchmarking Character Classes/rexile/Non-digits: Analyzing
+Character Classes/rexile/Non-digits
+                        time:   [89.565 ns 90.020 ns 90.499 ns]
+                        change: [-47.887% -47.693% -47.501%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 2 outliers among 100 measurements (2.00%)
+  2 (2.00%) high mild
+Benchmarking Character Classes/regex/Non-digits
+Benchmarking Character Classes/regex/Non-digits: Warming up for 3.0000 s
+Benchmarking Character Classes/regex/Non-digits: Collecting 100 samples in estimated 5.0000 s (368M iterations)
+Benchmarking Character Classes/regex/Non-digits: Analyzing
+Character Classes/regex/Non-digits
+                        time:   [13.173 ns 13.265 ns 13.425 ns]
+                        change: [-0.7494% -0.3493% +0.2012%] (p = 0.15 > 0.05)
+                        No change in performance detected.
+Found 2 outliers among 100 measurements (2.00%)
+  2 (2.00%) high severe
+
+Benchmarking Escape Sequences/rexile/Digits
+Benchmarking Escape Sequences/rexile/Digits: Warming up for 3.0000 s
+Benchmarking Escape Sequences/rexile/Digits: Collecting 100 samples in estimated 5.0018 s (9.8M iterations)
+Benchmarking Escape Sequences/rexile/Digits: Analyzing
+Escape Sequences/rexile/Digits
+                        time:   [500.46 ns 514.02 ns 532.72 ns]
+                        change: [-3.0111% -1.3655% +0.6156%] (p = 0.16 > 0.05)
+                        No change in performance detected.
+Found 16 outliers among 100 measurements (16.00%)
+  2 (2.00%) low mild
+  2 (2.00%) high mild
+  12 (12.00%) high severe
+Benchmarking Escape Sequences/regex/Digits
+Benchmarking Escape Sequences/regex/Digits: Warming up for 3.0000 s
+Benchmarking Escape Sequences/regex/Digits: Collecting 100 samples in estimated 5.0000 s (349M iterations)
+Benchmarking Escape Sequences/regex/Digits: Analyzing
+Escape Sequences/regex/Digits
+                        time:   [14.265 ns 14.523 ns 14.868 ns]
+                        change: [+0.9570% +2.7494% +4.5374%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 10 outliers among 100 measurements (10.00%)
+  10 (10.00%) high severe
+Benchmarking Escape Sequences/rexile/Word chars
+Benchmarking Escape Sequences/rexile/Word chars: Warming up for 3.0000 s
+Benchmarking Escape Sequences/rexile/Word chars: Collecting 100 samples in estimated 5.0004 s (52M iterations)
+Benchmarking Escape Sequences/rexile/Word chars: Analyzing
+Escape Sequences/rexile/Word chars
+                        time:   [92.456 ns 92.626 ns 92.822 ns]
+                        change: [-51.488% -51.321% -51.169%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 4 outliers among 100 measurements (4.00%)
+  4 (4.00%) high mild
+Benchmarking Escape Sequences/regex/Word chars
+Benchmarking Escape Sequences/regex/Word chars: Warming up for 3.0000 s
+Benchmarking Escape Sequences/regex/Word chars: Collecting 100 samples in estimated 5.0000 s (363M iterations)
+Benchmarking Escape Sequences/regex/Word chars: Analyzing
+Escape Sequences/regex/Word chars
+                        time:   [13.141 ns 13.181 ns 13.230 ns]
+                        change: [-1.2025% -0.5951% +0.0734%] (p = 0.07 > 0.05)
+                        No change in performance detected.
+Found 4 outliers among 100 measurements (4.00%)
+  1 (1.00%) high mild
+  3 (3.00%) high severe
+Benchmarking Escape Sequences/rexile/Whitespace
+Benchmarking Escape Sequences/rexile/Whitespace: Warming up for 3.0000 s
+Benchmarking Escape Sequences/rexile/Whitespace: Collecting 100 samples in estimated 5.0001 s (12M iterations)
+Benchmarking Escape Sequences/rexile/Whitespace: Analyzing
+Escape Sequences/rexile/Whitespace
+                        time:   [409.88 ns 411.64 ns 413.64 ns]
+                        change: [-3.2201% -2.3376% -1.6205%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 4 outliers among 100 measurements (4.00%)
+  1 (1.00%) high mild
+  3 (3.00%) high severe
+Benchmarking Escape Sequences/regex/Whitespace
+Benchmarking Escape Sequences/regex/Whitespace: Warming up for 3.0000 s
+Benchmarking Escape Sequences/regex/Whitespace: Collecting 100 samples in estimated 5.0001 s (351M iterations)
+Benchmarking Escape Sequences/regex/Whitespace: Analyzing
+Escape Sequences/regex/Whitespace
+                        time:   [13.810 ns 13.941 ns 14.137 ns]
+                        change: [-1.5731% -0.5284% +0.6599%] (p = 0.38 > 0.05)
+                        No change in performance detected.
+Found 10 outliers among 100 measurements (10.00%)
+  1 (1.00%) low severe
+  1 (1.00%) low mild
+  4 (4.00%) high mild
+  4 (4.00%) high severe
+Benchmarking Escape Sequences/rexile/Mixed sequence
+Benchmarking Escape Sequences/rexile/Mixed sequence: Warming up for 3.0000 s
+Benchmarking Escape Sequences/rexile/Mixed sequence: Collecting 100 samples in estimated 5.0030 s (7.7M iterations)
+Benchmarking Escape Sequences/rexile/Mixed sequence: Analyzing
+Escape Sequences/rexile/Mixed sequence
+                        time:   [646.64 ns 665.47 ns 691.12 ns]
+                        change: [-5.4195% -2.2624% +1.0645%] (p = 0.18 > 0.05)
+                        No change in performance detected.
+Found 8 outliers among 100 measurements (8.00%)
+  1 (1.00%) high mild
+  7 (7.00%) high severe
+Benchmarking Escape Sequences/regex/Mixed sequence
+Benchmarking Escape Sequences/regex/Mixed sequence: Warming up for 3.0000 s
+Benchmarking Escape Sequences/regex/Mixed sequence: Collecting 100 samples in estimated 5.0000 s (316M iterations)
+Benchmarking Escape Sequences/regex/Mixed sequence: Analyzing
+Escape Sequences/regex/Mixed sequence
+                        time:   [15.212 ns 15.315 ns 15.457 ns]
+                        change: [+1.5927% +3.3987% +5.2827%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 21 outliers among 100 measurements (21.00%)
+  4 (4.00%) high mild
+  17 (17.00%) high severe
+
+Benchmarking Quantifiers/rexile/Plus
+Benchmarking Quantifiers/rexile/Plus: Warming up for 3.0000 s
+Benchmarking Quantifiers/rexile/Plus: Collecting 100 samples in estimated 5.0004 s (56M iterations)
+Benchmarking Quantifiers/rexile/Plus: Analyzing
+Quantifiers/rexile/Plus time:   [87.090 ns 87.427 ns 87.814 ns]
+                        change: [-50.009% -49.810% -49.583%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 4 outliers among 100 measurements (4.00%)
+  2 (2.00%) high mild
+  2 (2.00%) high severe
+Benchmarking Quantifiers/regex/Plus
+Benchmarking Quantifiers/regex/Plus: Warming up for 3.0000 s
+Benchmarking Quantifiers/regex/Plus: Collecting 100 samples in estimated 5.0001 s (279M iterations)
+Benchmarking Quantifiers/regex/Plus: Analyzing
+Quantifiers/regex/Plus  time:   [17.464 ns 17.642 ns 17.875 ns]
+                        change: [-1.8442% -1.1572% -0.4006%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 11 outliers among 100 measurements (11.00%)
+  8 (8.00%) high mild
+  3 (3.00%) high severe
+Benchmarking Quantifiers/rexile/Star
+Benchmarking Quantifiers/rexile/Star: Warming up for 3.0000 s
+Benchmarking Quantifiers/rexile/Star: Collecting 100 samples in estimated 5.0004 s (64M iterations)
+Benchmarking Quantifiers/rexile/Star: Analyzing
+Quantifiers/rexile/Star time:   [77.291 ns 77.545 ns 77.837 ns]
+                        change: [-51.378% -51.194% -51.017%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 4 outliers among 100 measurements (4.00%)
+  4 (4.00%) high mild
+Benchmarking Quantifiers/regex/Star
+Benchmarking Quantifiers/regex/Star: Warming up for 3.0000 s
+Benchmarking Quantifiers/regex/Star: Collecting 100 samples in estimated 5.0000 s (312M iterations)
+Benchmarking Quantifiers/regex/Star: Analyzing
+Quantifiers/regex/Star  time:   [15.898 ns 16.083 ns 16.282 ns]
+                        change: [-1.4217% +0.1144% +1.7072%] (p = 0.88 > 0.05)
+                        No change in performance detected.
+Found 12 outliers among 100 measurements (12.00%)
+  9 (9.00%) high mild
+  3 (3.00%) high severe
+Benchmarking Quantifiers/rexile/Question
+Benchmarking Quantifiers/rexile/Question: Warming up for 3.0000 s
+Benchmarking Quantifiers/rexile/Question: Collecting 100 samples in estimated 5.0000 s (61M iterations)
+Benchmarking Quantifiers/rexile/Question: Analyzing
+Quantifiers/rexile/Question
+                        time:   [77.363 ns 77.637 ns 77.997 ns]
+                        change: [-52.997% -52.256% -51.629%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 2 outliers among 100 measurements (2.00%)
+  1 (1.00%) high mild
+  1 (1.00%) high severe
+Benchmarking Quantifiers/regex/Question
+Benchmarking Quantifiers/regex/Question: Warming up for 3.0000 s
+Benchmarking Quantifiers/regex/Question: Collecting 100 samples in estimated 5.0000 s (313M iterations)
+Benchmarking Quantifiers/regex/Question: Analyzing
+Quantifiers/regex/Question
+                        time:   [15.679 ns 15.737 ns 15.803 ns]
+                        change: [-3.5082% -2.4310% -1.5171%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 4 outliers among 100 measurements (4.00%)
+  2 (2.00%) low mild
+  2 (2.00%) high severe
+Benchmarking Quantifiers/rexile/Multiple plus
+Benchmarking Quantifiers/rexile/Multiple plus: Warming up for 3.0000 s
+Benchmarking Quantifiers/rexile/Multiple plus: Collecting 100 samples in estimated 5.0006 s (25M iterations)
+Benchmarking Quantifiers/rexile/Multiple plus: Analyzing
+Quantifiers/rexile/Multiple plus
+                        time:   [200.32 ns 201.27 ns 202.39 ns]
+                        change: [-29.339% -28.859% -28.256%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 7 outliers among 100 measurements (7.00%)
+  2 (2.00%) high mild
+  5 (5.00%) high severe
+Benchmarking Quantifiers/regex/Multiple plus
+Benchmarking Quantifiers/regex/Multiple plus: Warming up for 3.0000 s
+Benchmarking Quantifiers/regex/Multiple plus: Collecting 100 samples in estimated 5.0000 s (266M iterations)
+Benchmarking Quantifiers/regex/Multiple plus: Analyzing
+Quantifiers/regex/Multiple plus
+                        time:   [18.573 ns 18.666 ns 18.779 ns]
+                        change: [-3.5846% -3.0250% -2.4335%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 2 outliers among 100 measurements (2.00%)
+  1 (1.00%) high mild
+  1 (1.00%) high severe
+
+Benchmarking Groups/rexile/Simple group
+Benchmarking Groups/rexile/Simple group: Warming up for 3.0000 s
+Benchmarking Groups/rexile/Simple group: Collecting 100 samples in estimated 5.0000 s (508M iterations)
+Benchmarking Groups/rexile/Simple group: Analyzing
+Groups/rexile/Simple group
+                        time:   [9.6983 ns 9.7418 ns 9.8000 ns]
+                        change: [-89.147% -89.090% -89.033%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 8 outliers among 100 measurements (8.00%)
+  1 (1.00%) low mild
+  5 (5.00%) high mild
+  2 (2.00%) high severe
+Benchmarking Groups/regex/Simple group
+Benchmarking Groups/regex/Simple group: Warming up for 3.0000 s
+Benchmarking Groups/regex/Simple group: Collecting 100 samples in estimated 5.0001 s (252M iterations)
+Benchmarking Groups/regex/Simple group: Analyzing
+Groups/regex/Simple group
+                        time:   [19.509 ns 19.816 ns 20.213 ns]
+                        change: [-3.0138% -1.2221% +0.6330%] (p = 0.20 > 0.05)
+                        No change in performance detected.
+Found 9 outliers among 100 measurements (9.00%)
+  9 (9.00%) high severe
+Benchmarking Groups/rexile/Alternation group
+Benchmarking Groups/rexile/Alternation group: Warming up for 3.0000 s
+Benchmarking Groups/rexile/Alternation group: Collecting 100 samples in estimated 5.0000 s (891M iterations)
+Benchmarking Groups/rexile/Alternation group: Analyzing
+Groups/rexile/Alternation group
+                        time:   [5.4429 ns 5.4652 ns 5.4908 ns]
+                        change: [-93.902% -93.792% -93.695%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 2 outliers among 100 measurements (2.00%)
+  2 (2.00%) high severe
+Benchmarking Groups/regex/Alternation group
+Benchmarking Groups/regex/Alternation group: Warming up for 3.0000 s
+Benchmarking Groups/regex/Alternation group: Collecting 100 samples in estimated 5.0002 s (137M iterations)
+Benchmarking Groups/regex/Alternation group: Analyzing
+Groups/regex/Alternation group
+                        time:   [36.354 ns 36.608 ns 36.907 ns]
+                        change: [-0.2349% +0.2545% +0.7866%] (p = 0.33 > 0.05)
+                        No change in performance detected.
+Found 6 outliers among 100 measurements (6.00%)
+  3 (3.00%) high mild
+  3 (3.00%) high severe
+Benchmarking Groups/rexile/Anchored group
+Benchmarking Groups/rexile/Anchored group: Warming up for 3.0000 s
+Benchmarking Groups/rexile/Anchored group: Collecting 100 samples in estimated 5.0000 s (1.1B iterations)
+Benchmarking Groups/rexile/Anchored group: Analyzing
+Groups/rexile/Anchored group
+                        time:   [4.5349 ns 4.5720 ns 4.6103 ns]
+                        change: [-2.8665% -1.9933% -1.2160%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Benchmarking Groups/regex/Anchored group
+Benchmarking Groups/regex/Anchored group: Warming up for 3.0000 s
+Benchmarking Groups/regex/Anchored group: Collecting 100 samples in estimated 5.0001 s (377M iterations)
+Benchmarking Groups/regex/Anchored group: Analyzing
+Groups/regex/Anchored group
+                        time:   [12.953 ns 12.991 ns 13.028 ns]
+                        change: [+1.0266% +1.3062% +1.5841%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking Groups/rexile/Group with escape
+Benchmarking Groups/rexile/Group with escape: Warming up for 3.0000 s
+Benchmarking Groups/rexile/Group with escape: Collecting 100 samples in estimated 5.0001 s (8.8M iterations)
+Benchmarking Groups/rexile/Group with escape: Analyzing
+Groups/rexile/Group with escape
+                        time:   [562.50 ns 570.84 ns 580.09 ns]
+                        change: [-1.1783% -0.0478% +1.3699%] (p = 0.94 > 0.05)
+                        No change in performance detected.
+Found 12 outliers among 100 measurements (12.00%)
+  5 (5.00%) high mild
+  7 (7.00%) high severe
+Benchmarking Groups/regex/Group with escape
+Benchmarking Groups/regex/Group with escape: Warming up for 3.0000 s
+Benchmarking Groups/regex/Group with escape: Collecting 100 samples in estimated 5.0000 s (267M iterations)
+Benchmarking Groups/regex/Group with escape: Analyzing
+Groups/regex/Group with escape
+                        time:   [18.294 ns 19.113 ns 20.213 ns]
+                        change: [+1.0230% +3.1764% +5.8398%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 8 outliers among 100 measurements (8.00%)
+  1 (1.00%) high mild
+  7 (7.00%) high severe
+Benchmarking Groups/rexile/Group with suffix
+Benchmarking Groups/rexile/Group with suffix: Warming up for 3.0000 s
+Benchmarking Groups/rexile/Group with suffix: Collecting 100 samples in estimated 5.0020 s (8.3M iterations)
+Benchmarking Groups/rexile/Group with suffix: Analyzing
+Groups/rexile/Group with suffix
+                        time:   [587.11 ns 589.22 ns 591.40 ns]
+                        change: [-2.3221% -1.6464% -1.0945%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 100 measurements (1.00%)
+  1 (1.00%) high severe
+Benchmarking Groups/regex/Group with suffix
+Benchmarking Groups/regex/Group with suffix: Warming up for 3.0000 s
+Benchmarking Groups/regex/Group with suffix: Collecting 100 samples in estimated 5.0000 s (402M iterations)
+Benchmarking Groups/regex/Group with suffix: Analyzing
+Groups/regex/Group with suffix
+                        time:   [12.184 ns 12.252 ns 12.339 ns]
+                        change: [+4.3616% +5.0994% +5.9411%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 3 outliers among 100 measurements (3.00%)
+  1 (1.00%) high mild
+  2 (2.00%) high severe
+
+Benchmarking Alternation/rexile/2 alternatives
+Benchmarking Alternation/rexile/2 alternatives: Warming up for 3.0000 s
+Benchmarking Alternation/rexile/2 alternatives: Collecting 100 samples in estimated 5.0000 s (237M iterations)
+Benchmarking Alternation/rexile/2 alternatives: Analyzing
+Alternation/rexile/2 alternatives
+                        time:   [20.221 ns 20.365 ns 20.552 ns]
+                        change: [-17.315% -12.783% -8.5511%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 8 outliers among 100 measurements (8.00%)
+  5 (5.00%) high mild
+  3 (3.00%) high severe
+Benchmarking Alternation/regex/2 alternatives
+Benchmarking Alternation/regex/2 alternatives: Warming up for 3.0000 s
+Benchmarking Alternation/regex/2 alternatives: Collecting 100 samples in estimated 5.0000 s (231M iterations)
+Benchmarking Alternation/regex/2 alternatives: Analyzing
+Alternation/regex/2 alternatives
+                        time:   [21.206 ns 21.269 ns 21.366 ns]
+                        change: [-2.8512% -1.5033% -0.2728%] (p = 0.02 < 0.05)
+                        Change within noise threshold.
+Found 4 outliers among 100 measurements (4.00%)
+  3 (3.00%) high mild
+  1 (1.00%) high severe
+Benchmarking Alternation/rexile/3 alternatives
+Benchmarking Alternation/rexile/3 alternatives: Warming up for 3.0000 s
+Benchmarking Alternation/rexile/3 alternatives: Collecting 100 samples in estimated 5.0000 s (227M iterations)
+Benchmarking Alternation/rexile/3 alternatives: Analyzing
+Alternation/rexile/3 alternatives
+                        time:   [21.042 ns 21.174 ns 21.338 ns]
+                        change: [-5.5712% -3.7184% -2.0587%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 14 outliers among 100 measurements (14.00%)
+  2 (2.00%) low mild
+  4 (4.00%) high mild
+  8 (8.00%) high severe
+Benchmarking Alternation/regex/3 alternatives
+Benchmarking Alternation/regex/3 alternatives: Warming up for 3.0000 s
+Benchmarking Alternation/regex/3 alternatives: Collecting 100 samples in estimated 5.0001 s (245M iterations)
+Benchmarking Alternation/regex/3 alternatives: Analyzing
+Alternation/regex/3 alternatives
+                        time:   [19.763 ns 19.825 ns 19.898 ns]
+                        change: [-12.045% -7.3436% -3.0912%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 6 outliers among 100 measurements (6.00%)
+  1 (1.00%) high mild
+  5 (5.00%) high severe
+Benchmarking Alternation/rexile/5 alternatives
+Benchmarking Alternation/rexile/5 alternatives: Warming up for 3.0000 s
+Benchmarking Alternation/rexile/5 alternatives: Collecting 100 samples in estimated 5.0002 s (93M iterations)
+Benchmarking Alternation/rexile/5 alternatives: Analyzing
+Alternation/rexile/5 alternatives
+                        time:   [53.063 ns 53.459 ns 53.933 ns]
+                        change: [+3.0026% +5.8116% +8.6796%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 9 outliers among 100 measurements (9.00%)
+  4 (4.00%) high mild
+  5 (5.00%) high severe
+Benchmarking Alternation/regex/5 alternatives
+Benchmarking Alternation/regex/5 alternatives: Warming up for 3.0000 s
+Benchmarking Alternation/regex/5 alternatives: Collecting 100 samples in estimated 5.0001 s (236M iterations)
+Benchmarking Alternation/regex/5 alternatives: Analyzing
+Alternation/regex/5 alternatives
+                        time:   [21.069 ns 21.158 ns 21.260 ns]
+                        change: [+2.4496% +3.1186% +3.8090%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 9 outliers among 100 measurements (9.00%)
+  5 (5.00%) high mild
+  4 (4.00%) high severe
+
+Benchmarking Find All/rexile/Simple literal
+Benchmarking Find All/rexile/Simple literal: Warming up for 3.0000 s
+Benchmarking Find All/rexile/Simple literal: Collecting 100 samples in estimated 5.0005 s (20M iterations)
+Benchmarking Find All/rexile/Simple literal: Analyzing
+Find All/rexile/Simple literal
+                        time:   [262.12 ns 277.36 ns 294.25 ns]
+                        change: [-0.5232% +4.8424% +10.024%] (p = 0.07 > 0.05)
+                        No change in performance detected.
+Found 6 outliers among 100 measurements (6.00%)
+  3 (3.00%) high mild
+  3 (3.00%) high severe
+Benchmarking Find All/regex/Simple literal
+Benchmarking Find All/regex/Simple literal: Warming up for 3.0000 s
+Benchmarking Find All/regex/Simple literal: Collecting 100 samples in estimated 5.0001 s (86M iterations)
+Benchmarking Find All/regex/Simple literal: Analyzing
+Find All/regex/Simple literal
+                        time:   [47.430 ns 49.120 ns 51.478 ns]
+                        change: [+5.0788% +7.8206% +10.811%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 2 outliers among 100 measurements (2.00%)
+  2 (2.00%) high severe
+Benchmarking Find All/rexile/Digits
+Benchmarking Find All/rexile/Digits: Warming up for 3.0000 s
+Benchmarking Find All/rexile/Digits: Collecting 100 samples in estimated 5.0081 s (2.1M iterations)
+Benchmarking Find All/rexile/Digits: Analyzing
+Find All/rexile/Digits  time:   [2.5822 µs 2.6443 µs 2.7146 µs]
+                        change: [+18.574% +22.847% +27.254%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking Find All/regex/Digits
+Benchmarking Find All/regex/Digits: Warming up for 3.0000 s
+Benchmarking Find All/regex/Digits: Collecting 100 samples in estimated 5.0002 s (72M iterations)
+Benchmarking Find All/regex/Digits: Analyzing
+Find All/regex/Digits   time:   [69.122 ns 69.258 ns 69.420 ns]
+                        change: [+2.1481% +2.8495% +3.7923%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 7 outliers among 100 measurements (7.00%)
+  4 (4.00%) low mild
+  3 (3.00%) high severe
+Benchmarking Find All/rexile/Literal + digit
+Benchmarking Find All/rexile/Literal + digit: Warming up for 3.0000 s
+Benchmarking Find All/rexile/Literal + digit: Collecting 100 samples in estimated 5.0003 s (10M iterations)
+Benchmarking Find All/rexile/Literal + digit: Analyzing
+Find All/rexile/Literal + digit
+                        time:   [497.16 ns 498.72 ns 500.36 ns]
+                        change: [-0.7625% -0.4105% -0.0268%] (p = 0.03 < 0.05)
+                        Change within noise threshold.
+Found 18 outliers among 100 measurements (18.00%)
+  4 (4.00%) low severe
+  8 (8.00%) low mild
+  3 (3.00%) high mild
+  3 (3.00%) high severe
+Benchmarking Find All/regex/Literal + digit
+Benchmarking Find All/regex/Literal + digit: Warming up for 3.0000 s
+Benchmarking Find All/regex/Literal + digit: Collecting 100 samples in estimated 5.0004 s (44M iterations)
+Benchmarking Find All/regex/Literal + digit: Analyzing
+Find All/regex/Literal + digit
+                        time:   [107.72 ns 107.96 ns 108.19 ns]
+                        change: [-3.2328% -2.4264% -1.8039%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 5 outliers among 100 measurements (5.00%)
+  5 (5.00%) high mild
+
+Benchmarking Large Text/rexile/Simple literal
+Benchmarking Large Text/rexile/Simple literal: Warming up for 3.0000 s
+Benchmarking Large Text/rexile/Simple literal: Collecting 100 samples in estimated 5.0001 s (393M iterations)
+Benchmarking Large Text/rexile/Simple literal: Analyzing
+Large Text/rexile/Simple literal
+                        time:   [11.176 ns 11.218 ns 11.266 ns]
+                        change: [-1.1598% -0.7126% -0.2552%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 13 outliers among 100 measurements (13.00%)
+  6 (6.00%) low mild
+  5 (5.00%) high mild
+  2 (2.00%) high severe
+Benchmarking Large Text/regex/Simple literal
+Benchmarking Large Text/regex/Simple literal: Warming up for 3.0000 s
+Benchmarking Large Text/regex/Simple literal: Collecting 100 samples in estimated 5.0000 s (393M iterations)
+Benchmarking Large Text/regex/Simple literal: Analyzing
+Large Text/regex/Simple literal
+                        time:   [12.805 ns 12.908 ns 13.042 ns]
+                        change: [-2.2980% +0.2509% +2.5892%] (p = 0.85 > 0.05)
+                        No change in performance detected.
+Found 13 outliers among 100 measurements (13.00%)
+  1 (1.00%) high mild
+  12 (12.00%) high severe
+Benchmarking Large Text/rexile/Word pattern
+Benchmarking Large Text/rexile/Word pattern: Warming up for 3.0000 s
+Benchmarking Large Text/rexile/Word pattern: Collecting 100 samples in estimated 5.0281 s (732k iterations)
+Benchmarking Large Text/rexile/Word pattern: Analyzing
+Large Text/rexile/Word pattern
+                        time:   [6.6119 µs 6.6652 µs 6.7340 µs]
+                        change: [-3.4217% +0.9314% +5.6160%] (p = 0.69 > 0.05)
+                        No change in performance detected.
+Found 17 outliers among 100 measurements (17.00%)
+  1 (1.00%) high mild
+  16 (16.00%) high severe
+Benchmarking Large Text/regex/Word pattern
+Benchmarking Large Text/regex/Word pattern: Warming up for 3.0000 s
+Benchmarking Large Text/regex/Word pattern: Collecting 100 samples in estimated 5.0000 s (366M iterations)
+Benchmarking Large Text/regex/Word pattern: Analyzing
+Large Text/regex/Word pattern
+                        time:   [13.414 ns 13.510 ns 13.615 ns]
+                        change: [+0.8829% +1.4122% +1.9637%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 8 outliers among 100 measurements (8.00%)
+  1 (1.00%) low mild
+  3 (3.00%) high mild
+  4 (4.00%) high severe
+Benchmarking Large Text/rexile/Multi-word
+Benchmarking Large Text/rexile/Multi-word: Warming up for 3.0000 s
+Benchmarking Large Text/rexile/Multi-word: Collecting 100 samples in estimated 5.0000 s (221M iterations)
+Benchmarking Large Text/rexile/Multi-word: Analyzing
+Large Text/rexile/Multi-word
+                        time:   [21.011 ns 21.345 ns 21.717 ns]
+                        change: [-0.3439% +1.1206% +2.5443%] (p = 0.14 > 0.05)
+                        No change in performance detected.
+Found 13 outliers among 100 measurements (13.00%)
+  4 (4.00%) high mild
+  9 (9.00%) high severe
+Benchmarking Large Text/regex/Multi-word
+Benchmarking Large Text/regex/Multi-word: Warming up for 3.0000 s
+Benchmarking Large Text/regex/Multi-word: Collecting 100 samples in estimated 5.0000 s (352M iterations)
+Benchmarking Large Text/regex/Multi-word: Analyzing
+Large Text/regex/Multi-word
+                        time:   [13.900 ns 14.248 ns 14.660 ns]
+                        change: [+3.7797% +7.6981% +13.150%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 9 outliers among 100 measurements (9.00%)
+  2 (2.00%) high mild
+  7 (7.00%) high severe
+
+Benchmarking Real World Patterns/rexile/Email pattern
+Benchmarking Real World Patterns/rexile/Email pattern: Warming up for 3.0000 s
+Benchmarking Real World Patterns/rexile/Email pattern: Collecting 100 samples in estimated 5.0005 s (17M iterations)
+Benchmarking Real World Patterns/rexile/Email pattern: Analyzing
+Real World Patterns/rexile/Email pattern
+                        time:   [284.43 ns 287.37 ns 290.86 ns]
+                        change: [-27.762% -27.090% -26.422%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 3 outliers among 100 measurements (3.00%)
+  1 (1.00%) high mild
+  2 (2.00%) high severe
+Benchmarking Real World Patterns/regex/Email pattern
+Benchmarking Real World Patterns/regex/Email pattern: Warming up for 3.0000 s
+Benchmarking Real World Patterns/regex/Email pattern: Collecting 100 samples in estimated 5.0002 s (120M iterations)
+Benchmarking Real World Patterns/regex/Email pattern: Analyzing
+Real World Patterns/regex/Email pattern
+                        time:   [41.726 ns 42.886 ns 44.237 ns]
+                        change: [-9.2384% -6.0443% -3.1683%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 7 outliers among 100 measurements (7.00%)
+  2 (2.00%) high mild
+  5 (5.00%) high severe
+Benchmarking Real World Patterns/rexile/Version number
+Benchmarking Real World Patterns/rexile/Version number: Warming up for 3.0000 s
+Benchmarking Real World Patterns/rexile/Version number: Collecting 100 samples in estimated 5.0039 s (4.5M iterations)
+Benchmarking Real World Patterns/rexile/Version number: Analyzing
+Real World Patterns/rexile/Version number
+                        time:   [1.0616 µs 1.0753 µs 1.0912 µs]
+                        change: [-5.0583% -0.9571% +2.3150%] (p = 0.67 > 0.05)
+                        No change in performance detected.
+Found 8 outliers among 100 measurements (8.00%)
+  3 (3.00%) high mild
+  5 (5.00%) high severe
+Benchmarking Real World Patterns/regex/Version number
+Benchmarking Real World Patterns/regex/Version number: Warming up for 3.0000 s
+Benchmarking Real World Patterns/regex/Version number: Collecting 100 samples in estimated 5.0001 s (163M iterations)
+Benchmarking Real World Patterns/regex/Version number: Analyzing
+Real World Patterns/regex/Version number
+                        time:   [31.979 ns 33.445 ns 35.071 ns]
+                        change: [+5.6026% +9.4202% +13.244%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 11 outliers among 100 measurements (11.00%)
+  8 (8.00%) high mild
+  3 (3.00%) high severe
+Benchmarking Real World Patterns/rexile/URL pattern
+Benchmarking Real World Patterns/rexile/URL pattern: Warming up for 3.0000 s
+Benchmarking Real World Patterns/rexile/URL pattern: Collecting 100 samples in estimated 5.0006 s (12M iterations)
+Benchmarking Real World Patterns/rexile/URL pattern: Analyzing
+Real World Patterns/rexile/URL pattern
+                        time:   [441.35 ns 454.52 ns 469.72 ns]
+                        change: [+3.4397% +6.5085% +9.7700%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 11 outliers among 100 measurements (11.00%)
+  8 (8.00%) high mild
+  3 (3.00%) high severe
+Benchmarking Real World Patterns/regex/URL pattern
+Benchmarking Real World Patterns/regex/URL pattern: Warming up for 3.0000 s
+Benchmarking Real World Patterns/regex/URL pattern: Collecting 100 samples in estimated 5.0002 s (108M iterations)
+Benchmarking Real World Patterns/regex/URL pattern: Analyzing
+Real World Patterns/regex/URL pattern
+                        time:   [34.319 ns 35.573 ns 37.173 ns]
+                        change: [+14.588% +18.089% +21.810%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 2 outliers among 100 measurements (2.00%)
+  2 (2.00%) high mild
+

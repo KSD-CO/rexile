@@ -45,7 +45,65 @@ impl Pattern {
     }
 
     pub fn find_all(&self, text: &str) -> Vec<(usize, usize)> {
-        self.matcher.find_all(text)
+        // OPTIMIZED: Fast path for Literal using memchr's find_iter
+        match &self.matcher {
+            Matcher::Literal(lit) => {
+                // Use memmem::find_iter for direct SIMD iteration
+                memmem::find_iter(text.as_bytes(), lit.as_bytes())
+                    .map(|pos| (pos, pos + lit.len()))
+                    .collect()
+            }
+            Matcher::MultiLiteral(ac) => {
+                // AhoCorasick already has find_iter
+                ac.find_iter(text)
+                    .map(|mat| (mat.start(), mat.end()))
+                    .collect()
+            }
+            _ => {
+                // Complex patterns: use general iterator
+                self.find_iter(text).collect()
+            }
+        }
+    }
+    
+    /// Create an iterator over all matches (zero-allocation)
+    pub fn find_iter<'a>(&'a self, text: &'a str) -> FindIter<'a> {
+        FindIter {
+            matcher: &self.matcher,
+            text,
+            pos: 0,
+        }
+    }
+}
+
+/// Iterator over pattern matches (zero-allocation)
+pub struct FindIter<'a> {
+    matcher: &'a Matcher,
+    text: &'a str,
+    pos: usize,
+}
+
+impl<'a> Iterator for FindIter<'a> {
+    type Item = (usize, usize);
+    
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.pos >= self.text.len() {
+            return None;
+        }
+        
+        // Find next match starting from current position
+        let remaining = &self.text[self.pos..];
+        if let Some((rel_start, rel_end)) = self.matcher.find(remaining) {
+            let abs_start = self.pos + rel_start;
+            let abs_end = self.pos + rel_end;
+            
+            // Move position past this match to avoid infinite loop
+            self.pos = abs_end.max(self.pos + 1);
+            
+            Some((abs_start, abs_end))
+        } else {
+            None
+        }
     }
 }
 
@@ -95,10 +153,236 @@ enum Ast {
     Literal(String),
     Alternation(Vec<String>),
     Anchored { literal: String, start: bool, end: bool },
+    AnchoredGroup { group: Group, start: bool, end: bool },  // NEW
     CharClass(CharClass),
     Quantified(QuantifiedPattern),
     Sequence(Sequence),
     Group(Group),  // NEW: Group support
+}
+
+/// Parse patterns that contain groups combined with other elements
+/// Handles: ^(hello), (foo)(bar), prefix(foo|bar), (foo|bar)suffix, (http|https)://
+fn parse_pattern_with_groups(pattern: &str) -> Result<Ast, PatternError> {
+    // Case 1: Multiple consecutive groups: (foo)(bar) - CHECK FIRST!
+    if pattern.matches('(').count() > 1 && !pattern.contains('|') {
+        let mut combined_literals = Vec::new();
+        let mut pos = 0;
+        let mut all_parsed = true;
+        
+        while pos < pattern.len() && pattern[pos..].starts_with('(') {
+            match group::parse_group(&pattern[pos..]) {
+                Ok((group, bytes_consumed)) => {
+                    // Extract literals from this group
+                    match &group.content {
+                        group::GroupContent::Single(s) => {
+                            combined_literals.push(s.clone());
+                        }
+                        group::GroupContent::Sequence(seq) => {
+                            // Try to extract literal from sequence of chars
+                            let mut literal = String::new();
+                            let mut is_simple = true;
+                            
+                            for elem in &seq.elements {
+                                match elem {
+                                    crate::sequence::SequenceElement::Char(ch) => {
+                                        literal.push(*ch);
+                                    }
+                                    crate::sequence::SequenceElement::Literal(lit) => {
+                                        literal.push_str(lit);
+                                    }
+                                    _ => {
+                                        // Not a simple literal sequence
+                                        is_simple = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            if is_simple {
+                                combined_literals.push(literal);
+                            } else {
+                                all_parsed = false;
+                                break;
+                            }
+                        }
+                        group::GroupContent::Alternation(_parts) => {
+                            // Can't easily combine alternations
+                            all_parsed = false;
+                            break;
+                        }
+                    }
+                    pos += bytes_consumed;
+                }
+                Err(_) => {
+                    all_parsed = false;
+                    break;
+                }
+            }
+        }
+        
+        if all_parsed && pos == pattern.len() && !combined_literals.is_empty() {
+            // All groups parsed successfully - build as sequence
+            // Create a sequence of literal elements for consecutive matching
+            use crate::sequence::{Sequence, SequenceElement};
+            
+            let mut elements = Vec::new();
+            for literal in combined_literals {
+                // Each literal becomes a sequence element
+                elements.push(SequenceElement::Literal(literal));
+            }
+            
+            let seq = Sequence { elements };
+            return Ok(Ast::Sequence(seq));
+        }
+    }
+    
+    // Case 2: Anchor + Group: ^(hello) or (world)$
+    if pattern.starts_with("^(") || pattern.ends_with(")$") {
+        let has_start = pattern.starts_with('^');
+        let has_end = pattern.ends_with('$');
+        
+        // Strip anchors properly - need to handle chaining correctly
+        let mut inner = pattern;
+        if has_start {
+            inner = &inner[1..];  // Remove '^'
+        }
+        if has_end {
+            inner = &inner[..inner.len()-1];  // Remove '$'
+        }
+        
+        if inner.starts_with('(') {
+            if let Ok((group, bytes_consumed)) = group::parse_group(inner) {
+                if bytes_consumed == inner.len() {
+                    // Extract the actual pattern from group for anchored matching
+                    let group_literal = match &group.content {
+                        group::GroupContent::Single(s) => Some(s.clone()),
+                        group::GroupContent::Sequence(seq) => {
+                            // Try to extract literal from sequence of chars
+                            let mut literal = String::new();
+                            let mut is_simple = true;
+                            
+                            for elem in &seq.elements {
+                                match elem {
+                                    crate::sequence::SequenceElement::Char(ch) => {
+                                        literal.push(*ch);
+                                    }
+                                    crate::sequence::SequenceElement::Literal(lit) => {
+                                        literal.push_str(lit);
+                                    }
+                                    _ => {
+                                        // Not a simple literal - can't anchor
+                                        is_simple = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            if is_simple {
+                                Some(literal)
+                            } else {
+                                None
+                            }
+                        }
+                        group::GroupContent::Alternation(_parts) => {
+                            // For alternation like ^(foo|bar), can't use simple Anchored
+                            None
+                        }
+                    };
+                    
+                    if let Some(lit) = group_literal {
+                        return Ok(Ast::Anchored {
+                            literal: lit,
+                            start: has_start,
+                            end: has_end,
+                        });
+                    } else {
+                        // Complex group - use AnchoredGroup
+                        return Ok(Ast::AnchoredGroup {
+                            group,
+                            start: has_start,
+                            end: has_end,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    
+    // Case 3: Just a single group
+    if pattern.starts_with('(') {
+        if let Ok((group, bytes_consumed)) = group::parse_group(pattern) {
+            if bytes_consumed == pattern.len() {
+                return Ok(Ast::Group(group));
+            }
+            
+            // Case 4: Group with suffix: (foo|bar)suffix, (http|https)://
+            if bytes_consumed < pattern.len() {
+                let suffix = &pattern[bytes_consumed..];
+                // Build a combined pattern
+                // For alternation groups, expand: (a|b)c -> ac|bc
+                match &group.content {
+                    group::GroupContent::Alternation(parts) => {
+                        let expanded: Vec<String> = parts.iter()
+                            .map(|p| format!("{}{}", p, suffix))
+                            .collect();
+                        return Ok(Ast::Alternation(expanded));
+                    }
+                    group::GroupContent::Sequence(seq) => {
+                        // Group with sequence + suffix: (\w+)@ or (\d+).
+                        // Need to append suffix to the sequence
+                        use crate::sequence::{Sequence, SequenceElement};
+                        
+                        let mut new_elements = seq.elements.clone();
+                        // Add suffix as literal elements
+                        for ch in suffix.chars() {
+                            new_elements.push(SequenceElement::Char(ch));
+                        }
+                        
+                        let combined_seq = Sequence { elements: new_elements };
+                        return Ok(Ast::Sequence(combined_seq));
+                    }
+                    group::GroupContent::Single(s) => {
+                        // Simple literal + suffix
+                        let combined = format!("{}{}", s, suffix);
+                        return Ok(Ast::Literal(combined));
+                    }
+                }
+            }
+        }
+    }
+    
+    // Case 5: Prefix + Group: prefix(foo|bar) - but NOT ^(hello) or $(hello)
+    if let Some(group_start) = pattern.find('(') {
+        if group_start > 0 {
+            let prefix = &pattern[..group_start];
+            // Skip if prefix is just an anchor
+            if prefix != "^" && prefix != "$" {
+                let group_part = &pattern[group_start..];
+                
+                if let Ok((group, bytes_consumed)) = group::parse_group(group_part) {
+                    if bytes_consumed == group_part.len() {
+                        // prefix + group
+                        match &group.content {
+                            group::GroupContent::Alternation(parts) => {
+                                let expanded: Vec<String> = parts.iter()
+                                    .map(|p| format!("{}{}", prefix, p))
+                                    .collect();
+                                return Ok(Ast::Alternation(expanded));
+                            }
+                            _ => {
+                                // Single pattern with prefix
+                                return Ok(Ast::Group(group));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    Err(PatternError::ParseError(
+        "Complex group pattern not fully supported".to_string()
+    ))
 }
 
 fn parse_pattern(pattern: &str) -> Result<Ast, PatternError> {
@@ -106,19 +390,12 @@ fn parse_pattern(pattern: &str) -> Result<Ast, PatternError> {
         return Ok(Ast::Literal(String::new()));
     }
     
-    // Check for groups FIRST (before anything else except anchors)
-    if pattern.starts_with('(') {
-        match group::parse_group(pattern) {
-            Ok((group, bytes_consumed)) => {
-                // If the whole pattern is just a group, return it
-                if bytes_consumed == pattern.len() {
-                    return Ok(Ast::Group(group));
-                }
-                // Otherwise might be part of a sequence - fall through
-            }
-            Err(_) => {
-                // Not a valid group, try other parsers
-            }
+    // Special handling for patterns with groups and other elements
+    // e.g., ^(hello), (foo)(bar), prefix(foo|bar), (foo|bar)suffix
+    if pattern.contains('(') {
+        // Try to parse as complex pattern with groups
+        if let Ok(ast) = parse_pattern_with_groups(pattern) {
+            return Ok(ast);
         }
     }
     
@@ -225,6 +502,7 @@ enum Matcher {
     Literal(String),
     MultiLiteral(AhoCorasick),
     AnchoredLiteral { literal: String, start: bool, end: bool },
+    AnchoredGroup { group: Group, start: bool, end: bool },
     CharClass(CharClass),
     Quantified(QuantifiedPattern),
     Sequence(Sequence),
@@ -242,13 +520,35 @@ impl Matcher {
                 (false, true) => text.ends_with(literal),
                 _ => unreachable!(),
             },
+            Matcher::AnchoredGroup { group, start, end } => {
+                // Check if group matches with anchor constraints
+                match (start, end) {
+                    (true, true) => {
+                        // Must match entire text
+                        group.match_at(text, 0).map(|len| len == text.len()).unwrap_or(false)
+                    }
+                    (true, false) => {
+                        // Must match at start
+                        group.match_at(text, 0).is_some()
+                    }
+                    (false, true) => {
+                        // Must match at end
+                        if let Some((start_pos, end_pos)) = group.find(text) {
+                            end_pos == text.len()
+                        } else {
+                            false
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            },
             Matcher::CharClass(cc) => {
-                // Character class matches if ANY character in text matches the class
-                text.chars().any(|ch| cc.matches(ch))
+                // OPTIMIZED: Use SIMD-friendly find_first for ASCII text
+                cc.find_first(text).is_some()
             }
-            Matcher::Quantified(qp) => qp.find(text).is_some(),
-            Matcher::Sequence(seq) => seq.find(text).is_some(),
-            Matcher::Group(group) => group.find(text).is_some(),
+            Matcher::Quantified(qp) => qp.is_match(text),  // NEW: Early termination
+            Matcher::Sequence(seq) => seq.is_match(text),  // NEW: Early termination
+            Matcher::Group(group) => group.is_match(text), // NEW: Early termination
         }
     }
 
@@ -267,6 +567,35 @@ impl Matcher {
                 (true, false) => text.starts_with(literal).then(|| (0, literal.len())),
                 (false, true) => text.ends_with(literal).then(|| (text.len() - literal.len(), text.len())),
                 _ => unreachable!(),
+            },
+            Matcher::AnchoredGroup { group, start, end } => {
+                match (start, end) {
+                    (true, true) => {
+                        // Must match entire text
+                        group.match_at(text, 0).and_then(|len| {
+                            if len == text.len() {
+                                Some((0, len))
+                            } else {
+                                None
+                            }
+                        })
+                    }
+                    (true, false) => {
+                        // Must match at start
+                        group.match_at(text, 0).map(|len| (0, len))
+                    }
+                    (false, true) => {
+                        // Must match at end
+                        group.find(text).and_then(|(start_pos, end_pos)| {
+                            if end_pos == text.len() {
+                                Some((start_pos, end_pos))
+                            } else {
+                                None
+                            }
+                        })
+                    }
+                    _ => unreachable!(),
+                }
             },
             Matcher::CharClass(cc) => {
                 // Find first character matching the class
@@ -299,6 +628,14 @@ impl Matcher {
                     vec![]
                 }
             }
+            Matcher::AnchoredGroup { .. } => {
+                // Anchored groups can only match once
+                if let Some(m) = self.find(text) {
+                    vec![m]
+                } else {
+                    vec![]
+                }
+            }
             Matcher::CharClass(cc) => {
                 // Find all characters matching the class
                 text.char_indices()
@@ -323,6 +660,11 @@ fn compile_ast(ast: &Ast) -> Result<Matcher, PatternError> {
         }
         Ast::Anchored { literal, start, end } => Ok(Matcher::AnchoredLiteral {
             literal: literal.clone(),
+            start: *start,
+            end: *end,
+        }),
+        Ast::AnchoredGroup { group, start, end } => Ok(Matcher::AnchoredGroup {
+            group: group.clone(),
             start: *start,
             end: *end,
         }),
