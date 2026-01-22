@@ -8,6 +8,7 @@ mod escape;
 mod sequence;
 mod sequence_parser;
 mod group;
+mod boundary;  // NEW: Word boundary support
 
 use aho_corasick::AhoCorasick;
 use charclass::CharClass;
@@ -17,6 +18,7 @@ use sequence::Sequence;
 use sequence_parser::{is_sequence_pattern, parse_sequence};
 use group::Group;
 use quantifier::{parse_quantified_pattern, QuantifiedPattern};
+use boundary::BoundaryType;  // NEW
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
@@ -158,6 +160,7 @@ enum Ast {
     Quantified(QuantifiedPattern),
     Sequence(Sequence),
     Group(Group),  // NEW: Group support
+    Boundary(BoundaryType),  // NEW: Word boundary support
 }
 
 /// Parse patterns that contain groups combined with other elements
@@ -432,12 +435,16 @@ fn parse_pattern(pattern: &str) -> Result<Ast, PatternError> {
         }
     }
     
-    // Check for escape sequences: \d, \w, \s, \., etc.
+    // Check for escape sequences: \d, \w, \s, \b, \B, \., etc.
     if starts_with_escape(pattern) {
         match parse_escape(pattern) {
             Ok((seq, bytes_consumed)) => {
                 // If it's the whole pattern
                 if bytes_consumed == pattern.len() {
+                    // Check for boundary first (since it doesn't convert to CharClass)
+                    if let Some(boundary_type) = seq.to_boundary() {
+                        return Ok(Ast::Boundary(boundary_type));
+                    }
                     // Convert to CharClass if possible
                     if let Some(cc) = seq.to_char_class() {
                         return Ok(Ast::CharClass(cc));
@@ -509,6 +516,7 @@ enum Matcher {
     Group(Group),  // NEW: Group matcher
     DigitRun,  // NEW: Specialized fast path for \d+ pattern
     WordRun,   // NEW: Specialized fast path for \w+ pattern
+    Boundary(BoundaryType),  // NEW: Word boundary matcher
 }
 
 impl Matcher {
@@ -553,6 +561,7 @@ impl Matcher {
             Matcher::Group(group) => group.is_match(text), // NEW: Early termination
             Matcher::DigitRun => Self::digit_run_is_match(text),  // NEW: Specialized digit fast path
             Matcher::WordRun => Self::word_run_is_match(text),    // NEW: Specialized word fast path
+            Matcher::Boundary(boundary_type) => boundary_type.find_first(text).is_some(),  // NEW: Boundary matching
         }
     }
     
@@ -644,6 +653,10 @@ impl Matcher {
             Matcher::Group(group) => group.find(text),
             Matcher::DigitRun => Self::digit_run_find(text),  // NEW: Specialized digit find
             Matcher::WordRun => Self::word_run_find(text),    // NEW: Specialized word find
+            Matcher::Boundary(boundary_type) => {
+                // Boundary returns position, need to map to (pos, pos) range
+                boundary_type.find_first(text).map(|pos| (pos, pos))
+            }
         }
     }
     
@@ -745,6 +758,10 @@ impl Matcher {
             Matcher::Group(group) => group.find_all(text),
             Matcher::DigitRun => Self::digit_run_find_all(text),  // NEW: Specialized digit find_all
             Matcher::WordRun => Self::word_run_find_all(text),    // NEW: Specialized word find_all
+            Matcher::Boundary(boundary_type) => {
+                // Boundary returns positions, map to (pos, pos) ranges
+                boundary_type.find_all(text).into_iter().map(|pos| (pos, pos)).collect()
+            }
         }
     }
     
@@ -862,6 +879,7 @@ fn compile_ast(ast: &Ast) -> Result<Matcher, PatternError> {
         }
         Ast::Sequence(seq) => Ok(Matcher::Sequence(seq.clone())),
         Ast::Group(group) => Ok(Matcher::Group(group.clone())),
+        Ast::Boundary(boundary_type) => Ok(Matcher::Boundary(*boundary_type)),  // NEW: Boundary compilation
     }
 }
 

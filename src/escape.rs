@@ -3,9 +3,11 @@
 /// Supports:
 /// - Character classes: \d, \w, \s, \D, \W, \S
 /// - Special chars: \n, \t, \r
+/// - Word boundaries: \b, \B
 /// - Literal escapes: \., \*, \\, \+, \?, \[, \], \(, \), \|, \^, \$
 
 use crate::charclass::CharClass;
+use crate::boundary::BoundaryType;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EscapeSequence {
@@ -21,6 +23,10 @@ pub enum EscapeSequence {
     Whitespace,
     /// \S - non-whitespace [^ \t\n\r]
     NonWhitespace,
+    /// \b - word boundary
+    WordBoundary,
+    /// \B - non-word boundary
+    NonWordBoundary,
     /// \n - newline
     Newline,
     /// \t - tab
@@ -92,7 +98,16 @@ impl EscapeSequence {
                 cc.finalize();
                 Some(cc)
             }
-            _ => None, // Literals don't convert to CharClass
+            _ => None, // Literals and boundaries don't convert to CharClass
+        }
+    }
+
+    /// Convert escape sequence to BoundaryType
+    pub fn to_boundary(&self) -> Option<BoundaryType> {
+        match self {
+            EscapeSequence::WordBoundary => Some(BoundaryType::Word),
+            EscapeSequence::NonWordBoundary => Some(BoundaryType::NonWord),
+            _ => None,
         }
     }
 
@@ -132,6 +147,8 @@ pub fn parse_escape(pattern: &str) -> Result<(EscapeSequence, usize), String> {
         'W' => EscapeSequence::NonWord,
         's' => EscapeSequence::Whitespace,
         'S' => EscapeSequence::NonWhitespace,
+        'b' => EscapeSequence::WordBoundary,      // NEW: \b
+        'B' => EscapeSequence::NonWordBoundary,    // NEW: \B
         'n' => EscapeSequence::Newline,
         't' => EscapeSequence::Tab,
         'r' => EscapeSequence::CarriageReturn,
@@ -214,6 +231,19 @@ mod tests {
         assert!(!cc.matches('\t'));
         assert!(cc.matches('a'));
         assert!(cc.matches('0'));
+    }
+
+    #[test]
+    fn test_parse_boundaries() {
+        let (seq, len) = parse_escape("\\b").unwrap();
+        assert_eq!(seq, EscapeSequence::WordBoundary);
+        assert_eq!(len, 2);
+        assert!(seq.to_boundary().is_some());
+        
+        let (seq, len) = parse_escape("\\B").unwrap();
+        assert_eq!(seq, EscapeSequence::NonWordBoundary);
+        assert_eq!(len, 2);
+        assert!(seq.to_boundary().is_some());
     }
 
     #[test]
