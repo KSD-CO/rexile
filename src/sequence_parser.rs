@@ -25,8 +25,18 @@ pub fn is_sequence_pattern(pattern: &str) -> bool {
             element_count += 1;
             i += 2;
             // Skip quantifier if present
-            if i < chars.len() && matches!(chars[i], '*' | '+' | '?') {
-                i += 1;
+            if i < chars.len() {
+                if matches!(chars[i], '*' | '+' | '?') {
+                    i += 1;
+                } else if chars[i] == '{' {
+                    // Skip {n}, {n,}, {n,m} quantifier
+                    while i < chars.len() && chars[i] != '}' {
+                        i += 1;
+                    }
+                    if i < chars.len() {
+                        i += 1; // Skip '}'
+                    }
+                }
             }
         } else if chars[i] == '[' {
             // Character class
@@ -36,8 +46,18 @@ pub fn is_sequence_pattern(pattern: &str) -> bool {
             }
             i += 1; // Skip ']'
             // Skip quantifier if present
-            if i < chars.len() && matches!(chars[i], '*' | '+' | '?') {
-                i += 1;
+            if i < chars.len() {
+                if matches!(chars[i], '*' | '+' | '?') {
+                    i += 1;
+                } else if chars[i] == '{' {
+                    // Skip {n}, {n,}, {n,m} quantifier
+                    while i < chars.len() && chars[i] != '}' {
+                        i += 1;
+                    }
+                    if i < chars.len() {
+                        i += 1; // Skip '}'
+                    }
+                }
             }
         } else if matches!(chars[i], '*' | '+' | '?' | '^' | '$') {
             // Quantifier or anchor - skip
@@ -47,8 +67,18 @@ pub fn is_sequence_pattern(pattern: &str) -> bool {
             element_count += 1;
             i += 1;
             // Skip quantifier if present
-            if i < chars.len() && matches!(chars[i], '*' | '+' | '?') {
-                i += 1;
+            if i < chars.len() {
+                if matches!(chars[i], '*' | '+' | '?') {
+                    i += 1;
+                } else if chars[i] == '{' {
+                    // Skip {n}, {n,}, {n,m} quantifier
+                    while i < chars.len() && chars[i] != '}' {
+                        i += 1;
+                    }
+                    if i < chars.len() {
+                        i += 1; // Skip '}'
+                    }
+                }
             }
         }
     }

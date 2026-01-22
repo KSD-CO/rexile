@@ -101,11 +101,65 @@ impl Pattern {
     /// }
     /// ```
     pub fn captures<'t>(&self, text: &'t str) -> Option<Captures<'t>> {
-        // TODO: Implement full capture group extraction
-        // For now, return a simple full-match capture
-        self.find(text).map(|(start, end)| {
-            Captures::new(text, (start, end), 0)
-        })
+        // Check if this is a PatternWithCaptures matcher
+        if let Matcher::PatternWithCaptures { elements, total_groups } = &self.matcher {
+            // Find first match and extract capture positions
+            for start_pos in 0..text.len() {
+                let mut pos = start_pos;
+                let mut capture_positions: Vec<(usize, usize)> = Vec::new();
+                let mut all_matched = true;
+                
+                for element in elements {
+                    let (matcher, group_num_opt) = match element {
+                        CompiledCaptureElement::Capture(m, num) => (m, Some(*num)),
+                        CompiledCaptureElement::NonCapture(m) => (m, None),
+                    };
+                    
+                    if let Some((rel_start, rel_end)) = matcher.find(&text[pos..]) {
+                        if rel_start != 0 {
+                            // Element must match at current position
+                            all_matched = false;
+                            break;
+                        }
+                        
+                        let abs_start = pos;
+                        let abs_end = pos + rel_end;
+                        
+                        // If this is a capture group, record its position
+                        if let Some(group_num) = group_num_opt {
+                            // Ensure we have enough space
+                            while capture_positions.len() < group_num {
+                                capture_positions.push((0, 0));
+                            }
+                            capture_positions[group_num - 1] = (abs_start, abs_end);
+                        }
+                        
+                        pos = abs_end;
+                    } else {
+                        all_matched = false;
+                        break;
+                    }
+                }
+                
+                if all_matched {
+                    // Create Captures with full match and capture groups
+                    let mut caps = Captures::new(text, (start_pos, pos), *total_groups);
+                    
+                    // Add each capture group using the set method
+                    for (i, &(start, end)) in capture_positions.iter().enumerate() {
+                        caps.set(i + 1, start, end);
+                    }
+                    
+                    return Some(caps);
+                }
+            }
+            None
+        } else {
+            // Simple pattern without explicit captures - just return full match
+            self.find(text).map(|(start, end)| {
+                Captures::new(text, (start, end), 0)
+            })
+        }
     }
     
     /// Iterate over all captures in the text
@@ -222,19 +276,82 @@ impl<'r, 't> Iterator for CapturesIter<'r, 't> {
             return None;
         }
         
-        // Find next match starting from current position
-        let remaining = &self.text[self.pos..];
-        if let Some((rel_start, rel_end)) = self.pattern.matcher.find(remaining) {
-            let abs_start = self.pos + rel_start;
-            let abs_end = self.pos + rel_end;
-            
-            // Move position past this match
-            self.pos = abs_end.max(self.pos + 1);
-            
-            // Create captures for this match
-            Some(Captures::new(self.text, (abs_start, abs_end), 0))
-        } else {
+        // Check if this is a PatternWithCaptures matcher
+        if let Matcher::PatternWithCaptures { elements, total_groups } = &self.pattern.matcher {
+            // Find next match starting from current position and extract capture positions
+            let remaining = &self.text[self.pos..];
+            for start_offset in 0..remaining.len() {
+                let mut pos = start_offset;
+                let mut capture_positions: Vec<(usize, usize)> = Vec::new();
+                let mut all_matched = true;
+                
+                for element in elements {
+                    let (matcher, group_num_opt) = match element {
+                        CompiledCaptureElement::Capture(m, num) => (m, Some(*num)),
+                        CompiledCaptureElement::NonCapture(m) => (m, None),
+                    };
+                    
+                    if let Some((rel_start, rel_end)) = matcher.find(&remaining[pos..]) {
+                        if rel_start != 0 {
+                            // Element must match at current position
+                            all_matched = false;
+                            break;
+                        }
+                        
+                        let abs_start = pos;
+                        let abs_end = pos + rel_end;
+                        
+                        // If this is a capture group, record its position
+                        if let Some(group_num) = group_num_opt {
+                            // Ensure we have enough space
+                            while capture_positions.len() < group_num {
+                                capture_positions.push((0, 0));
+                            }
+                            capture_positions[group_num - 1] = (abs_start, abs_end);
+                        }
+                        
+                        pos = abs_end;
+                    } else {
+                        all_matched = false;
+                        break;
+                    }
+                }
+                
+                if all_matched {
+                    // Convert relative positions to absolute positions
+                    let abs_start = self.pos + start_offset;
+                    let abs_end = self.pos + pos;
+                    
+                    // Move position past this match
+                    self.pos = abs_end.max(self.pos + 1);
+                    
+                    // Create Captures with full match and capture groups
+                    let mut caps = Captures::new(self.text, (abs_start, abs_end), *total_groups);
+                    
+                    // Add each capture group using the set method
+                    for (i, &(start, end)) in capture_positions.iter().enumerate() {
+                        caps.set(i + 1, self.pos - pos + start, self.pos - pos + end);
+                    }
+                    
+                    return Some(caps);
+                }
+            }
             None
+        } else {
+            // Simple pattern without explicit captures
+            let remaining = &self.text[self.pos..];
+            if let Some((rel_start, rel_end)) = self.pattern.matcher.find(remaining) {
+                let abs_start = self.pos + rel_start;
+                let abs_end = self.pos + rel_end;
+                
+                // Move position past this match
+                self.pos = abs_end.max(self.pos + 1);
+                
+                // Create captures for this match
+                Some(Captures::new(self.text, (abs_start, abs_end), 0))
+            } else {
+                None
+            }
         }
     }
 }
@@ -329,6 +446,7 @@ enum Ast {
     Lookaround(Lookaround),  // Phase 7: Lookahead/lookbehind
     Capture(Box<Ast>, usize),  // Phase 8: Capture group (pattern, group_index)
     CombinedWithLookaround { prefix: Box<Ast>, lookaround: Lookaround },  // Phase 7.2: foo(?=bar)
+    PatternWithCaptures { elements: Vec<CaptureElement>, total_groups: usize },  // Phase 8.1: Hello (\w+)
 }
 
 /// Parse patterns that contain groups combined with other elements
@@ -590,6 +708,16 @@ fn parse_pattern(pattern: &str) -> Result<Ast, PatternError> {
         }
     }
     
+    // Phase 8.1: Check for patterns with embedded captures: Hello (\w+), (\w+)=(\d+)
+    // Phase 8.2: Also handles non-capturing groups: (?:Hello) (\w+)
+    if pattern.contains('(') && !pattern.contains("(?=") 
+       && !pattern.contains("(?!") && !pattern.contains("(?<=") && !pattern.contains("(?<!") {
+        // Try to parse as pattern with captures (including non-capturing groups)
+        if let Ok(ast) = parse_pattern_with_captures(pattern) {
+            return Ok(ast);
+        }
+    }
+    
     // Special handling for patterns with groups and other elements
     // e.g., ^(hello), (foo)(bar), prefix(foo|bar), (foo|bar)suffix
     if pattern.contains('(') {
@@ -655,8 +783,8 @@ fn parse_pattern(pattern: &str) -> Result<Ast, PatternError> {
                 let remaining = &pattern[bytes_consumed..];
                 if !remaining.is_empty() {
                     if let Some(q_char) = remaining.chars().next() {
-                        if q_char == '*' || q_char == '+' || q_char == '?' {
-                            // This is an escape with quantifier: \d+, \w*, etc.
+                        if q_char == '*' || q_char == '+' || q_char == '?' || q_char == '{' {
+                            // This is an escape with quantifier: \d+, \w*, \d{4}, etc.
                             if let Ok(qp) = parse_quantified_pattern(pattern) {
                                 return Ok(Ast::Quantified(qp));
                             }
@@ -717,6 +845,14 @@ enum Matcher {
     Lookaround(Box<Lookaround>, Box<Matcher>),  // Phase 7: Lookaround with compiled inner matcher
     Capture(Box<Matcher>, usize),  // Phase 8: Capture matcher (inner pattern, group_index)
     CombinedWithLookaround { prefix: Box<Matcher>, lookaround: Box<Lookaround>, lookaround_matcher: Box<Matcher> },  // Phase 7.2
+    PatternWithCaptures { elements: Vec<CompiledCaptureElement>, total_groups: usize },  // Phase 8.1
+}
+
+/// Compiled capture element
+#[derive(Debug, Clone)]
+enum CompiledCaptureElement {
+    Capture(Matcher, usize),     // Compiled matcher, group number
+    NonCapture(Matcher),         // Compiled matcher (non-capturing)
 }
 
 impl Matcher {
@@ -783,6 +919,22 @@ impl Matcher {
                 } else {
                     false
                 }
+            }
+            Matcher::PatternWithCaptures { elements, .. } => {
+                // Check if all elements match in sequence
+                let mut pos = 0;
+                for element in elements {
+                    let matcher = match element {
+                        CompiledCaptureElement::Capture(m, _) => m,
+                        CompiledCaptureElement::NonCapture(m) => m,
+                    };
+                    if let Some((_, end)) = matcher.find(&text[pos..]) {
+                        pos += end;
+                    } else {
+                        return false;
+                    }
+                }
+                true
             }
         }
     }
@@ -910,6 +1062,37 @@ impl Matcher {
                         search_pos = abs_start + 1;
                     } else {
                         break;
+                    }
+                }
+                None
+            }
+            Matcher::PatternWithCaptures { elements, .. } => {
+                // Find first match of all elements in sequence
+                for start_pos in 0..text.len() {
+                    let mut pos = start_pos;
+                    let mut all_matched = true;
+                    
+                    for element in elements {
+                        let matcher = match element {
+                            CompiledCaptureElement::Capture(m, _) => m,
+                            CompiledCaptureElement::NonCapture(m) => m,
+                        };
+                        
+                        if let Some((rel_start, rel_end)) = matcher.find(&text[pos..]) {
+                            if rel_start != 0 {
+                                // Element must match at current position
+                                all_matched = false;
+                                break;
+                            }
+                            pos += rel_end;
+                        } else {
+                            all_matched = false;
+                            break;
+                        }
+                    }
+                    
+                    if all_matched {
+                        return Some((start_pos, pos));
                     }
                 }
                 None
@@ -1055,6 +1238,44 @@ impl Matcher {
                 
                 matches
             }
+            Matcher::PatternWithCaptures { elements, .. } => {
+                // Find all matches of all elements in sequence
+                let mut matches = Vec::new();
+                let mut start_pos = 0;
+                
+                while start_pos < text.len() {
+                    let mut pos = start_pos;
+                    let mut all_matched = true;
+                    
+                    for element in elements {
+                        let matcher = match element {
+                            CompiledCaptureElement::Capture(m, _) => m,
+                            CompiledCaptureElement::NonCapture(m) => m,
+                        };
+                        
+                        if let Some((rel_start, rel_end)) = matcher.find(&text[pos..]) {
+                            if rel_start != 0 {
+                                // Element must match at current position
+                                all_matched = false;
+                                break;
+                            }
+                            pos += rel_end;
+                        } else {
+                            all_matched = false;
+                            break;
+                        }
+                    }
+                    
+                    if all_matched {
+                        matches.push((start_pos, pos));
+                        start_pos = pos.max(start_pos + 1); // Move past this match
+                    } else {
+                        start_pos += 1;
+                    }
+                }
+                
+                matches
+            }
         }
     }
     
@@ -1194,6 +1415,26 @@ fn compile_ast(ast: &Ast) -> Result<Matcher, PatternError> {
                 prefix: Box::new(prefix_matcher),
                 lookaround: Box::new(lookaround.clone()),
                 lookaround_matcher: Box::new(lookaround_inner),
+            })
+        }
+        Ast::PatternWithCaptures { elements, total_groups } => {
+            // Compile each element
+            let mut compiled_elements = Vec::new();
+            for elem in elements {
+                match elem {
+                    CaptureElement::Capture(ast, group_num) => {
+                        let matcher = compile_ast(ast)?;
+                        compiled_elements.push(CompiledCaptureElement::Capture(matcher, *group_num));
+                    }
+                    CaptureElement::NonCapture(ast) => {
+                        let matcher = compile_ast(ast)?;
+                        compiled_elements.push(CompiledCaptureElement::NonCapture(matcher));
+                    }
+                }
+            }
+            Ok(Matcher::PatternWithCaptures {
+                elements: compiled_elements,
+                total_groups: *total_groups,
             })
         }
     }
@@ -1353,6 +1594,83 @@ fn find_matching_paren(pattern: &str, start: usize) -> Option<usize> {
     }
     
     None // Unmatched
+}
+
+/// Parse patterns with embedded capture groups: Hello (\w+), (\w+)=(\d+), (\d{4})-(\d{2})-(\d{2})
+/// Returns an AST that represents a sequence with captures
+fn parse_pattern_with_captures(pattern: &str) -> Result<Ast, PatternError> {
+    // This is a complex parser that needs to:
+    // 1. Find all capture groups in the pattern
+    // 2. Parse the parts between captures
+    // 3. Assign group numbers
+    // 4. Build an AST that tracks all of this
+    
+    // For now, let's implement a simple version that handles basic cases
+    // like: literal(\w+), (\w+)literal, (\w+)(\d+)
+    
+    let mut elements: Vec<CaptureElement> = Vec::new();
+    let mut group_number = 1;
+    let mut pos = 0;
+    
+    while pos < pattern.len() {
+        if pattern[pos..].starts_with("(?:") {
+            // Found a non-capturing group (?:...)
+            if let Some(close_idx) = find_matching_paren(pattern, pos) {
+                // Parse the content as a non-capturing group
+                let inner = &pattern[pos+3..close_idx]; // Skip "(?:"
+                let inner_ast = parse_pattern(inner)?;
+                
+                elements.push(CaptureElement::NonCapture(inner_ast));
+                pos = close_idx + 1;
+            } else {
+                return Err(PatternError::ParseError("Unmatched parenthesis".to_string()));
+            }
+        } else if pattern[pos..].starts_with('(') && !pattern[pos..].starts_with("(?") {
+            // Found a capture group
+            if let Some(close_idx) = find_matching_paren(pattern, pos) {
+                // Parse the content of the capture
+                let inner = &pattern[pos+1..close_idx];
+                let inner_ast = parse_pattern(inner)?;
+                
+                elements.push(CaptureElement::Capture(inner_ast, group_number));
+                group_number += 1;
+                pos = close_idx + 1;
+            } else {
+                return Err(PatternError::ParseError("Unmatched parenthesis".to_string()));
+            }
+        } else {
+            // Find the next capture group or end of pattern
+            let next_paren = pattern[pos..].find('(').map(|i| pos + i).unwrap_or(pattern.len());
+            
+            if next_paren > pos {
+                // There's a literal or other pattern before the next capture
+                let segment = &pattern[pos..next_paren];
+                let segment_ast = parse_pattern(segment)?;
+                elements.push(CaptureElement::NonCapture(segment_ast));
+                pos = next_paren;
+            } else {
+                // Move forward
+                pos += 1;
+            }
+        }
+    }
+    
+    // If we only have one element and it's a single capture, return it directly
+    if elements.len() == 1 {
+        if let CaptureElement::Capture(ast, num) = &elements[0] {
+            return Ok(Ast::Capture(Box::new(ast.clone()), *num));
+        }
+    }
+    
+    // Build a PatternWithCaptures AST
+    Ok(Ast::PatternWithCaptures { elements, total_groups: group_number - 1 })
+}
+
+/// Element in a pattern with captures
+#[derive(Debug, Clone, PartialEq)]
+enum CaptureElement {
+    Capture(Ast, usize),      // (pattern), group_number
+    NonCapture(Ast),          // literal or other pattern
 }
 
 #[cfg(test)]
