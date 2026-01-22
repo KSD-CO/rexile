@@ -63,7 +63,7 @@ fn test_captures_iter() {
 }
 
 #[test]
-#[ignore] // Complex feature - implement in phase 8.2
+// DONE: Complex feature - implement in phase 8.2
 fn test_nested_capture_groups() {
     let pattern = Pattern::new(r"(a(b(c)))").unwrap();
     
@@ -88,7 +88,6 @@ fn test_backreference() {
 }
 
 #[test]
-#[ignore] // Complex feature - implement in phase 8.3
 fn test_replace_with_captures() {
     let pattern = Pattern::new(r"(\w+)=(\d+)").unwrap();
     let text = "a=1 b=2";
@@ -98,7 +97,6 @@ fn test_replace_with_captures() {
 }
 
 #[test]
-#[ignore] // Complex feature - implement in phase 8.3
 fn test_split_with_captures() {
     let pattern = Pattern::new(r"(\d+)").unwrap();
     let text = "a1b2c3";

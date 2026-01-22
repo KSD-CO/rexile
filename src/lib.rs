@@ -154,6 +154,30 @@ impl Pattern {
                 }
             }
             None
+        } else if let Matcher::Capture(inner_matcher, group_index) = &self.matcher {
+            // Single capture group - get total groups from inner matcher
+            let total_groups = if let Matcher::PatternWithCaptures { total_groups, .. } = **inner_matcher {
+                total_groups
+            } else {
+                *group_index  // If inner is not PatternWithCaptures, just use group_index
+            };
+            
+            if let Some((start, end)) = inner_matcher.find(text) {
+                let mut caps = Captures::new(text, (start, end), total_groups);
+                
+                // Record the main capture
+                caps.set(*group_index, start, end);
+                
+                // Extract all nested captures recursively
+                let nested = inner_matcher.extract_nested_captures(text, start);
+                for (group_num, cap_start, cap_end) in nested {
+                    caps.set(group_num, cap_start, cap_end);
+                }
+                
+                Some(caps)
+            } else {
+                None
+            }
         } else {
             // Simple pattern without explicit captures - just return full match
             self.find(text).map(|(start, end)| {
@@ -196,16 +220,67 @@ impl Pattern {
     /// assert_eq!(result, "a:[1] b:[2]");
     /// ```
     pub fn replace_all(&self, text: &str, replacement: &str) -> String {
-        // TODO: Implement with capture group replacement
-        // For now, simple literal replacement
+        // Check if replacement contains capture references like $1, $2
+        let has_captures = replacement.contains('$');
+        
+        if !has_captures {
+            // Simple literal replacement (fast path)
+            let mut result = String::new();
+            let mut last_end = 0;
+            
+            for (start, end) in self.find_all(text) {
+                result.push_str(&text[last_end..start]);
+                result.push_str(replacement);
+                last_end = end;
+            }
+            result.push_str(&text[last_end..]);
+            return result;
+        }
+        
+        // Replacement with capture groups
         let mut result = String::new();
         let mut last_end = 0;
         
-        for (start, end) in self.find_all(text) {
-            result.push_str(&text[last_end..start]);
-            result.push_str(replacement);
-            last_end = end;
+        for caps in self.captures_iter(text) {
+            let full_match = caps.get(0).unwrap();
+            let match_start = caps.pos(0).unwrap().0;
+            let match_end = caps.pos(0).unwrap().1;
+            
+            // Add text before this match
+            result.push_str(&text[last_end..match_start]);
+            
+            // Process replacement string with $1, $2, etc.
+            let mut chars = replacement.chars().peekable();
+            while let Some(ch) = chars.next() {
+                if ch == '$' {
+                    // Check if next char is a digit
+                    if let Some(&next_ch) = chars.peek() {
+                        if next_ch.is_ascii_digit() {
+                            chars.next(); // consume the digit
+                            let group_num = next_ch.to_digit(10).unwrap() as usize;
+                            
+                            // Insert the captured group
+                            if let Some(group_text) = caps.get(group_num) {
+                                result.push_str(group_text);
+                            }
+                            // If group doesn't exist, just skip (don't insert anything)
+                        } else {
+                            // $ not followed by digit, insert literal $
+                            result.push('$');
+                        }
+                    } else {
+                        // $ at end of string
+                        result.push('$');
+                    }
+                } else {
+                    result.push(ch);
+                }
+            }
+            
+            last_end = match_end;
         }
+        
+        // Add remaining text
         result.push_str(&text[last_end..]);
         result
     }
@@ -697,21 +772,42 @@ fn parse_pattern(pattern: &str) -> Result<Ast, PatternError> {
     // Phase 8: Check for capture groups (...) - but not (?:...) which is handled by group parser
     // Simple heuristic: if starts with ( but not (? or (?:, might be capture group
     if pattern.starts_with('(') && !pattern.starts_with("(?") {
-        // Check if this is a simple capture group pattern
+        // Check if this is a simple capture group pattern (no nested captures inside)
         if let Some(close_idx) = find_matching_paren(pattern, 0) {
             if close_idx == pattern.len() - 1 {
                 // Entire pattern is a capture group: (pattern)
                 let inner = &pattern[1..close_idx];
-                let inner_ast = parse_pattern(inner)?;
-                return Ok(Ast::Capture(Box::new(inner_ast), 1)); // Group 1
+                
+                // If inner contains captures, let parse_pattern_with_captures handle it
+                if !inner.contains('(') || inner.starts_with("(?") {
+                    // Simple capture with no nesting
+                    let inner_ast = parse_pattern(inner)?;
+                    return Ok(Ast::Capture(Box::new(inner_ast), 1)); // Group 1
+                }
+                // Else: fall through to parse_pattern_with_captures below
             }
         }
     }
     
     // Phase 8.1: Check for patterns with embedded captures: Hello (\w+), (\w+)=(\d+)
     // Phase 8.2: Also handles non-capturing groups: (?:Hello) (\w+)
-    if pattern.contains('(') && !pattern.contains("(?=") 
-       && !pattern.contains("(?!") && !pattern.contains("(?<=") && !pattern.contains("(?<!") {
+    // But skip patterns starting with anchors - they need special handling below
+    // Also skip quantified groups like (test)?, (foo)+, (bar)* - they're handled as quantified patterns
+    let is_quantified_group = pattern.starts_with('(') && 
+        if let Some(close_idx) = find_matching_paren(pattern, 0) {
+            close_idx == pattern.len() - 2 && 
+            (pattern.ends_with('?') || pattern.ends_with('*') || pattern.ends_with('+'))
+        } else { false };
+    
+    let is_bounded_quantified_group = pattern.starts_with('(') &&
+        if let Some(close_idx) = find_matching_paren(pattern, 0) {
+            close_idx < pattern.len() - 1 && pattern[close_idx+1..].starts_with('{')
+        } else { false };
+    
+    if pattern.contains('(') && !pattern.starts_with('^') && !pattern.ends_with('$')
+       && !is_quantified_group && !is_bounded_quantified_group
+       && !pattern.contains("(?=") && !pattern.contains("(?!") 
+       && !pattern.contains("(?<=") && !pattern.contains("(?<!") {
         // Try to parse as pattern with captures (including non-capturing groups)
         if let Ok(ast) = parse_pattern_with_captures(pattern) {
             return Ok(ast);
@@ -937,6 +1033,80 @@ impl Matcher {
                 true
             }
         }
+    }
+    
+    /// Recursively extract all nested captures from a matched pattern
+    /// Returns Vec<(group_num, start, end)> for all capture groups found
+    fn extract_nested_captures(&self, text: &str, start_pos: usize) -> Vec<(usize, usize, usize)> {
+        let mut captures = Vec::new();
+        
+        match self {
+            Matcher::PatternWithCaptures { elements, .. } => {
+                let mut pos = start_pos;
+                
+                for element in elements {
+                    match element {
+                        CompiledCaptureElement::Capture(inner_matcher, group_num) => {
+                            if let Some((rel_start, rel_end)) = inner_matcher.find(&text[pos..]) {
+                                if rel_start == 0 {
+                                    let abs_start = pos;
+                                    let abs_end = pos + rel_end;
+                                    
+                                    // Record this capture
+                                    captures.push((*group_num, abs_start, abs_end));
+                                    
+                                    // Recursively extract nested captures
+                                    let nested = inner_matcher.extract_nested_captures(text, abs_start);
+                                    captures.extend(nested);
+                                    
+                                    pos = abs_end;
+                                } else {
+                                    break;
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                        CompiledCaptureElement::NonCapture(inner_matcher) => {
+                            if let Some((rel_start, rel_end)) = inner_matcher.find(&text[pos..]) {
+                                if rel_start == 0 {
+                                    let abs_start = pos;
+                                    
+                                    // Even for non-capturing, extract nested captures
+                                    let nested = inner_matcher.extract_nested_captures(text, abs_start);
+                                    captures.extend(nested);
+                                    
+                                    pos += rel_end;
+                                } else {
+                                    break;
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            Matcher::Capture(inner_matcher, group_num) => {
+                // This is a single capture - record it and check for nested
+                if let Some((rel_start, rel_end)) = inner_matcher.find(&text[start_pos..]) {
+                    let abs_start = start_pos + rel_start;
+                    let abs_end = start_pos + rel_end;
+                    
+                    // Record this capture
+                    captures.push((*group_num, abs_start, abs_end));
+                    
+                    // Recursively extract nested captures
+                    let nested = inner_matcher.extract_nested_captures(text, abs_start);
+                    captures.extend(nested);
+                }
+            }
+            _ => {
+                // Other matchers don't have nested captures
+            }
+        }
+        
+        captures
     }
     
     /// Specialized fast path for \d+ pattern
@@ -1360,7 +1530,10 @@ fn compile_ast(ast: &Ast) -> Result<Matcher, PatternError> {
     match ast {
         Ast::Literal(lit) => Ok(Matcher::Literal(lit.clone())),
         Ast::Alternation(parts) => {
-            let ac = AhoCorasick::new(parts)
+            use aho_corasick::MatchKind;
+            let ac = AhoCorasick::builder()
+                .match_kind(MatchKind::LeftmostLongest)
+                .build(parts)
                 .map_err(|e| PatternError::ParseError(format!("Aho-Corasick: {}", e)))?;
             Ok(Matcher::MultiLiteral(ac))
         }
@@ -1599,26 +1772,24 @@ fn find_matching_paren(pattern: &str, start: usize) -> Option<usize> {
 /// Parse patterns with embedded capture groups: Hello (\w+), (\w+)=(\d+), (\d{4})-(\d{2})-(\d{2})
 /// Returns an AST that represents a sequence with captures
 fn parse_pattern_with_captures(pattern: &str) -> Result<Ast, PatternError> {
-    // This is a complex parser that needs to:
-    // 1. Find all capture groups in the pattern
-    // 2. Parse the parts between captures
-    // 3. Assign group numbers
-    // 4. Build an AST that tracks all of this
-    
-    // For now, let's implement a simple version that handles basic cases
-    // like: literal(\w+), (\w+)literal, (\w+)(\d+)
-    
+    let mut group_counter = 1;
+    let (ast, _total_groups) = parse_pattern_with_captures_inner(pattern, &mut group_counter)?;
+    Ok(ast)
+}
+
+/// Inner recursive parser that tracks group numbers across nested captures
+fn parse_pattern_with_captures_inner(pattern: &str, group_counter: &mut usize) -> Result<(Ast, usize), PatternError> {
     let mut elements: Vec<CaptureElement> = Vec::new();
-    let mut group_number = 1;
     let mut pos = 0;
+    let start_group = *group_counter;
     
     while pos < pattern.len() {
         if pattern[pos..].starts_with("(?:") {
             // Found a non-capturing group (?:...)
             if let Some(close_idx) = find_matching_paren(pattern, pos) {
-                // Parse the content as a non-capturing group
+                // Parse the content as a non-capturing group (recursive)
                 let inner = &pattern[pos+3..close_idx]; // Skip "(?:"
-                let inner_ast = parse_pattern(inner)?;
+                let (inner_ast, _) = parse_pattern_with_captures_inner(inner, group_counter)?;
                 
                 elements.push(CaptureElement::NonCapture(inner_ast));
                 pos = close_idx + 1;
@@ -1628,12 +1799,14 @@ fn parse_pattern_with_captures(pattern: &str) -> Result<Ast, PatternError> {
         } else if pattern[pos..].starts_with('(') && !pattern[pos..].starts_with("(?") {
             // Found a capture group
             if let Some(close_idx) = find_matching_paren(pattern, pos) {
-                // Parse the content of the capture
-                let inner = &pattern[pos+1..close_idx];
-                let inner_ast = parse_pattern(inner)?;
+                let my_group_num = *group_counter;
+                *group_counter += 1;
                 
-                elements.push(CaptureElement::Capture(inner_ast, group_number));
-                group_number += 1;
+                // Parse the content of the capture (recursive, may have nested captures)
+                let inner = &pattern[pos+1..close_idx];
+                let (inner_ast, _) = parse_pattern_with_captures_inner(inner, group_counter)?;
+                
+                elements.push(CaptureElement::Capture(inner_ast, my_group_num));
                 pos = close_idx + 1;
             } else {
                 return Err(PatternError::ParseError("Unmatched parenthesis".to_string()));
@@ -1645,7 +1818,15 @@ fn parse_pattern_with_captures(pattern: &str) -> Result<Ast, PatternError> {
             if next_paren > pos {
                 // There's a literal or other pattern before the next capture
                 let segment = &pattern[pos..next_paren];
-                let segment_ast = parse_pattern(segment)?;
+                
+                // Parse segment without going through capture detection
+                let segment_ast = if segment.is_empty() {
+                    Ast::Literal(String::new())
+                } else {
+                    // Use basic parsing for non-capture segments
+                    parse_pattern(segment)?
+                };
+                
                 elements.push(CaptureElement::NonCapture(segment_ast));
                 pos = next_paren;
             } else {
@@ -1655,15 +1836,17 @@ fn parse_pattern_with_captures(pattern: &str) -> Result<Ast, PatternError> {
         }
     }
     
+    let total_groups = *group_counter - 1;
+    
     // If we only have one element and it's a single capture, return it directly
     if elements.len() == 1 {
         if let CaptureElement::Capture(ast, num) = &elements[0] {
-            return Ok(Ast::Capture(Box::new(ast.clone()), *num));
+            return Ok((Ast::Capture(Box::new(ast.clone()), *num), total_groups));
         }
     }
     
     // Build a PatternWithCaptures AST
-    Ok(Ast::PatternWithCaptures { elements, total_groups: group_number - 1 })
+    Ok((Ast::PatternWithCaptures { elements, total_groups }, *group_counter - start_group))
 }
 
 /// Element in a pattern with captures

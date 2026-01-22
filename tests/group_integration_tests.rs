@@ -85,7 +85,7 @@ fn test_group_find_all() {
     
     assert_eq!(matches.len(), 3);
     assert_eq!(&text[matches[0].0..matches[0].1], "http");
-    assert_eq!(&text[matches[1].0..matches[1].1], "http"); // https contains http
+    assert_eq!(&text[matches[1].0..matches[1].1], "https"); // Leftmost-longest match
     assert_eq!(&text[matches[2].0..matches[2].1], "ftp");
 }
 
