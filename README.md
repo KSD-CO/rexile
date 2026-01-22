@@ -34,7 +34,8 @@ ReXile is a **full-featured regex engine** built from scratch without using the 
 - ✅ Phase 4: Sequences `ab+c*`, `\d+\w*`
 - ✅ Phase 5: Groups `(abc)`, `(?:...)`, `(foo|bar)+` (basic)
 - ✅ Phase 6: Word boundaries `\b`, `\B` (zero-width assertions)
-- 🔄 Phase 7+: Lookahead, lookbehind, captures (see future roadmap)
+- 🔄 Phase 7: Lookahead/lookbehind `(?=...)`, `(?!...)`, `(?<=...)`, `(?<!...)` (foundation complete, parsing TODO)
+- 🔄 Phase 8: Capture groups `(...)`, backreferences `\1`, `captures()`, `replace_all()`, `split()` (API complete, parsing TODO)
 
 ## 🚀 Quick Start
 

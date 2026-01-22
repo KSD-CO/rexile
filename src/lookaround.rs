@@ -26,7 +26,7 @@
 //! assert!(!pattern.is_match("foobar"));
 //! ```
 
-use crate::{Ast, Matcher, PatternError};
+use crate::{Ast, Matcher};
 
 /// Type of lookaround assertion
 #[derive(Debug, Clone, PartialEq)]
@@ -116,13 +116,18 @@ impl Lookaround {
 
     /// Check if pattern matches at the given position
     fn pattern_matches_at(&self, text: &str, pos: usize, matcher: &Matcher) -> bool {
-        // Simple check: does the pattern match starting at this position?
+        // Check if the pattern matches AT THE START of text[pos..]
         if pos > text.len() {
             return false;
         }
         
         let remaining = &text[pos..];
-        matcher.is_match(remaining)
+        // Use find() and check if it starts at position 0
+        if let Some((start, _end)) = matcher.find(remaining) {
+            start == 0
+        } else {
+            false
+        }
     }
 
     /// Find if any match ends exactly at the given position

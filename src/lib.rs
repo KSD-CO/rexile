@@ -328,6 +328,7 @@ enum Ast {
     Boundary(BoundaryType),  // Phase 6: Word boundary support
     Lookaround(Lookaround),  // Phase 7: Lookahead/lookbehind
     Capture(Box<Ast>, usize),  // Phase 8: Capture group (pattern, group_index)
+    CombinedWithLookaround { prefix: Box<Ast>, lookaround: Lookaround },  // Phase 7.2: foo(?=bar)
 }
 
 /// Parse patterns that contain groups combined with other elements
@@ -560,6 +561,35 @@ fn parse_pattern(pattern: &str) -> Result<Ast, PatternError> {
         return Ok(Ast::Literal(String::new()));
     }
     
+    // Phase 7: Check for lookaround assertions (?=...), (?!...), (?<=...), (?<!...)
+    if pattern.starts_with("(?=") || pattern.starts_with("(?!") || 
+       pattern.starts_with("(?<=") || pattern.starts_with("(?<!") {
+        return parse_lookaround(pattern);
+    }
+    
+    // Phase 7.2: Check for combined patterns with lookaround: foo(?=bar), \d+(?!x)
+    if pattern.contains("(?=") || pattern.contains("(?!") || 
+       pattern.contains("(?<=") || pattern.contains("(?<!") {
+        // Try to parse as combined pattern with lookaround
+        if let Ok(ast) = parse_combined_with_lookaround(pattern) {
+            return Ok(ast);
+        }
+    }
+    
+    // Phase 8: Check for capture groups (...) - but not (?:...) which is handled by group parser
+    // Simple heuristic: if starts with ( but not (? or (?:, might be capture group
+    if pattern.starts_with('(') && !pattern.starts_with("(?") {
+        // Check if this is a simple capture group pattern
+        if let Some(close_idx) = find_matching_paren(pattern, 0) {
+            if close_idx == pattern.len() - 1 {
+                // Entire pattern is a capture group: (pattern)
+                let inner = &pattern[1..close_idx];
+                let inner_ast = parse_pattern(inner)?;
+                return Ok(Ast::Capture(Box::new(inner_ast), 1)); // Group 1
+            }
+        }
+    }
+    
     // Special handling for patterns with groups and other elements
     // e.g., ^(hello), (foo)(bar), prefix(foo|bar), (foo|bar)suffix
     if pattern.contains('(') {
@@ -686,6 +716,7 @@ enum Matcher {
     Boundary(BoundaryType),  // Phase 6: Word boundary matcher
     Lookaround(Box<Lookaround>, Box<Matcher>),  // Phase 7: Lookaround with compiled inner matcher
     Capture(Box<Matcher>, usize),  // Phase 8: Capture matcher (inner pattern, group_index)
+    CombinedWithLookaround { prefix: Box<Matcher>, lookaround: Box<Lookaround>, lookaround_matcher: Box<Matcher> },  // Phase 7.2
 }
 
 impl Matcher {
@@ -743,6 +774,15 @@ impl Matcher {
             Matcher::Capture(inner_matcher, _group_index) => {
                 // Capture groups don't affect matching, just check inner pattern
                 inner_matcher.is_match(text)
+            }
+            Matcher::CombinedWithLookaround { prefix, lookaround, lookaround_matcher } => {
+                // Need to find where prefix matches, then check lookaround at that position
+                if let Some((start, end)) = prefix.find(text) {
+                    // Check if lookaround succeeds at the end position of the prefix match
+                    lookaround.matches_at(text, end, lookaround_matcher)
+                } else {
+                    false
+                }
             }
         }
     }
@@ -851,6 +891,28 @@ impl Matcher {
             Matcher::Capture(inner_matcher, _group_index) => {
                 // Capture groups don't affect position, use inner matcher
                 inner_matcher.find(text)
+            }
+            Matcher::CombinedWithLookaround { prefix, lookaround, lookaround_matcher } => {
+                // Find first position where prefix matches AND lookaround succeeds
+                let mut search_pos = 0;
+                while search_pos < text.len() {
+                    let remaining = &text[search_pos..];
+                    if let Some((rel_start, rel_end)) = prefix.find(remaining) {
+                        let abs_start = search_pos + rel_start;
+                        let abs_end = search_pos + rel_end;
+                        
+                        // Check if lookaround succeeds at the end of the prefix match
+                        if lookaround.matches_at(text, abs_end, lookaround_matcher) {
+                            return Some((abs_start, abs_end));
+                        }
+                        
+                        // Move search position past this match to try next one
+                        search_pos = abs_start + 1;
+                    } else {
+                        break;
+                    }
+                }
+                None
             }
         }
     }
@@ -967,6 +1029,31 @@ impl Matcher {
             Matcher::Capture(inner_matcher, _group_index) => {
                 // Capture groups don't affect find_all, use inner matcher
                 inner_matcher.find_all(text)
+            }
+            Matcher::CombinedWithLookaround { prefix, lookaround, lookaround_matcher } => {
+                // Find all positions where prefix matches AND lookaround succeeds
+                let mut matches = Vec::new();
+                let mut search_pos = 0;
+                
+                while search_pos < text.len() {
+                    let remaining = &text[search_pos..];
+                    if let Some((rel_start, rel_end)) = prefix.find(remaining) {
+                        let abs_start = search_pos + rel_start;
+                        let abs_end = search_pos + rel_end;
+                        
+                        // Check if lookaround succeeds at the end of the prefix match
+                        if lookaround.matches_at(text, abs_end, lookaround_matcher) {
+                            matches.push((abs_start, abs_end));
+                        }
+                        
+                        // Move search position past the start of this match
+                        search_pos = abs_start + 1;
+                    } else {
+                        break;
+                    }
+                }
+                
+                matches
             }
         }
     }
@@ -1099,6 +1186,16 @@ fn compile_ast(ast: &Ast) -> Result<Matcher, PatternError> {
             let inner_matcher = compile_ast(inner_ast)?;
             Ok(Matcher::Capture(Box::new(inner_matcher), *group_index))
         }
+        Ast::CombinedWithLookaround { prefix, lookaround } => {
+            // Compile both the prefix and the lookaround's inner pattern
+            let prefix_matcher = compile_ast(prefix)?;
+            let lookaround_inner = compile_ast(&lookaround.pattern)?;
+            Ok(Matcher::CombinedWithLookaround {
+                prefix: Box::new(prefix_matcher),
+                lookaround: Box::new(lookaround.clone()),
+                lookaround_matcher: Box::new(lookaround_inner),
+            })
+        }
     }
 }
 
@@ -1134,6 +1231,128 @@ fn is_word_charclass(cc: &CharClass) -> bool {
     
     has_lower && has_upper && has_digit && 
     cc.chars.len() == 1 && cc.chars[0] == '_'
+}
+
+/// Parse lookaround assertion patterns: (?=...), (?!...), (?<=...), (?<!...)
+fn parse_lookaround(pattern: &str) -> Result<Ast, PatternError> {
+    let lookaround_type = if pattern.starts_with("(?=") {
+        LookaroundType::PositiveLookahead
+    } else if pattern.starts_with("(?!") {
+        LookaroundType::NegativeLookahead
+    } else if pattern.starts_with("(?<=") {
+        LookaroundType::PositiveLookbehind
+    } else if pattern.starts_with("(?<!") {
+        LookaroundType::NegativeLookbehind
+    } else {
+        return Err(PatternError::ParseError("Invalid lookaround syntax".to_string()));
+    };
+    
+    // Find the matching closing parenthesis
+    let prefix_len = if pattern.starts_with("(?<=") || pattern.starts_with("(?<!") {
+        4 // "(?<=" or "(?<!"
+    } else {
+        3 // "(?=" or "(?!"
+    };
+    
+    if let Some(close_idx) = find_matching_paren(pattern, 0) {
+        if close_idx != pattern.len() - 1 {
+            return Err(PatternError::ParseError(
+                "Lookaround must be entire pattern (combined patterns not yet supported)".to_string()
+            ));
+        }
+        
+        let inner = &pattern[prefix_len..close_idx];
+        let inner_ast = parse_pattern(inner)?;
+        
+        Ok(Ast::Lookaround(Lookaround::new(lookaround_type, inner_ast)))
+    } else {
+        Err(PatternError::ParseError("Unmatched parenthesis in lookaround".to_string()))
+    }
+}
+
+/// Parse combined patterns with lookaround: foo(?=bar), \d+(?!x), etc.
+fn parse_combined_with_lookaround(pattern: &str) -> Result<Ast, PatternError> {
+    // Find the lookaround position
+    let lookaround_patterns = ["(?=", "(?!", "(?<=", "(?<!"];
+    
+    for lookaround_start in lookaround_patterns {
+        if let Some(pos) = pattern.find(lookaround_start) {
+            if pos == 0 {
+                // This is a standalone lookaround, not combined
+                continue;
+            }
+            
+            // Split into prefix and lookaround
+            let prefix = &pattern[..pos];
+            let lookaround_part = &pattern[pos..];
+            
+            // Parse the prefix
+            let prefix_ast = parse_pattern(prefix)?;
+            
+            // Parse the lookaround
+            let lookaround_type = if lookaround_start == "(?=" {
+                LookaroundType::PositiveLookahead
+            } else if lookaround_start == "(?!" {
+                LookaroundType::NegativeLookahead
+            } else if lookaround_start == "(?<=" {
+                LookaroundType::PositiveLookbehind
+            } else {
+                LookaroundType::NegativeLookbehind
+            };
+            
+            let prefix_len = lookaround_start.len();
+            if let Some(close_idx) = find_matching_paren(lookaround_part, 0) {
+                if close_idx != lookaround_part.len() - 1 {
+                    return Err(PatternError::ParseError(
+                        "Extra characters after lookaround".to_string()
+                    ));
+                }
+                
+                let inner = &lookaround_part[prefix_len..close_idx];
+                let inner_ast = parse_pattern(inner)?;
+                
+                let lookaround = Lookaround::new(lookaround_type, inner_ast);
+                
+                return Ok(Ast::CombinedWithLookaround {
+                    prefix: Box::new(prefix_ast),
+                    lookaround,
+                });
+            } else {
+                return Err(PatternError::ParseError("Unmatched parenthesis in lookaround".to_string()));
+            }
+        }
+    }
+    
+    Err(PatternError::ParseError("No lookaround found in pattern".to_string()))
+}
+
+/// Find the index of the matching closing parenthesis
+/// Returns None if no match found
+fn find_matching_paren(pattern: &str, start: usize) -> Option<usize> {
+    let bytes = pattern.as_bytes();
+    if start >= bytes.len() || bytes[start] != b'(' {
+        return None;
+    }
+    
+    let mut depth = 0;
+    for (i, &ch) in bytes[start..].iter().enumerate() {
+        match ch {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(start + i);
+                }
+            }
+            b'\\' => {
+                // Skip next character (could be escaped parenthesis)
+                // This is a simple approach, doesn't handle all edge cases
+            }
+            _ => {}
+        }
+    }
+    
+    None // Unmatched
 }
 
 #[cfg(test)]
