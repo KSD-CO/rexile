@@ -507,6 +507,8 @@ enum Matcher {
     Quantified(QuantifiedPattern),
     Sequence(Sequence),
     Group(Group),  // NEW: Group matcher
+    DigitRun,  // NEW: Specialized fast path for \d+ pattern
+    WordRun,   // NEW: Specialized fast path for \w+ pattern
 }
 
 impl Matcher {
@@ -549,7 +551,38 @@ impl Matcher {
             Matcher::Quantified(qp) => qp.is_match(text),  // NEW: Early termination
             Matcher::Sequence(seq) => seq.is_match(text),  // NEW: Early termination
             Matcher::Group(group) => group.is_match(text), // NEW: Early termination
+            Matcher::DigitRun => Self::digit_run_is_match(text),  // NEW: Specialized digit fast path
+            Matcher::WordRun => Self::word_run_is_match(text),    // NEW: Specialized word fast path
         }
+    }
+    
+    /// Specialized fast path for \d+ pattern
+    #[inline(always)]
+    fn digit_run_is_match(text: &str) -> bool {
+        let bytes = text.as_bytes();
+        if bytes.is_empty() {
+            return false;
+        }
+        
+        // Check if text starts with at least one digit
+        bytes.iter().any(|&b| b >= b'0' && b <= b'9')
+    }
+    
+    /// Specialized fast path for \w+ pattern  
+    #[inline(always)]
+    fn word_run_is_match(text: &str) -> bool {
+        let bytes = text.as_bytes();
+        if bytes.is_empty() {
+            return false;
+        }
+        
+        // Check if text contains at least one word char [a-zA-Z0-9_]
+        bytes.iter().any(|&b| {
+            (b >= b'a' && b <= b'z') || 
+            (b >= b'A' && b <= b'Z') || 
+            (b >= b'0' && b <= b'9') || 
+            b == b'_'
+        })
     }
 
     fn find(&self, text: &str) -> Option<(usize, usize)> {
@@ -609,7 +642,71 @@ impl Matcher {
             Matcher::Quantified(qp) => qp.find(text),
             Matcher::Sequence(seq) => seq.find(text),
             Matcher::Group(group) => group.find(text),
+            Matcher::DigitRun => Self::digit_run_find(text),  // NEW: Specialized digit find
+            Matcher::WordRun => Self::word_run_find(text),    // NEW: Specialized word find
         }
+    }
+    
+    /// Find first run of digits in text
+    #[inline(always)]
+    fn digit_run_find(text: &str) -> Option<(usize, usize)> {
+        let bytes = text.as_bytes();
+        
+        // Find start: first digit
+        let mut start = None;
+        for (i, &b) in bytes.iter().enumerate() {
+            if b >= b'0' && b <= b'9' {
+                start = Some(i);
+                break;
+            }
+        }
+        
+        let start_idx = start?;
+        
+        // Find end: first non-digit after start
+        let mut end_idx = bytes.len();
+        for (i, &b) in bytes[start_idx..].iter().enumerate() {
+            if b < b'0' || b > b'9' {
+                end_idx = start_idx + i;
+                break;
+            }
+        }
+        
+        Some((start_idx, end_idx))
+    }
+    
+    /// Find first run of word characters in text
+    #[inline(always)]
+    fn word_run_find(text: &str) -> Option<(usize, usize)> {
+        let bytes = text.as_bytes();
+        
+        // Find start: first word char
+        let mut start = None;
+        for (i, &b) in bytes.iter().enumerate() {
+            if (b >= b'a' && b <= b'z') || 
+               (b >= b'A' && b <= b'Z') || 
+               (b >= b'0' && b <= b'9') || 
+               b == b'_' {
+                start = Some(i);
+                break;
+            }
+        }
+        
+        let start_idx = start?;
+        
+        // Find end: first non-word char after start
+        let mut end_idx = bytes.len();
+        for (i, &b) in bytes[start_idx..].iter().enumerate() {
+            if !((b >= b'a' && b <= b'z') || 
+                 (b >= b'A' && b <= b'Z') || 
+                 (b >= b'0' && b <= b'9') || 
+                 b == b'_') {
+                end_idx = start_idx + i;
+                break;
+            }
+        }
+        
+        Some((start_idx, end_idx))
     }
 
     fn find_all(&self, text: &str) -> Vec<(usize, usize)> {
@@ -646,7 +743,85 @@ impl Matcher {
             Matcher::Quantified(qp) => qp.find_all(text),
             Matcher::Sequence(seq) => seq.find_all(text),
             Matcher::Group(group) => group.find_all(text),
+            Matcher::DigitRun => Self::digit_run_find_all(text),  // NEW: Specialized digit find_all
+            Matcher::WordRun => Self::word_run_find_all(text),    // NEW: Specialized word find_all
         }
+    }
+    
+    /// Find all runs of digits in text (optimized)
+    #[inline]
+    fn digit_run_find_all(text: &str) -> Vec<(usize, usize)> {
+        let bytes = text.as_bytes();
+        let mut matches = Vec::new();
+        let mut i = 0;
+        
+        while i < bytes.len() {
+            // Skip non-digits
+            while i < bytes.len() && (bytes[i] < b'0' || bytes[i] > b'9') {
+                i += 1;
+            }
+            
+            if i >= bytes.len() {
+                break;
+            }
+            
+            // Found start of digit run
+            let start = i;
+            
+            // Consume all digits
+            while i < bytes.len() && bytes[i] >= b'0' && bytes[i] <= b'9' {
+                i += 1;
+            }
+            
+            matches.push((start, i));
+        }
+        
+        matches
+    }
+    
+    /// Find all runs of word characters in text (optimized)
+    #[inline]
+    fn word_run_find_all(text: &str) -> Vec<(usize, usize)> {
+        let bytes = text.as_bytes();
+        let mut matches = Vec::new();
+        let mut i = 0;
+        
+        while i < bytes.len() {
+            // Skip non-word chars
+            while i < bytes.len() {
+                let b = bytes[i];
+                if (b >= b'a' && b <= b'z') || 
+                   (b >= b'A' && b <= b'Z') || 
+                   (b >= b'0' && b <= b'9') || 
+                   b == b'_' {
+                    break;
+                }
+                i += 1;
+            }
+            
+            if i >= bytes.len() {
+                break;
+            }
+            
+            // Found start of word run
+            let start = i;
+            
+            // Consume all word chars
+            while i < bytes.len() {
+                let b = bytes[i];
+                if !((b >= b'a' && b <= b'z') || 
+                     (b >= b'A' && b <= b'Z') || 
+                     (b >= b'0' && b <= b'9') || 
+                     b == b'_') {
+                    break;
+                }
+                i += 1;
+            }
+            
+            matches.push((start, i));
+        }
+        
+        matches
     }
 }
 
@@ -669,10 +844,59 @@ fn compile_ast(ast: &Ast) -> Result<Matcher, PatternError> {
             end: *end,
         }),
         Ast::CharClass(cc) => Ok(Matcher::CharClass(cc.clone())),
-        Ast::Quantified(qp) => Ok(Matcher::Quantified(qp.clone())),
+        Ast::Quantified(qp) => {
+            // OPTIMIZATION: Detect \d+ and \w+ patterns for specialized fast path
+            if let crate::quantifier::Quantifier::OneOrMore = qp.quantifier {
+                if let crate::quantifier::QuantifiedElement::CharClass(ref cc) = qp.element {
+                    // Check if this is \d+ (digits)
+                    if is_digit_charclass(cc) {
+                        return Ok(Matcher::DigitRun);
+                    }
+                    // Check if this is \w+ (word chars)
+                    if is_word_charclass(cc) {
+                        return Ok(Matcher::WordRun);
+                    }
+                }
+            }
+            Ok(Matcher::Quantified(qp.clone()))
+        }
         Ast::Sequence(seq) => Ok(Matcher::Sequence(seq.clone())),
         Ast::Group(group) => Ok(Matcher::Group(group.clone())),
     }
+}
+
+/// Check if CharClass matches \d pattern (only [0-9])
+fn is_digit_charclass(cc: &CharClass) -> bool {
+    // Check if ranges contain exactly [0-9] and no other chars
+    cc.ranges.len() == 1 && 
+    cc.ranges[0] == ('0', '9') && 
+    cc.chars.is_empty() && 
+    !cc.negated
+}
+
+/// Check if CharClass matches \w pattern ([a-zA-Z0-9_])
+fn is_word_charclass(cc: &CharClass) -> bool {
+    // Check if ranges contain [a-z], [A-Z], [0-9] and chars contain '_'
+    if cc.negated || cc.ranges.len() != 3 {
+        return false;
+    }
+    
+    let mut has_lower = false;
+    let mut has_upper = false;
+    let mut has_digit = false;
+    
+    for &(start, end) in &cc.ranges {
+        if start == 'a' && end == 'z' {
+            has_lower = true;
+        } else if start == 'A' && end == 'Z' {
+            has_upper = true;
+        } else if start == '0' && end == '9' {
+            has_digit = true;
+        }
+    }
+    
+    has_lower && has_upper && has_digit && 
+    cc.chars.len() == 1 && cc.chars[0] == '_'
 }
 
 #[cfg(test)]

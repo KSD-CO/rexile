@@ -6,11 +6,11 @@
 #[derive(Debug, Clone)]
 pub struct CharClass {
     /// Individual characters to match (e.g., 'a', 'b', 'c' from [abc])
-    chars: Vec<char>,
+    pub(crate) chars: Vec<char>,  // Made pub(crate) for optimization checks
     /// Character ranges to match (e.g., ('a', 'z') from [a-z])
-    ranges: Vec<(char, char)>,
+    pub(crate) ranges: Vec<(char, char)>,  // Made pub(crate) for optimization checks
     /// If true, matches anything NOT in chars/ranges
-    negated: bool,
+    pub(crate) negated: bool,  // Made pub(crate) for optimization checks
     /// ASCII fast path: bitmap for ASCII characters (0-127)
     ascii_bitmap: Option<[u64; 2]>, // 128 bits = 2 x u64
 }
