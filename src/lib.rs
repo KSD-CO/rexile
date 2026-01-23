@@ -331,8 +331,6 @@ impl Pattern {
         FindIter {
             matcher: &self.matcher,
             fast_path: &self.fast_path,
-            cached_results: None,
-            result_index: 0,
             text,
             pos: 0,
         }
@@ -596,8 +594,6 @@ impl Pattern {
 pub struct FindIter<'a> {
     matcher: &'a Matcher,
     fast_path: &'a Option<optimization::fast_path::FastPath>,
-    cached_results: Option<Vec<(usize, usize)>>,
-    result_index: usize,
     text: &'a str,
     pos: usize,
 }
@@ -606,31 +602,24 @@ impl<'a> Iterator for FindIter<'a> {
     type Item = (usize, usize);
 
     fn next(&mut self) -> Option<Self::Item> {
-        // Use fast path with caching if available
-        if let Some(ref fast_path) = self.fast_path {
-            // Initialize cache on first call
-            if self.cached_results.is_none() {
-                self.cached_results = Some(fast_path.find_all(self.text));
-            }
-
-            // Return next result from cache
-            if let Some(ref results) = self.cached_results {
-                if self.result_index < results.len() {
-                    let result = results[self.result_index];
-                    self.result_index += 1;
-                    return Some(result);
-                }
-            }
-
-            return None;
-        }
-
-        // Fallback: normal matcher iteration
+        // TRUE LAZY EVALUATION: Find one match at a time
         if self.pos >= self.text.len() {
             return None;
         }
 
-        // Find next match starting from current position
+        // Use fast path if available - find_at() finds ONE match from position
+        if let Some(ref fast_path) = self.fast_path {
+            if let Some((start, end)) = fast_path.find_at(self.text, self.pos) {
+                // Move position past this match
+                self.pos = end.max(self.pos + 1);
+                return Some((start, end));
+            } else {
+                // No more matches
+                return None;
+            }
+        }
+
+        // Fallback: normal matcher iteration
         let remaining = &self.text[self.pos..];
         if let Some((rel_start, rel_end)) = self.matcher.find(remaining) {
             let abs_start = self.pos + rel_start;

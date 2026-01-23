@@ -447,6 +447,8 @@ pub fn find_literal_ws_digits_all(text: &str, literal: &str) -> Vec<(usize, usiz
             continue;
         }
 
+
+/// Fast path for literal + whitespace + word: when\s+\w+
         // Match at least one whitespace
         let rest = &text[after..];
         let bytes = rest.as_bytes();
@@ -600,46 +602,81 @@ pub fn find_alternation_all(ac: &AhoCorasick, text: &str) -> Vec<(usize, usize)>
 }
 
 /// Detect pattern type and return specialized function
+
+/// Strip simple capture groups for fast path detection
+/// Allows patterns like "when\s+(\w+)" to match as "when\s+\w+"
+fn strip_simple_captures(pattern: &str) -> String {
+    let mut result = String::with_capacity(pattern.len());
+    let mut depth = 0;
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut i = 0;
+    
+    while i < chars.len() {
+        match chars[i] {
+            '(' => {
+                // Skip capture group markers but keep content
+                depth += 1;
+                i += 1;
+            }
+            ')' => {
+                if depth > 0 {
+                    depth -= 1;
+                }
+                i += 1;
+            }
+            _ => {
+                result.push(chars[i]);
+                i += 1;
+            }
+        }
+    }
+    
+    result
+}
+
 pub fn detect_fast_path(pattern: &str) -> Option<FastPath> {
     // Don't use fast path for anchored patterns - they need special handling
     if pattern.starts_with('^') || pattern.ends_with('$') {
         return None;
     }
 
+    // Strip captures to allow detection of patterns like "when\s+(\w+)"
+    let normalized = strip_simple_captures(pattern);
+
     // Check for simple literal
-    if !pattern.contains(['\\', '[', ']', '(', ')', '*', '+', '?', '{', '}', '|', '.']) {
-        return Some(FastPath::Literal(pattern.to_string()));
+    if !normalized.contains(['\\', '[', ']', '(', ')', '*', '+', '?', '{', '}', '|', '.']) {
+        return Some(FastPath::Literal(normalized.to_string()));
     }
 
     // Check for digit run
-    if pattern == r"\d+" {
+    if normalized == r"\d+" {
         return Some(FastPath::DigitRun);
     }
 
     // Check for word run
-    if pattern == r"\w+" {
+    if normalized == r"\w+" {
         return Some(FastPath::WordRun);
     }
 
     // Check for identifier pattern: [a-zA-Z_]\w*
-    if pattern == r"[a-zA-Z_]\w*" {
+    if normalized == r"[a-zA-Z_]\w*" {
         return Some(FastPath::IdentifierRun);
     }
 
     // Check for literal + whitespace
-    if let Some(rest) = pattern.strip_suffix(r"\s+") {
+    if let Some(rest) = normalized.strip_suffix(r"\s+") {
         if !rest.contains(['\\', '[', ']', '(', ')', '*', '+', '?', '{', '}', '|', '.']) {
             return Some(FastPath::LiteralPlusWhitespace(rest.to_string()));
         }
     }
 
     // Check for quoted string
-    if pattern == r#""[^"]+""# {
+    if normalized == r#""[^"]+""# {
         return Some(FastPath::QuotedString);
     }
 
     // Check for literal + whitespace + quoted string: rule\s+"[^"]+"
-    if let Some(mid) = pattern.strip_suffix(r#""[^"]+""#) {
+    if let Some(mid) = normalized.strip_suffix(r#""[^"]+""#) {
         if let Some(literal) = mid.strip_suffix(r"\s+") {
             if !literal.contains(['\\', '[', ']', '(', ')', '*', '+', '?', '{', '}', '|', '.']) {
                 return Some(FastPath::LiteralWhitespaceQuoted(literal.to_string()));
@@ -648,10 +685,19 @@ pub fn detect_fast_path(pattern: &str) -> Option<FastPath> {
     }
 
     // Check for literal + whitespace + digits: salience\s+\d+
-    if let Some(mid) = pattern.strip_suffix(r"\d+") {
+    if let Some(mid) = normalized.strip_suffix(r"\d+") {
         if let Some(literal) = mid.strip_suffix(r"\s+") {
             if !literal.contains(['\\', '[', ']', '(', ')', '*', '+', '?', '{', '}', '|', '.']) {
                 return Some(FastPath::LiteralWhitespaceDigits(literal.to_string()));
+            }
+        }
+    }
+
+    // Check for literal + whitespace + word: when\s+\w+
+    if let Some(mid) = normalized.strip_suffix(r"\w+") {
+        if let Some(literal) = mid.strip_suffix(r"\s+") {
+            if !literal.contains(['\\', '[', ']', '(', ')', '*', '+', '?', '{', '}', '|', '.']) {
+                return Some(FastPath::LiteralWhitespaceWord(literal.to_string()));
             }
         }
     }
@@ -663,10 +709,10 @@ pub fn detect_fast_path(pattern: &str) -> Option<FastPath> {
     // }
 
     // Check for simple alternation of literals: word1|word2|word3
-    if pattern.contains('|')
+    if normalized.contains('|')
         && !pattern.contains(['\\', '[', ']', '(', ')', '*', '+', '?', '{', '}', '.'])
     {
-        let alternatives: Vec<String> = pattern.split('|').map(|s| s.to_string()).collect();
+        let alternatives: Vec<String> = normalized.split('|').map(|s| s.to_string()).collect();
         // Only use fast path if all alternatives are simple literals
         if alternatives.iter().all(|alt| !alt.is_empty()) {
             // Pre-build the aho-corasick automaton once during pattern detection
@@ -683,12 +729,277 @@ pub fn detect_fast_path(pattern: &str) -> Option<FastPath> {
     None
 }
 
+
+// ============================================================================
+// Lazy iteration - find_at() helpers
+// ============================================================================
+
+/// Find digit run starting from position
+#[inline]
+pub fn find_digit_run_at(text: &str, start_pos: usize) -> Option<(usize, usize)> {
+    if start_pos >= text.len() {
+        return None;
+    }
+    let bytes = &text.as_bytes()[start_pos..];
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_digit() {
+            let match_start = start_pos + i;
+            let mut end = i;
+            while end < bytes.len() && bytes[end].is_ascii_digit() {
+                end += 1;
+            }
+            return Some((match_start, start_pos + end));
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Find word run starting from position
+#[inline]
+pub fn find_word_run_at(text: &str, start_pos: usize) -> Option<(usize, usize)> {
+    if start_pos >= text.len() {
+        return None;
+    }
+    let bytes = &text.as_bytes()[start_pos..];
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b.is_ascii_alphanumeric() || b == b'_' {
+            let match_start = start_pos + i;
+            let mut end = i;
+            while end < bytes.len() {
+                let b = bytes[end];
+                if b.is_ascii_alphanumeric() || b == b'_' {
+                    end += 1;
+                } else {
+                    break;
+                }
+            }
+            return Some((match_start, start_pos + end));
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Find identifier starting from position
+#[inline]
+pub fn find_identifier_run_at(text: &str, start_pos: usize) -> Option<(usize, usize)> {
+    if start_pos >= text.len() {
+        return None;
+    }
+    let bytes = &text.as_bytes()[start_pos..];
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b.is_ascii_alphabetic() || b == b'_' {
+            let match_start = start_pos + i;
+            let mut end = i + 1;
+            while end < bytes.len() {
+                let b = bytes[end];
+                if b.is_ascii_alphanumeric() || b == b'_' {
+                    end += 1;
+                } else {
+                    break;
+                }
+            }
+            return Some((match_start, start_pos + end));
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Find quoted string starting from position
+#[inline]
+pub fn find_quoted_string_at(text: &str, start_pos: usize) -> Option<(usize, usize)> {
+    if start_pos >= text.len() {
+        return None;
+    }
+    let bytes = text.as_bytes();
+    let search_bytes = &bytes[start_pos..];
+    let first_quote = memchr(b'"', search_bytes)?;
+    let quote_pos = start_pos + first_quote;
+    if quote_pos + 1 >= bytes.len() {
+        return None;
+    }
+    let closing_quote = memchr(b'"', &bytes[quote_pos + 1..])?;
+    if closing_quote == 0 {
+        return None;
+    }
+    Some((quote_pos, quote_pos + 1 + closing_quote + 1))
+}
+
+/// Find literal starting from position
+#[inline]
+pub fn find_literal_at(text: &str, literal: &str, start_pos: usize) -> Option<(usize, usize)> {
+    if start_pos >= text.len() {
+        return None;
+    }
+    let search_text = &text[start_pos..];
+    let len = literal.len();
+    if len >= 3 {
+        let finder = memmem::Finder::new(literal.as_bytes());
+        finder.find(search_text.as_bytes()).map(|pos| (start_pos + pos, start_pos + pos + len))
+    } else if len == 1 {
+        let byte = literal.as_bytes()[0];
+        memchr(byte, search_text.as_bytes()).map(|pos| (start_pos + pos, start_pos + pos + 1))
+    } else {
+        search_text.find(literal).map(|pos| (start_pos + pos, start_pos + pos + len))
+    }
+}
+
+/// Find literal + whitespace starting from position
+#[inline]
+pub fn find_literal_plus_whitespace_at(text: &str, literal: &str, start_pos: usize) -> Option<(usize, usize)> {
+    if start_pos >= text.len() {
+        return None;
+    }
+    let search_text = &text[start_pos..];
+    let finder = memmem::Finder::new(literal.as_bytes());
+    let lit_pos = finder.find(search_text.as_bytes())?;
+    let abs_pos = start_pos + lit_pos;
+    let after = abs_pos + literal.len();
+    if after >= text.len() {
+        return None;
+    }
+    let rest = &text[after..];
+    let mut matched = 0;
+    for ch in rest.chars() {
+        if ch.is_whitespace() {
+            matched += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    if matched > 0 {
+        Some((abs_pos, after + matched))
+    } else {
+        None
+    }
+}
+
+#[inline]
+pub fn find_literal_ws_word(text: &str, literal: &str) -> Option<(usize, usize)> {
+    let finder = memmem::Finder::new(literal.as_bytes());
+    
+    for pos in finder.find_iter(text.as_bytes()) {
+        let after = pos + literal.len();
+        if after >= text.len() {
+            continue;
+        }
+        
+        // Match at least one whitespace
+        let rest = &text[after..];
+        let mut ws_count = 0;
+        for ch in rest.chars() {
+            if ch.is_whitespace() {
+                ws_count += ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        
+        if ws_count == 0 {
+            continue;
+        }
+        
+        // Match word run
+        let word_start = after + ws_count;
+        if word_start >= text.len() {
+            continue;
+        }
+        
+        let bytes = &text.as_bytes()[word_start..];
+        let mut word_len = 0;
+        for &b in bytes {
+            if b.is_ascii_alphanumeric() || b == b'_' {
+                word_len += 1;
+            } else {
+                break;
+            }
+        }
+        
+        if word_len > 0 {
+            return Some((pos, word_start + word_len));
+        }
+    }
+    
+    None
+}
+
+/// Fast path for find_all: literal + whitespace + word
+#[inline]
+pub fn find_literal_ws_word_all(text: &str, literal: &str) -> Vec<(usize, usize)> {
+    let mut results = Vec::new();
+    let finder = memmem::Finder::new(literal.as_bytes());
+    
+    for pos in finder.find_iter(text.as_bytes()) {
+        let after = pos + literal.len();
+        if after >= text.len() {
+            continue;
+        }
+        
+        // Match at least one whitespace
+        let rest = &text[after..];
+        let mut ws_count = 0;
+        for ch in rest.chars() {
+            if ch.is_whitespace() {
+                ws_count += ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        
+        if ws_count == 0 {
+            continue;
+        }
+        
+        // Match word run
+        let word_start = after + ws_count;
+        if word_start >= text.len() {
+            continue;
+        }
+        
+        let bytes = &text.as_bytes()[word_start..];
+        let mut word_len = 0;
+        for &b in bytes {
+            if b.is_ascii_alphanumeric() || b == b'_' {
+                word_len += 1;
+            } else {
+                break;
+            }
+        }
+        
+        if word_len > 0 {
+            results.push((pos, word_start + word_len));
+        }
+    }
+    
+    results
+}
+
+/// Find literal + whitespace + word starting from position
+#[inline]
+pub fn find_literal_ws_word_at(text: &str, literal: &str, start_pos: usize) -> Option<(usize, usize)> {
+    if start_pos >= text.len() {
+        return None;
+    }
+    let search_text = &text[start_pos..];
+    find_literal_ws_word(search_text, literal).map(|(rel_start, rel_end)| {
+        (start_pos + rel_start, start_pos + rel_end)
+    })
+}
+
 #[derive(Clone)]
 pub enum FastPath {
     Literal(String),
     LiteralPlusWhitespace(String),
     LiteralWhitespaceQuoted(String), // rule\s+"[^"]+"
     LiteralWhitespaceDigits(String), // salience\s+\d+
+    LiteralWhitespaceWord(String),   // when\s+\w+
     WordCompareDigit,                // \w+\s*>=\s*\d+
     Alternation(Arc<AhoCorasick>),   // Pre-built automaton for word1|word2|word3
     DigitRun,
@@ -704,6 +1015,7 @@ impl std::fmt::Debug for FastPath {
             FastPath::LiteralPlusWhitespace(s) => write!(f, "LiteralPlusWhitespace({:?})", s),
             FastPath::LiteralWhitespaceQuoted(s) => write!(f, "LiteralWhitespaceQuoted({:?})", s),
             FastPath::LiteralWhitespaceDigits(s) => write!(f, "LiteralWhitespaceDigits({:?})", s),
+            FastPath::LiteralWhitespaceWord(s) => write!(f, "LiteralWhitespaceWord({:?})", s),
             FastPath::WordCompareDigit => write!(f, "WordCompareDigit"),
             FastPath::Alternation(_) => write!(f, "Alternation(<AhoCorasick>)"),
             FastPath::DigitRun => write!(f, "DigitRun"),
@@ -722,6 +1034,7 @@ impl FastPath {
             FastPath::LiteralPlusWhitespace(s) => find_literal_plus_whitespace(text, s),
             FastPath::LiteralWhitespaceQuoted(s) => find_literal_ws_quoted(text, s),
             FastPath::LiteralWhitespaceDigits(s) => find_literal_ws_digits(text, s),
+            FastPath::LiteralWhitespaceWord(s) => find_literal_ws_word(text, s),
             FastPath::WordCompareDigit => find_word_compare_digit(text),
             FastPath::Alternation(ac) => find_alternation(ac, text),
             FastPath::DigitRun => find_digit_run(text),
@@ -738,12 +1051,35 @@ impl FastPath {
             FastPath::LiteralPlusWhitespace(s) => find_literal_plus_whitespace_all(text, s),
             FastPath::LiteralWhitespaceQuoted(s) => find_literal_ws_quoted_all(text, s),
             FastPath::LiteralWhitespaceDigits(s) => find_literal_ws_digits_all(text, s),
+            FastPath::LiteralWhitespaceWord(s) => find_literal_ws_word_all(text, s),
             FastPath::WordCompareDigit => find_word_compare_digit_all(text),
             FastPath::Alternation(ac) => find_alternation_all(ac, text),
             FastPath::DigitRun => find_digit_run_all(text),
             FastPath::WordRun => find_word_run_all(text),
             FastPath::IdentifierRun => find_identifier_run_all(text),
             FastPath::QuotedString => find_quoted_string_all(text),
+        }
+    }
+
+    /// Find next match starting from position (for lazy iteration)
+    #[inline]
+    pub fn find_at(&self, text: &str, start_pos: usize) -> Option<(usize, usize)> {
+        match self {
+            FastPath::Literal(s) => find_literal_at(text, s, start_pos),
+            FastPath::LiteralPlusWhitespace(s) => find_literal_plus_whitespace_at(text, s, start_pos),
+            FastPath::LiteralWhitespaceWord(s) => find_literal_ws_word_at(text, s, start_pos),
+            FastPath::DigitRun => find_digit_run_at(text, start_pos),
+            FastPath::WordRun => find_word_run_at(text, start_pos),
+            FastPath::IdentifierRun => find_identifier_run_at(text, start_pos),
+            FastPath::QuotedString => find_quoted_string_at(text, start_pos),
+            // For complex patterns, use find() on remaining text
+            _ => {
+                if start_pos >= text.len() {
+                    return None;
+                }
+                let remaining = &text[start_pos..];
+                self.find(remaining).map(|(rel_start, rel_end)| (start_pos + rel_start, start_pos + rel_end))
+            }
         }
     }
 }
