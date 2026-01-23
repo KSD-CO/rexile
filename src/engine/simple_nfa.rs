@@ -77,6 +77,17 @@ impl SimpleNFA {
                 transitions[from_state].push(state_id);
                 Some(state_id)
             }
+            SequenceElement::Dot => {
+                // Dot wildcard - treat as CharClass matching anything except newline
+                let state_id = states.len();
+                use crate::parser::charclass::CharClass;
+                let dot_class = CharClass::parse(r"^
+").ok()?;
+                states.push(State::CharClass(dot_class));
+                transitions.push(Vec::new());
+                transitions[from_state].push(state_id);
+                Some(state_id)
+            }
             SequenceElement::CharClass(cc) => {
                 let state_id = states.len();
                 states.push(State::CharClass(cc.clone()));

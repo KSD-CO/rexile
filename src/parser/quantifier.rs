@@ -248,10 +248,25 @@ pub fn parse_quantified_pattern(pattern: &str) -> Result<QuantifiedPattern, Stri
         let remaining = &pattern[ch.len_utf8()..];
         let quantifier = parse_quantifier(remaining)?;
 
-        Ok(QuantifiedPattern {
-            element: QuantifiedElement::Char(ch),
-            quantifier,
-        })
+        // Check if it's a dot wildcard
+        if ch == '.' {
+            // Dot matches any character except newline - use CharClass
+            use crate::parser::charclass::CharClass;
+            // Create CharClass that excludes newline directly
+            let mut dot_class = CharClass::new();
+            dot_class.add_char('\n');  // Add newline character
+            dot_class.negate();  // Negate to match anything EXCEPT newline
+            dot_class.finalize();  // Finalize to build internal structures
+            Ok(QuantifiedPattern {
+                element: QuantifiedElement::CharClass(dot_class),
+                quantifier,
+            })
+        } else {
+            Ok(QuantifiedPattern {
+                element: QuantifiedElement::Char(ch),
+                quantifier,
+            })
+        }
     } else {
         Err("Invalid pattern format".to_string())
     }

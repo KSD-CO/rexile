@@ -12,6 +12,8 @@ use crate::parser::quantifier::Quantifier;
 pub enum SequenceElement {
     /// A literal character (e.g., 'a' in "abc")
     Char(char),
+    /// Dot wildcard (matches any character except newline)
+    Dot,
     /// A quantified character (e.g., 'a+' in "a+bc")
     QuantifiedChar(char, Quantifier),
     /// A character class (e.g., [a-z])
@@ -35,6 +37,15 @@ impl SequenceElement {
             SequenceElement::Char(ch) => {
                 if remaining.starts_with(*ch) {
                     Some(ch.len_utf8())
+                } else {
+                    None
+                }
+            }
+            SequenceElement::Dot => {
+                // Dot matches any character except newline
+                let first_char = remaining.chars().next()?;
+                if first_char != '\n' {
+                    Some(first_char.len_utf8())
                 } else {
                     None
                 }
@@ -169,39 +180,14 @@ impl Sequence {
     /// Check if the sequence matches at the start of text
     /// Returns bytes consumed if match, None otherwise
     pub fn match_at(&self, text: &str) -> Option<usize> {
-        let mut pos = 0;
-
-        for element in &self.elements {
-            match element.match_at(text, pos) {
-                Some(consumed) => pos += consumed,
-                None => return None,
-            }
-        }
-
-        Some(pos)
+        // Use backtracking-enabled matching from start
+        self.match_elements_backtracking(text, 0, 0)
     }
 
     /// Check if the sequence matches anywhere in text (optimized)
     /// Returns immediately on first match without computing position
     pub fn is_match(&self, text: &str) -> bool {
-        // Fast path: Try match at start first
-        if self.match_at(text).is_some() {
-            return true;
-        }
-
-        // Only scan forward if no match at start
-        let byte_positions: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
-
-        for &start_pos in &byte_positions {
-            if start_pos == 0 {
-                continue; // Already tried
-            }
-            if self.match_at(&text[start_pos..]).is_some() {
-                return true; // Early termination!
-            }
-        }
-
-        false
+        self.find(text).is_some()
     }
 
     /// Find the sequence anywhere in text
@@ -261,17 +247,12 @@ impl Sequence {
 
         // OPTIMIZATION 2: Inner literal with bidirectional matching
         // For patterns like \w+\s*>=\s*\d+ with anchor '>=' in middle
-        // Only use for multi-byte literals (single chars too common)
         if let Some((anchor_literal, before_count, after_count)) = self.extract_inner_literal() {
             if anchor_literal.len() >= 2 {
-                // At least 2 bytes
                 use memchr::memmem;
                 let finder = memmem::Finder::new(&anchor_literal);
 
-                // For each anchor occurrence
                 for anchor_pos in finder.find_iter(text.as_bytes()) {
-                    // Try to match backwards from anchor (before_count elements)
-                    // and forwards from anchor_end (after_count elements)
                     if let Some((match_start, match_end)) = self.match_around_anchor(
                         text,
                         anchor_pos,
@@ -283,19 +264,121 @@ impl Sequence {
                     }
                 }
                 return None;
+            } else if anchor_literal.len() == 1 {
+                // Single char inner literal - use memchr for rare/distinctive chars
+                let byte = anchor_literal[0];
+                if !byte.is_ascii_alphanumeric() && byte != b' ' && byte != b'.' {
+                    // Rare char (like @, #, :, !, etc.) - memchr is effective
+                    let mut pos = 0;
+                    while pos < text.len() {
+                        if let Some(found) = memchr::memchr(byte, &text.as_bytes()[pos..]) {
+                            let anchor_pos = pos + found;
+                            if let Some((match_start, match_end)) = self.match_around_anchor(
+                                text,
+                                anchor_pos,
+                                1,
+                                before_count,
+                                after_count,
+                            ) {
+                                return Some((match_start, match_end));
+                            }
+                            pos = anchor_pos + 1;
+                        } else {
+                            return None;
+                        }
+                    }
+                    return None;
+                }
+            }
+        }
+
+        // OPTIMIZATION 3: Charclass prefilter - use most selective element
+        if let (Some(first), Some(last)) = (self.elements.first(), self.elements.last()) {
+            let first_cc = match first {
+                SequenceElement::QuantifiedCharClass(cc, _) => Some(cc),
+                _ => None,
+            };
+            let last_cc = match last {
+                SequenceElement::QuantifiedCharClass(cc, _) => Some(cc),
+                _ => None,
+            };
+
+            // Choose the most selective element as prefilter
+            let use_last = match (first_cc, last_cc) {
+                (Some(fc), Some(lc)) => Self::selectivity(lc) < Self::selectivity(fc),
+                _ => false,
+            };
+
+            if use_last {
+                if let Some(lc) = last_cc {
+                    let fc = first_cc.unwrap();
+                    // Reverse prefilter: find last element, then search backward for first element
+                    let mut pos = 0;
+                    while pos < text.len() {
+                        if let Some(offset) = lc.find_first(&text[pos..]) {
+                            let suffix_pos = pos + offset;
+                            // Find where first element matches, working backwards from suffix
+                            // Only check positions where first element actually matches
+                            let search_start = suffix_pos.saturating_sub(128);
+                            let window = &text[search_start..=suffix_pos.min(text.len() - 1)];
+                            let mut try_pos = 0;
+                            let mut found = false;
+                            while try_pos < window.len() {
+                                if let Some(foffset) = fc.find_first(&window[try_pos..]) {
+                                    let abs_start = search_start + try_pos + foffset;
+                                    if let Some(consumed) = self.match_at(&text[abs_start..]) {
+                                        return Some((abs_start, abs_start + consumed));
+                                    }
+                                    try_pos += foffset + 1;
+                                } else {
+                                    break;
+                                }
+                            }
+                            pos = suffix_pos + 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    return None;
+                }
+            } else if let Some(fc) = first_cc {
+                // Forward prefilter: find first element, then try full match
+                let mut pos = 0;
+                while pos < text.len() {
+                    if let Some(offset) = fc.find_first(&text[pos..]) {
+                        let start_pos = pos + offset;
+                        if let Some(consumed) = self.match_at(&text[start_pos..]) {
+                            return Some((start_pos, start_pos + consumed));
+                        }
+                        pos = start_pos + 1;
+                    } else {
+                        break;
+                    }
+                }
+                return None;
             }
         }
 
         // Fallback: sequential search
-        let byte_positions: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
-
-        for &start_pos in &byte_positions {
+        for (start_pos, _) in text.char_indices() {
             if let Some(consumed) = self.match_at(&text[start_pos..]) {
                 return Some((start_pos, start_pos + consumed));
             }
         }
 
         None
+    }
+
+    /// Estimate how many characters a CharClass matches (lower = more selective)
+    fn selectivity(cc: &CharClass) -> usize {
+        if cc.negated {
+            return 1000; // Negated classes match almost everything
+        }
+        let mut count = cc.chars.len();
+        for &(start, end) in &cc.ranges {
+            count += (end as usize) - (start as usize) + 1;
+        }
+        count
     }
 
     /// Extract literal prefix from sequence
@@ -357,7 +440,7 @@ impl Sequence {
                 }
             }
 
-            if literal_bytes.len() >= 2 {
+            if !literal_bytes.is_empty() {
                 let before_count = start_idx;
                 let after_count = self.elements.len() - start_idx - elements_consumed;
                 return Some((literal_bytes, before_count, after_count));
@@ -490,16 +573,185 @@ impl Sequence {
         }
 
         let start_idx = self.elements.len() - skip_count;
-        let mut pos = 0;
+        
+        // Use backtracking-enabled matching
+        self.match_elements_backtracking(text, start_idx, 0)
+    }
+    
+    /// Match elements with backtracking support for quantified elements
+    fn match_elements_backtracking(&self, text: &str, elem_idx: usize, text_pos: usize) -> Option<usize> {
+        // Base case: all elements matched
+        if elem_idx >= self.elements.len() {
+            return Some(text_pos);
+        }
+        
+        let elem = &self.elements[elem_idx];
+        
+        match elem {
+            // Quantified elements: try different match lengths (greedy first, then backtrack)
+            SequenceElement::QuantifiedChar(ch, quantifier) => {
+                self.backtrack_quantified_char(*ch, quantifier, text, text_pos, elem_idx)
+            }
+            SequenceElement::QuantifiedCharClass(cc, quantifier) => {
+                self.backtrack_quantified_charclass(cc, quantifier, text, text_pos, elem_idx)
+            }
+            // Non-quantified elements: simple match
+            _ => {
+                if let Some(consumed) = elem.match_at(text, text_pos) {
+                    self.match_elements_backtracking(text, elem_idx + 1, text_pos + consumed)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+    
+    /// Backtracking for quantified char: try greedy first, then shorter matches
+    fn backtrack_quantified_char(&self, ch: char, quantifier: &Quantifier, text: &str, text_pos: usize, elem_idx: usize) -> Option<usize> {
+        let (min, max) = quantifier_bounds(quantifier);
+        let remaining = &text[text_pos..];
+        let ch_len = ch.len_utf8();
 
-        for elem in &self.elements[start_idx..] {
-            match elem.match_at(text, pos) {
-                Some(consumed) => pos += consumed,
-                None => return None,
+        // Count maximum possible matches and build byte position table
+        let mut max_count = 0;
+        let mut byte_offset = 0;
+        // Pre-compute cumulative byte positions to avoid O(n²)
+        let mut byte_positions: Vec<usize> = Vec::new();
+        byte_positions.push(0);
+        for c in remaining.chars() {
+            if c == ch {
+                max_count += 1;
+                byte_offset += ch_len;
+                byte_positions.push(byte_offset);
+                if max_count >= max {
+                    break;
+                }
+            } else {
+                break;
             }
         }
 
-        Some(pos)
+        if max_count < min {
+            return None;
+        }
+        max_count = max_count.min(max);
+
+        // Try from max_count down to min (greedy-first backtracking)
+        for try_count in (min..=max_count).rev() {
+            let consumed = byte_positions[try_count];
+            if let Some(final_pos) = self.match_elements_backtracking(text, elem_idx + 1, text_pos + consumed) {
+                return Some(final_pos);
+            }
+        }
+        None
+    }
+
+    /// Backtracking for quantified charclass: try greedy first, then shorter matches
+    fn backtrack_quantified_charclass(&self, cc: &CharClass, quantifier: &Quantifier, text: &str, text_pos: usize, elem_idx: usize) -> Option<usize> {
+        let (min, max) = quantifier_bounds(quantifier);
+        let remaining = &text[text_pos..];
+        let rem_bytes = remaining.as_bytes();
+
+        // Fast path for ASCII-only remaining text
+        let is_ascii = rem_bytes.iter().take(rem_bytes.len().min(256)).all(|&b| b < 128);
+
+        if is_ascii {
+            // FAST: For negated single-char class (like [^\n] from .+), use memchr
+            let max_count;
+            if cc.negated && cc.chars.len() == 1 && cc.ranges.is_empty() {
+                let forbidden = cc.chars[0] as u8;
+                let term_pos = memchr::memchr(forbidden, rem_bytes).unwrap_or(rem_bytes.len());
+                max_count = term_pos.min(max);
+            } else {
+                // Count matching bytes
+                let mut count = 0;
+                for &byte in rem_bytes {
+                    if cc.matches(byte as char) {
+                        count += 1;
+                        if count >= max { break; }
+                    } else {
+                        break;
+                    }
+                }
+                max_count = count;
+            }
+
+            if max_count < min {
+                return None;
+            }
+
+            // OPTIMIZATION: If next element is a QuantifiedCharClass, find its first match
+            // position from the right instead of trying every position
+            if let Some(next_cc) = self.peek_next_charclass(elem_idx + 1) {
+                // Scan from right to left within the matched region for next element
+                let end = text_pos + max_count;
+                let mut try_pos = end;
+                while try_pos > text_pos + min {
+                    let byte = text.as_bytes()[try_pos - 1];
+                    if !cc.matches(byte as char) {
+                        break;
+                    }
+                    if next_cc.matches(byte as char) {
+                        // Found a position where next element can start
+                        let consumed = try_pos - 1 - text_pos;
+                        if consumed >= min {
+                            if let Some(final_pos) = self.match_elements_backtracking(text, elem_idx + 1, text_pos + consumed) {
+                                return Some(final_pos);
+                            }
+                        }
+                    }
+                    try_pos -= 1;
+                }
+                return None;
+            }
+
+            // Standard backtracking
+            for try_count in (min..=max_count).rev() {
+                if let Some(final_pos) = self.match_elements_backtracking(text, elem_idx + 1, text_pos + try_count) {
+                    return Some(final_pos);
+                }
+            }
+            return None;
+        }
+
+        // UTF-8 path: pre-compute cumulative byte positions
+        let mut max_count = 0;
+        let mut byte_offset = 0;
+        let mut byte_positions: Vec<usize> = Vec::new();
+        byte_positions.push(0);
+        for c in remaining.chars() {
+            if cc.matches(c) {
+                max_count += 1;
+                byte_offset += c.len_utf8();
+                byte_positions.push(byte_offset);
+                if max_count >= max {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        if max_count < min {
+            return None;
+        }
+        max_count = max_count.min(max);
+
+        for try_count in (min..=max_count).rev() {
+            let consumed = byte_positions[try_count];
+            if let Some(final_pos) = self.match_elements_backtracking(text, elem_idx + 1, text_pos + consumed) {
+                return Some(final_pos);
+            }
+        }
+        None
+    }
+
+    /// Peek at the next element's CharClass if it's a QuantifiedCharClass
+    fn peek_next_charclass(&self, next_idx: usize) -> Option<&CharClass> {
+        match self.elements.get(next_idx) {
+            Some(SequenceElement::QuantifiedCharClass(cc, _)) => Some(cc),
+            _ => None,
+        }
     }
 
     /// Find all occurrences of the sequence in text

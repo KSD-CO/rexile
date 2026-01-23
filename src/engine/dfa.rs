@@ -47,12 +47,30 @@ enum CharClassId {
 }
 
 impl CharClassId {
+    #[inline]
     fn matches(&self, ch: char) -> bool {
         match self {
             CharClassId::Char(c) => ch == *c,
             CharClassId::Word => ch.is_alphanumeric() || ch == '_',
             CharClassId::Digit => ch.is_ascii_digit(),
             CharClassId::Whitespace => ch.is_whitespace(),
+            CharClassId::Custom(cc) => cc.matches(ch),
+        }
+    }
+
+    /// Fast byte-level matching for ASCII characters
+    #[inline]
+    fn matches_byte(&self, byte: u8, ch: char) -> bool {
+        match self {
+            CharClassId::Char(c) => byte == *c as u8,
+            CharClassId::Digit => byte >= b'0' && byte <= b'9',
+            CharClassId::Word => {
+                (byte >= b'a' && byte <= b'z')
+                    || (byte >= b'A' && byte <= b'Z')
+                    || (byte >= b'0' && byte <= b'9')
+                    || byte == b'_'
+            }
+            CharClassId::Whitespace => byte == b' ' || byte == b'\t' || byte == b'\n' || byte == b'\r',
             CharClassId::Custom(cc) => cc.matches(ch),
         }
     }
@@ -157,14 +175,18 @@ impl DFA {
 
                         if separator_chars.is_empty() {
                             // Direct quantified-to-quantified
-                            // E.g., \d+\w+
+                            // E.g., \w+\s+\d+
+                            // The character triggering this transition already counts as
+                            // the first match of the next element, so go directly to
+                            // the loop state (entry + 1) instead of the entry state.
                             if let Some(SequenceElement::QuantifiedCharClass(next_cc, _)) =
                                 seq.elements.get(next_elem_idx)
                             {
                                 let next_class_id = Self::char_class_to_id(next_cc);
+                                let next_loop_state = next_entry_state + 1;
                                 states[loop_state]
                                     .transitions
-                                    .push((next_class_id, next_entry_state));
+                                    .push((next_class_id, next_loop_state));
                             }
                         } else {
                             // Has separator chars
@@ -244,7 +266,7 @@ impl DFA {
         }
 
         // Second check: look for distinctive anchor chars that memchr can find quickly
-        for (i, elem) in seq.elements.iter().enumerate() {
+        for (_i, elem) in seq.elements.iter().enumerate() {
             match elem {
                 SequenceElement::Char(ch) => {
                     // Skip DFA if there's a distinctive anchor char
@@ -257,6 +279,30 @@ impl DFA {
                 SequenceElement::QuantifiedCharClass(_, Quantifier::OneOrMore) => {} // \w+, \d+ OK
                 SequenceElement::QuantifiedCharClass(_, Quantifier::ZeroOrMore) => {} // \w*, \d* OK
                 _ => return false, // Other patterns not supported yet
+            }
+        }
+
+        // Third check: reject patterns with overlapping adjacent quantified charclasses
+        // DFA can't backtrack, so overlapping classes (e.g., [a-z]+.+[0-9]+) would cause
+        // the DFA to greedily consume everything in the first class and never transition
+        let mut prev_cc: Option<&CharClass> = None;
+        for elem in seq.elements.iter() {
+            match elem {
+                SequenceElement::QuantifiedCharClass(cc, _) => {
+                    if let Some(prev) = prev_cc {
+                        if prev.overlaps_with(cc) {
+                            return false; // Use Sequence matcher with backtracking
+                        }
+                    }
+                    prev_cc = Some(cc);
+                }
+                SequenceElement::Char(_) => {
+                    // A separator char breaks the adjacency
+                    prev_cc = None;
+                }
+                _ => {
+                    prev_cc = None;
+                }
             }
         }
 
@@ -381,7 +427,6 @@ impl DFA {
 
     /// Fallback: scan position by position
     fn find_fallback(&self, text: &str) -> Option<(usize, usize)> {
-        // Try to find match starting from each position
         for (byte_start, _) in text.char_indices() {
             if let Some(byte_end) = self.match_from_bytes(text, byte_start) {
                 return Some((byte_start, byte_end));
@@ -391,74 +436,98 @@ impl DFA {
     }
 
     /// Try to match from a byte position, return end byte position if match
+    #[inline]
     fn match_from_bytes(&self, text: &str, start_byte: usize) -> Option<usize> {
+        let bytes = text.as_bytes();
         let mut state = 0;
-        let mut last_accept_end = None; // Track end position of last accepting state
-        let mut current_byte_pos = start_byte; // Track current absolute byte position
+        let mut last_accept_end = None;
+        let mut pos = start_byte;
 
-        // Iterate through characters starting from start_byte
-        let remaining = &text[start_byte..];
-
-        // Check if initial state is accepting (for zero-width matches like \d*)
         if !self.states.is_empty() && self.states[0].is_accept {
             last_accept_end = Some(start_byte);
         }
 
-        for ch in remaining.chars() {
+        while pos < bytes.len() {
             if state >= self.states.len() {
                 break;
             }
 
-            let current_state = &self.states[state];
+            let byte = bytes[pos];
+            // Fast path: ASCII bytes (most common case)
+            let ch = if byte < 128 {
+                byte as char
+            } else {
+                // Non-ASCII: decode UTF-8 char
+                match text[pos..].chars().next() {
+                    Some(c) => {
+                        let current_state = &self.states[state];
+                        let mut found = false;
+                        for (class_id, next_state) in &current_state.transitions {
+                            if class_id.matches(c) {
+                                state = *next_state;
+                                pos += c.len_utf8();
+                                if self.states[state].is_accept {
+                                    last_accept_end = Some(pos);
+                                }
+                                found = true;
+                                break;
+                            }
+                        }
+                        if !found {
+                            break;
+                        }
+                        continue;
+                    }
+                    None => break,
+                }
+            };
 
-            // Find transition for this character
+            let current_state = &self.states[state];
             let mut found_transition = false;
             for (class_id, next_state) in &current_state.transitions {
-                if class_id.matches(ch) {
+                if class_id.matches_byte(byte, ch) {
                     state = *next_state;
                     found_transition = true;
-                    current_byte_pos += ch.len_utf8();
-
-                    // Check if new state is accepting
-                    if state < self.states.len() && self.states[state].is_accept {
-                        last_accept_end = Some(current_byte_pos);
+                    pos += 1;
+                    if self.states[state].is_accept {
+                        last_accept_end = Some(pos);
                     }
-
                     break;
                 }
             }
 
             if !found_transition {
-                // No transition found - stop here
                 break;
             }
         }
 
         last_accept_end
     }
+
     /// Check if pattern matches anywhere in text (faster than find)
     pub fn is_match(&self, text: &str) -> bool {
-        // For short texts, simple DFA scan is fastest (no memchr overhead)
-        if text.len() < 50 {
-            for (byte_start, _) in text.char_indices() {
-                if self.match_from_bytes(text, byte_start).is_some() {
-                    return true;
-                }
-            }
-            return false;
-        }
+        let bytes = text.as_bytes();
+        let len = bytes.len();
 
         // For longer texts, use memchr optimization if available
-        let first_chars = self.get_first_chars();
-        if !first_chars.is_empty() {
-            // Use memchr/digit scan to find potential starting positions
-            return self.is_match_with_first_chars(text, &first_chars);
+        if len >= 50 {
+            let first_chars = self.get_first_chars();
+            if !first_chars.is_empty() {
+                return self.is_match_with_first_chars(text, &first_chars);
+            }
         }
 
-        // Fallback: try to find match starting from each position
-        for (byte_start, _) in text.char_indices() {
-            if self.match_from_bytes(text, byte_start).is_some() {
+        // Byte-level scanning for ASCII text
+        let mut pos = 0;
+        while pos < len {
+            if self.match_from_bytes(text, pos).is_some() {
                 return true;
+            }
+            // Advance: skip multi-byte UTF-8 chars
+            if bytes[pos] < 128 {
+                pos += 1;
+            } else {
+                pos += text[pos..].chars().next().map_or(1, |c| c.len_utf8());
             }
         }
         false

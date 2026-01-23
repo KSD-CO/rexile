@@ -154,7 +154,13 @@ pub type ReXile = Pattern;
 
 impl Pattern {
     pub fn new(pattern: &str) -> Result<Self, PatternError> {
-        let ast = parse_pattern(pattern)?;
+        // Auto-detect if pattern has capturing groups
+        let has_captures = pattern.contains('(') && !pattern.contains("(?:");
+        let ast = if has_captures {
+            parse_pattern_with_captures(pattern)?
+        } else {
+            parse_pattern(pattern)?
+        };
         let matcher = compile_ast(&ast)?;
 
         // Try to detect fast path first (JIT-style optimization)
@@ -813,6 +819,7 @@ impl std::error::Error for PatternError {}
 #[derive(Debug, Clone, PartialEq)]
 enum Ast {
     Literal(String),
+    Dot,  // Matches any character except newline
     Alternation(Vec<String>),
     Anchored {
         literal: String,
@@ -1254,6 +1261,29 @@ fn parse_pattern(pattern: &str) -> Result<Ast, PatternError> {
             return Ok(Ast::CharClass(char_class));
         }
         // Character class with quantifier is handled above
+    }
+
+    // Check for single dot wildcard
+    if pattern == "." {
+        return Ok(Ast::Dot);
+    }
+
+    // Check if pattern contains dots - needs sequence parsing
+    eprintln!("[DEBUG] parse_pattern final check: pattern='{}', contains_dot={}", pattern, pattern.contains('.'));
+    if pattern.contains('.') {
+        // Pattern like "a.c" needs to be parsed as sequence with dot wildcard
+        use crate::parser::sequence::{Sequence, SequenceElement};
+        let mut elements = Vec::new();
+        
+        for ch in pattern.chars() {
+            if ch == '.' {
+                elements.push(SequenceElement::Dot);
+            } else {
+                elements.push(SequenceElement::Char(ch));
+            }
+        }
+        
+        return Ok(Ast::Sequence(Sequence { elements }));
     }
 
     // Default: treat as literal
@@ -2039,6 +2069,14 @@ impl Matcher {
 fn compile_ast(ast: &Ast) -> Result<Matcher, PatternError> {
     match ast {
         Ast::Literal(lit) => Ok(Matcher::Literal(lit.clone())),
+        Ast::Dot => {
+            // Dot matches any character except newline
+            // Parse as [^\n] character class
+            use crate::parser::charclass::CharClass;
+            let char_class = CharClass::parse(r"^\n")
+                .map_err(|e| PatternError::ParseError(format!("Dot charclass: {}", e)))?;
+            Ok(Matcher::CharClass(char_class))
+        }
         Ast::Alternation(parts) => {
             use aho_corasick::MatchKind;
             let ac = AhoCorasick::builder()

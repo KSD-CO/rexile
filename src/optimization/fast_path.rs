@@ -5,19 +5,41 @@ use memchr::{memchr, memchr_iter, memmem};
 use std::sync::Arc;
 
 /// Fast path for literal strings (no special chars)
+/// Uses memchr for first byte + slice compare to avoid Finder construction overhead
 #[inline]
 pub fn find_literal(text: &str, literal: &str) -> Option<(usize, usize)> {
-    if literal.len() >= 3 {
-        let finder = memmem::Finder::new(literal.as_bytes());
-        finder
-            .find(text.as_bytes())
-            .map(|pos| (pos, pos + literal.len()))
-    } else if literal.len() == 1 {
-        let byte = literal.as_bytes()[0];
-        memchr(byte, text.as_bytes()).map(|pos| (pos, pos + 1))
-    } else {
-        text.find(literal).map(|pos| (pos, pos + literal.len()))
+    let needle = literal.as_bytes();
+    let haystack = text.as_bytes();
+    let needle_len = needle.len();
+
+    if needle_len == 0 {
+        return Some((0, 0));
     }
+    if needle_len > haystack.len() {
+        return None;
+    }
+    if needle_len == 1 {
+        return memchr(needle[0], haystack).map(|pos| (pos, pos + 1));
+    }
+
+    // Use memchr to find first byte, then compare remaining bytes
+    let first_byte = needle[0];
+    let mut pos = 0;
+    let end = haystack.len() - needle_len + 1;
+
+    while pos < end {
+        if let Some(found) = memchr(first_byte, &haystack[pos..end]) {
+            let start = pos + found;
+            // Compare full needle (including first byte for safety)
+            if haystack[start..start + needle_len] == *needle {
+                return Some((start, start + needle_len));
+            }
+            pos = start + 1;
+        } else {
+            break;
+        }
+    }
+    None
 }
 
 /// Fast path for literal + quantified char: "rule\s+"

@@ -167,14 +167,29 @@ pub fn parse_sequence(pattern: &str) -> Result<Sequence, String> {
                 if let Some(q_char) = q_remaining.chars().next() {
                     if let Some(quantifier) = parse_simple_quantifier(q_char) {
                         i += q_char.len_utf8();
-                        elements.push(SequenceElement::QuantifiedChar(ch, quantifier));
+                        
+                        // Special case: dot with quantifier = quantified CharClass for [^\n]
+                        if ch == '.' {
+                            use crate::parser::charclass::CharClass;
+                            let mut dot_class = CharClass::new();
+                            dot_class.add_char('\n');
+                            dot_class.negate();
+                            dot_class.finalize();
+                            elements.push(SequenceElement::QuantifiedCharClass(dot_class, quantifier));
+                        } else {
+                            elements.push(SequenceElement::QuantifiedChar(ch, quantifier));
+                        }
                         continue;
                     }
                 }
             }
 
             // No quantifier
-            elements.push(SequenceElement::Char(ch));
+            if ch == '.' {
+                elements.push(SequenceElement::Dot);
+            } else {
+                elements.push(SequenceElement::Char(ch));
+            }
         } else {
             break;
         }

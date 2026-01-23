@@ -162,6 +162,46 @@ impl CharClass {
         }
     }
 
+    /// Check if this character class overlaps with another
+    /// (i.e., there exists at least one character matching both)
+    pub fn overlaps_with(&self, other: &CharClass) -> bool {
+        // If either is negated, they almost certainly overlap
+        // (negated classes match the vast majority of characters)
+        if self.negated || other.negated {
+            return true;
+        }
+
+        // Check if any range in self overlaps with any range in other
+        for &(s1, e1) in &self.ranges {
+            for &(s2, e2) in &other.ranges {
+                if s1 <= e2 && s2 <= e1 {
+                    return true;
+                }
+            }
+            // Check if any char in other falls within self's ranges
+            for &ch in &other.chars {
+                if ch >= s1 && ch <= e1 {
+                    return true;
+                }
+            }
+        }
+
+        // Check if any char in self falls within other's ranges
+        for &ch in &self.chars {
+            for &(s2, e2) in &other.ranges {
+                if ch >= s2 && ch <= e2 {
+                    return true;
+                }
+            }
+            // Check if any char matches directly
+            if other.chars.contains(&ch) {
+                return true;
+            }
+        }
+
+        false
+    }
+
     /// Find first character in text that matches this class (SIMD-optimized for ASCII)
     /// Returns byte position if found, None otherwise
     pub fn find_first(&self, text: &str) -> Option<usize> {
