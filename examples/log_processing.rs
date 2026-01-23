@@ -45,7 +45,7 @@ fn main() {
     // Find specific keywords across all logs
     println!("\n=== Keyword Search ===");
     let keywords = Pattern::new("database|memory|timeout").unwrap();
-    
+
     for log in &logs {
         if keywords.is_match(log) {
             if let Some((start, end)) = keywords.find(log) {

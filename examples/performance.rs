@@ -11,7 +11,10 @@ fn main() {
     let iterations = 100_000;
 
     // Test 1: Uncached (compile every time)
-    println!("Test 1: Uncached compilation (compile {} times)", iterations);
+    println!(
+        "Test 1: Uncached compilation (compile {} times)",
+        iterations
+    );
     let start = Instant::now();
     let mut match_count = 0;
     for _ in 0..iterations {
@@ -25,7 +28,10 @@ fn main() {
     println!("  Matches: {}\n", match_count);
 
     // Test 2: Cached (compile once, reuse)
-    println!("Test 2: Pre-compiled pattern (compile once, use {} times)", iterations);
+    println!(
+        "Test 2: Pre-compiled pattern (compile once, use {} times)",
+        iterations
+    );
     let pattern = Pattern::new(pattern_str).unwrap();
     let start = Instant::now();
     let mut match_count = 0;
@@ -39,7 +45,10 @@ fn main() {
     println!("  Matches: {}\n", match_count);
 
     // Test 3: Global cache API
-    println!("Test 3: Global cache API (auto-caching, use {} times)", iterations);
+    println!(
+        "Test 3: Global cache API (auto-caching, use {} times)",
+        iterations
+    );
     let start = Instant::now();
     let mut match_count = 0;
     for _ in 0..iterations {
@@ -54,8 +63,18 @@ fn main() {
     // Summary
     println!("=== Performance Summary ===");
     println!("Uncached:     {:?}", uncached_time);
-    println!("Pre-compiled: {:?} ({:.2}x faster)", cached_time, uncached_time.as_secs_f64() / cached_time.as_secs_f64());
-    println!("Global cache: {:?} ({:.2}x faster)", global_cache_time, uncached_time.as_secs_f64() / global_cache_time.as_secs_f64());
-    
-    println!("\n💡 Tip: Use cached API (rexile::is_match) or pre-compile patterns for best performance!");
+    println!(
+        "Pre-compiled: {:?} ({:.2}x faster)",
+        cached_time,
+        uncached_time.as_secs_f64() / cached_time.as_secs_f64()
+    );
+    println!(
+        "Global cache: {:?} ({:.2}x faster)",
+        global_cache_time,
+        uncached_time.as_secs_f64() / global_cache_time.as_secs_f64()
+    );
+
+    println!(
+        "\n💡 Tip: Use cached API (rexile::is_match) or pre-compile patterns for best performance!"
+    );
 }

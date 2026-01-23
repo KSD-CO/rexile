@@ -35,5 +35,10 @@ fn bench_regex_compile_once_and_match(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_rexile_is_match, bench_regex_compile_and_match, bench_regex_compile_once_and_match);
+criterion_group!(
+    benches,
+    bench_rexile_is_match,
+    bench_regex_compile_and_match,
+    bench_regex_compile_once_and_match
+);
 criterion_main!(benches);

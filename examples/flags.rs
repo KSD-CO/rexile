@@ -1,9 +1,9 @@
 fn main() {
     // Using inline flags and Regex options via patterns
     let patterns = vec![
-        ("(?i)rust", "Rust"), // case-insensitive
+        ("(?i)rust", "Rust"),          // case-insensitive
         ("(?m)^begin", "begin\nnext"), // multiline ^ matches line start
-        ("(?s)a.*b", "a\n\nb"), // dot matches newline
+        ("(?s)a.*b", "a\n\nb"),        // dot matches newline
     ];
 
     for (pat, txt) in patterns {

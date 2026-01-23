@@ -37,7 +37,7 @@ fn main() {
 
     // Quantified groups
     println!("\n--- Quantified Groups ---");
-    
+
     // Group with +
     let pattern = Pattern::new("(ab)+").unwrap();
     let text = "ababab xyz";

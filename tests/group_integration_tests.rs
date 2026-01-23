@@ -8,7 +8,7 @@ fn test_group_with_escape_sequences() {
     assert!(re.is_match("123"));
     assert!(re.is_match("abc123"));
     assert_eq!(re.find("abc123"), Some((3, 6)));
-    
+
     let re_word = ReXile::new("(\\w+)").unwrap();
     assert!(re_word.is_match("hello"));
     assert!(re_word.is_match("test123"));
@@ -21,7 +21,7 @@ fn test_group_with_charclass() {
     assert!(re.is_match("123"));
     assert!(re.is_match("abc123"));
     assert_eq!(re.find("abc123"), Some((3, 6)));
-    
+
     // ([a-z]+) - match lowercase letters
     let re_lower = ReXile::new("([a-z]+)").unwrap();
     assert!(re_lower.is_match("hello"));
@@ -38,7 +38,7 @@ fn test_quantified_group_alternation() {
     assert!(re.is_match("barfoo"));
     assert!(re.is_match("foofoobar"));
     assert!(!re.is_match("baz"));
-    
+
     // Find multiple occurrences
     assert_eq!(re.find("test foo baz"), Some((5, 8)));
     assert_eq!(re.find("test bar baz"), Some((5, 8)));
@@ -50,7 +50,7 @@ fn test_group_with_anchors() {
     let re_start = ReXile::new("^(hello)").unwrap();
     assert!(re_start.is_match("hello world"));
     assert!(!re_start.is_match("say hello"));
-    
+
     // (world)$ - group at end
     let re_end = ReXile::new("(world)$").unwrap();
     assert!(re_end.is_match("hello world"));
@@ -82,7 +82,7 @@ fn test_group_find_all() {
     let re = ReXile::new("(http|https|ftp)").unwrap();
     let text = "Visit http://example.com or https://secure.com or ftp://files.com";
     let matches = re.find_all(text);
-    
+
     assert_eq!(matches.len(), 3);
     assert_eq!(&text[matches[0].0..matches[0].1], "http");
     assert_eq!(&text[matches[1].0..matches[1].1], "https"); // Leftmost-longest match
@@ -114,13 +114,13 @@ fn test_quantified_group_edge_cases() {
     assert!(re_plus.is_match("ababab"));
     assert!(!re_plus.is_match("a"));
     assert!(!re_plus.is_match("b"));
-    
+
     // (ab)* - zero or more ab
     let re_star = ReXile::new("(ab)*").unwrap();
     assert!(re_star.is_match("ab"));
     assert!(re_star.is_match("abab"));
     // Note: Zero-width matches not fully handled
-    
+
     // (ab)? - zero or one ab
     let re_optional = ReXile::new("(ab)?").unwrap();
     assert!(re_optional.is_match("ab"));
@@ -134,12 +134,12 @@ fn test_complex_real_world_patterns() {
     assert!(re_url.is_match("http://example.com"));
     assert!(re_url.is_match("https://secure.com"));
     assert!(!re_url.is_match("ftp://files.com"));
-    
+
     // Email-like pattern (simplified)
     let re_user = ReXile::new("(\\w+)@").unwrap();
     assert!(re_user.is_match("user@example.com"));
     assert_eq!(re_user.find("contact: user@example.com"), Some((9, 14)));
-    
+
     // Version pattern like v1.2.3
     let re_version = ReXile::new("v(\\d+)").unwrap();
     assert!(re_version.is_match("v1.0.0"));

@@ -17,7 +17,12 @@ fn main() {
         let _ = rexile::is_match(pat, text).unwrap();
     }
     let dur = start.elapsed();
-    println!("rexile::is_match (cached) {} iters: {:?} (avg {:?})", iters, dur, dur / iters);
+    println!(
+        "rexile::is_match (cached) {} iters: {:?} (avg {:?})",
+        iters,
+        dur,
+        dur / iters
+    );
 
     // 2) regex compile + match (worst-case: compile every iteration)
     let start = Instant::now();
@@ -26,7 +31,12 @@ fn main() {
         let _ = r.is_match(text);
     }
     let dur2 = start.elapsed();
-    println!("regex compile+match {} iters: {:?} (avg {:?})", iters, dur2, dur2 / iters);
+    println!(
+        "regex compile+match {} iters: {:?} (avg {:?})",
+        iters,
+        dur2,
+        dur2 / iters
+    );
 
     // 3) regex compile once + repeated match
     let r_once = regex::Regex::new(pat).unwrap();
@@ -35,7 +45,12 @@ fn main() {
         let _ = r_once.is_match(text);
     }
     let dur3 = start.elapsed();
-    println!("regex compile_once+match {} iters: {:?} (avg {:?})", iters, dur3, dur3 / iters);
+    println!(
+        "regex compile_once+match {} iters: {:?} (avg {:?})",
+        iters,
+        dur3,
+        dur3 / iters
+    );
 
     println!("-- Summary note: rexile caches compilation and avoids repeated compile cost.");
 }

@@ -53,7 +53,16 @@ fn main() {
     // Example 7: Cached API (recommended for repeated patterns)
     println!("7. Cached API (compile once, reuse many times):");
     println!("   Pattern: 'test'");
-    println!("   First call (compiles): {}", rexile::is_match("test", "this is a test").unwrap());
-    println!("   Second call (cached): {}", rexile::is_match("test", "another test").unwrap());
-    println!("   Find with cache: {:?}\n", rexile::find("test", "test 123").unwrap());
+    println!(
+        "   First call (compiles): {}",
+        rexile::is_match("test", "this is a test").unwrap()
+    );
+    println!(
+        "   Second call (cached): {}",
+        rexile::is_match("test", "another test").unwrap()
+    );
+    println!(
+        "   Find with cache: {:?}\n",
+        rexile::find("test", "test 123").unwrap()
+    );
 }

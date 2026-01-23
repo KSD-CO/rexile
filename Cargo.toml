@@ -2,9 +2,16 @@
 name = "rexile"
 version = "0.1.0"
 edition = "2021"
-authors = ["You <you@example.com>"]
+authors = ["Ton That Vu <ttvuhm@gmail.com>"]
 license = "MIT OR Apache-2.0"
-description = "ReXile — a fast regex-lite engine built on memchr and aho-corasick (zero regex crate dependency)"
+description = "A blazing-fast regex engine with JIT-style optimizations - competitive performance (1.03x vs regex) with 15x less memory"
+repository = "https://github.com/KSD-CO/rexile"
+documentation = "https://docs.rs/rexile"
+homepage = "https://github.com/KSD-CO/rexile"
+keywords = ["regex", "pattern", "matching", "parser", "lexer"]
+categories = ["text-processing", "parsing", "algorithms"]
+readme = "README.md"
+rust-version = "1.70"
 
 [lib]
 name = "rexile"
@@ -15,28 +22,12 @@ path = "src/lib.rs"
 memchr = "2.7"
 aho-corasick = "1.1"
 
-# Optional SIMD support for character classes
-# packed_simd can be enabled for even faster character class matching
-# Currently using stdlib + memchr SIMD which is already very fast
-
 [dev-dependencies]
 criterion = "0.5"
 regex = "1"  # For benchmark comparisons only
 
 [[bench]]
 name = "rexile_benchmark"
-harness = false
-
-[[bench]]
-name = "comparison_benchmark"
-harness = false
-
-[[bench]]
-name = "rexile_vs_regex_benchmark"
-harness = false
-
-[[bench]]
-name = "quick_comparison"
 harness = false
 
 [workspace]
