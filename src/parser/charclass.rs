@@ -123,7 +123,26 @@ impl CharClass {
         self.ascii_bitmap = Some(bitmap);
     }
 
+    /// Get the pre-computed ASCII bitmap for direct inline lookup
+    #[inline(always)]
+    pub fn get_ascii_bitmap(&self) -> Option<&[u64; 2]> {
+        self.ascii_bitmap.as_ref()
+    }
+
+    /// Check if an ASCII byte matches using pre-extracted bitmap (no function call overhead)
+    #[inline(always)]
+    pub fn matches_byte_bitmap(bitmap: &[u64; 2], negated: bool, byte: u8) -> bool {
+        let idx = byte as usize;
+        let bit_set = (bitmap[idx / 64] & (1u64 << (idx % 64))) != 0;
+        if negated {
+            !bit_set
+        } else {
+            bit_set
+        }
+    }
+
     /// Check if a character matches this character class
+    #[inline]
     pub fn matches(&self, ch: char) -> bool {
         let ch_val = ch as u32;
 

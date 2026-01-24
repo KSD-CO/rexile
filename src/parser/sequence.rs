@@ -29,8 +29,28 @@ impl SequenceElement {
     /// Returns number of bytes consumed if successful, None otherwise
     pub fn match_at(&self, text: &str, pos: usize) -> Option<usize> {
         let remaining = &text[pos..];
+
+        // Don't reject empty remaining for quantified elements (they can match zero times)
         if remaining.is_empty() {
-            return None;
+            return match self {
+                SequenceElement::QuantifiedChar(_, quantifier) => {
+                    let (min, _) = quantifier_bounds(quantifier);
+                    if min == 0 {
+                        Some(0)
+                    } else {
+                        None
+                    }
+                }
+                SequenceElement::QuantifiedCharClass(_, quantifier) => {
+                    let (min, _) = quantifier_bounds(quantifier);
+                    if min == 0 {
+                        Some(0)
+                    } else {
+                        None
+                    }
+                }
+                _ => None, // Other elements need at least one char
+            };
         }
 
         match self {
@@ -165,16 +185,93 @@ fn quantifier_bounds(q: &Quantifier) -> (usize, usize) {
     }
 }
 
+/// Pre-computed NFA transition table for fast is_match
+#[derive(Debug, Clone, PartialEq)]
+struct NfaTable {
+    /// For each ASCII byte, bitmask of which elements match it
+    byte_elem_mask: [u32; 128],
+    /// Bitmask for the accept state (last element)
+    accept_mask: u32,
+    /// Bitmask of elements that can "stay" (quantified with +, *, etc.)
+    /// Char elements (exact match) cannot stay - they advance immediately
+    quantified_bits: u32,
+    /// Number of elements
+    n: usize,
+}
+
 /// A sequence of pattern elements
 #[derive(Debug, Clone, PartialEq)]
 pub struct Sequence {
     pub elements: Vec<SequenceElement>,
+    /// Cached NFA table for fast is_match (computed once at construction)
+    nfa_table: Option<NfaTable>,
 }
 
 impl Sequence {
-    /// Create a new sequence
+    /// Create a new sequence, pre-computing NFA table if applicable
     pub fn new(elements: Vec<SequenceElement>) -> Self {
-        Sequence { elements }
+        let nfa_table = Self::build_nfa_table(&elements);
+        Sequence {
+            elements,
+            nfa_table,
+        }
+    }
+
+    /// Build NFA transition table for sequences of QuantifiedCharClass and Char elements
+    fn build_nfa_table(elements: &[SequenceElement]) -> Option<NfaTable> {
+        let n = elements.len();
+        if !(2..=16).contains(&n) {
+            return None;
+        }
+
+        // Validate elements and compute quantified_bits
+        let mut quantified_bits: u32 = 0;
+        for (i, elem) in elements.iter().enumerate() {
+            match elem {
+                SequenceElement::QuantifiedCharClass(_, Quantifier::OneOrMore) => {
+                    quantified_bits |= 1u32 << i; // Can stay
+                }
+                SequenceElement::Char(_) => {
+                    // Char elements don't stay (match exactly 1 char)
+                }
+                _ => return None, // Not supported
+            }
+        }
+
+        // Pre-compute byte→element match table
+        let mut byte_elem_mask = [0u32; 128];
+        for b in 0..128u8 {
+            let idx = b as usize;
+            let word_idx = idx / 64;
+            let bit = 1u64 << (idx % 64);
+            for (i, elem) in elements.iter().enumerate() {
+                match elem {
+                    SequenceElement::QuantifiedCharClass(cc, _) => {
+                        if let Some(bm) = cc.get_ascii_bitmap() {
+                            let hit = (bm[word_idx] & bit) != 0;
+                            if hit != cc.negated {
+                                byte_elem_mask[b as usize] |= 1u32 << i;
+                            }
+                        } else {
+                            return None;
+                        }
+                    }
+                    SequenceElement::Char(ch) => {
+                        if (*ch as u32) < 128 && b == *ch as u8 {
+                            byte_elem_mask[b as usize] |= 1u32 << i;
+                        }
+                    }
+                    _ => return None,
+                }
+            }
+        }
+
+        Some(NfaTable {
+            byte_elem_mask,
+            accept_mask: 1u32 << (n - 1),
+            quantified_bits,
+            n,
+        })
     }
 
     /// Check if the sequence matches at the start of text
@@ -187,7 +284,177 @@ impl Sequence {
     /// Check if the sequence matches anywhere in text (optimized)
     /// Returns immediately on first match without computing position
     pub fn is_match(&self, text: &str) -> bool {
+        // Try element-level NFA first (much faster for quantified charclass sequences)
+        if let Some(result) = self.is_match_nfa(text) {
+            return result;
+        }
         self.find(text).is_some()
+    }
+
+    /// Element-level Thompson NFA simulation using pre-computed transition table.
+    /// Returns Some(bool) if NFA table is available, None otherwise.
+    #[inline]
+    fn is_match_nfa(&self, text: &str) -> Option<bool> {
+        let table = self.nfa_table.as_ref()?;
+
+        // OPTIMIZATION: If pattern has a single Char element (inner literal),
+        // use memchr to find it first, then verify context.
+        if let Some(result) = self.is_match_nfa_with_char_prefilter(table, text) {
+            return Some(result);
+        }
+
+        // Full NFA scan
+        Some(self.run_nfa(table, text.as_bytes()))
+    }
+
+    /// Try memchr-based prefilter for patterns with a Char element.
+    /// Returns Some(bool) if applicable, None to fall through to full NFA.
+    #[inline]
+    fn is_match_nfa_with_char_prefilter(&self, table: &NfaTable, text: &str) -> Option<bool> {
+        // Find the Char element (if exactly one exists and not at position 0 or n-1)
+        let n = table.n;
+        let mut char_idx = None;
+        let mut char_byte = 0u8;
+        for (i, elem) in self.elements.iter().enumerate() {
+            if let SequenceElement::Char(ch) = elem {
+                if i > 0 && i < n - 1 && (*ch as u32) < 128 {
+                    char_idx = Some(i);
+                    char_byte = *ch as u8;
+                    break;
+                }
+            }
+        }
+        let char_pos = char_idx?;
+
+        // Use memchr to find the literal char
+        let bytes = text.as_bytes();
+        let mut search_pos = 0;
+        while search_pos < bytes.len() {
+            let found = memchr::memchr(char_byte, &bytes[search_pos..])?;
+            let abs_pos = search_pos + found;
+
+            // Verify left side: elements[0..char_pos] must match ending at abs_pos
+            let left_ok = if char_pos == 0 {
+                true
+            } else {
+                // Need at least char_pos bytes before (min 1 char per element)
+                abs_pos >= char_pos && self.verify_left(table, &bytes[..abs_pos], char_pos)
+            };
+
+            if left_ok {
+                // Verify right side: elements[char_pos+1..n] must match starting after abs_pos
+                let right_start = abs_pos + 1;
+                let right_ok = if char_pos + 1 >= n {
+                    true
+                } else {
+                    right_start < bytes.len()
+                        && self.verify_right(table, &bytes[right_start..], char_pos + 1)
+                };
+
+                if right_ok {
+                    return Some(true);
+                }
+            }
+
+            search_pos = abs_pos + 1;
+        }
+
+        Some(false)
+    }
+
+    /// Verify left side of pattern matches (elements[0..end_idx] in text ending at text end)
+    #[inline]
+    fn verify_left(&self, table: &NfaTable, text: &[u8], end_idx: usize) -> bool {
+        // Check that at least one char at the end matches elements[end_idx-1]
+        // and recursively backward. For simplicity, just check min-length matching.
+        let byte_elem_mask = &table.byte_elem_mask;
+        // Run NFA on the left text, checking if we reach state end_idx-1 (min met)
+        let target_mask = 1u32 << (end_idx - 1);
+        let quantified_bits = table.quantified_bits;
+        let mut active: u32 = 0;
+
+        for &byte in text {
+            let elem_mask = if byte < 128 {
+                byte_elem_mask[byte as usize]
+            } else {
+                0
+            };
+            active = (active & elem_mask & quantified_bits)
+                | ((active << 1) & elem_mask)
+                | (elem_mask & 1u32);
+            // Only keep bits for elements before the char
+            active &= (1u32 << end_idx) - 1;
+            if active & target_mask != 0 {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Verify right side of pattern matches (elements[start_idx..n] in text)
+    #[inline]
+    fn verify_right(&self, table: &NfaTable, text: &[u8], start_idx: usize) -> bool {
+        let byte_elem_mask = &table.byte_elem_mask;
+        let accept_mask = table.accept_mask;
+        let quantified_bits = table.quantified_bits;
+        let start_bit = 1u32 << start_idx;
+        let mut active: u32 = 0;
+
+        for &byte in text {
+            let elem_mask = if byte < 128 {
+                byte_elem_mask[byte as usize]
+            } else {
+                0
+            };
+            // Start at start_idx instead of 0
+            let starts = if elem_mask & start_bit != 0 {
+                start_bit
+            } else {
+                0
+            };
+            active = (active & elem_mask & quantified_bits) | ((active << 1) & elem_mask) | starts;
+            // Only keep bits for elements at or after start_idx
+            active &= !((1u32 << start_idx) - 1);
+            if active & accept_mask != 0 {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Run the full NFA scan on byte slice
+    #[inline]
+    fn run_nfa(&self, table: &NfaTable, bytes: &[u8]) -> bool {
+        let accept_mask = table.accept_mask;
+        let quantified_bits = table.quantified_bits;
+        let byte_elem_mask = &table.byte_elem_mask;
+        let mut active: u32 = 0;
+
+        for &byte in bytes {
+            let elem_mask = if byte < 128 {
+                byte_elem_mask[byte as usize]
+            } else {
+                let mut mask = 0u32;
+                for (i, elem) in self.elements.iter().enumerate() {
+                    if let SequenceElement::QuantifiedCharClass(cc, _) = elem {
+                        if cc.negated {
+                            mask |= 1u32 << i;
+                        }
+                    }
+                }
+                mask
+            };
+
+            active = (active & elem_mask & quantified_bits)
+                | ((active << 1) & elem_mask)
+                | (elem_mask & 1u32);
+
+            if active & accept_mask != 0 {
+                return true;
+            }
+        }
+
+        false
     }
 
     /// Find the sequence anywhere in text
@@ -322,7 +589,7 @@ impl Sequence {
                             let search_start = suffix_pos.saturating_sub(128);
                             let window = &text[search_start..=suffix_pos.min(text.len() - 1)];
                             let mut try_pos = 0;
-                            let mut found = false;
+                            let found = false;
                             while try_pos < window.len() {
                                 if let Some(foffset) = fc.find_first(&window[try_pos..]) {
                                     let abs_start = search_start + try_pos + foffset;
@@ -573,20 +840,25 @@ impl Sequence {
         }
 
         let start_idx = self.elements.len() - skip_count;
-        
+
         // Use backtracking-enabled matching
         self.match_elements_backtracking(text, start_idx, 0)
     }
-    
+
     /// Match elements with backtracking support for quantified elements
-    fn match_elements_backtracking(&self, text: &str, elem_idx: usize, text_pos: usize) -> Option<usize> {
+    fn match_elements_backtracking(
+        &self,
+        text: &str,
+        elem_idx: usize,
+        text_pos: usize,
+    ) -> Option<usize> {
         // Base case: all elements matched
         if elem_idx >= self.elements.len() {
             return Some(text_pos);
         }
-        
+
         let elem = &self.elements[elem_idx];
-        
+
         match elem {
             // Quantified elements: try different match lengths (greedy first, then backtrack)
             SequenceElement::QuantifiedChar(ch, quantifier) => {
@@ -605,9 +877,16 @@ impl Sequence {
             }
         }
     }
-    
+
     /// Backtracking for quantified char: try greedy first, then shorter matches
-    fn backtrack_quantified_char(&self, ch: char, quantifier: &Quantifier, text: &str, text_pos: usize, elem_idx: usize) -> Option<usize> {
+    fn backtrack_quantified_char(
+        &self,
+        ch: char,
+        quantifier: &Quantifier,
+        text: &str,
+        text_pos: usize,
+        elem_idx: usize,
+    ) -> Option<usize> {
         let (min, max) = quantifier_bounds(quantifier);
         let remaining = &text[text_pos..];
         let ch_len = ch.len_utf8();
@@ -639,7 +918,9 @@ impl Sequence {
         // Try from max_count down to min (greedy-first backtracking)
         for try_count in (min..=max_count).rev() {
             let consumed = byte_positions[try_count];
-            if let Some(final_pos) = self.match_elements_backtracking(text, elem_idx + 1, text_pos + consumed) {
+            if let Some(final_pos) =
+                self.match_elements_backtracking(text, elem_idx + 1, text_pos + consumed)
+            {
                 return Some(final_pos);
             }
         }
@@ -647,13 +928,23 @@ impl Sequence {
     }
 
     /// Backtracking for quantified charclass: try greedy first, then shorter matches
-    fn backtrack_quantified_charclass(&self, cc: &CharClass, quantifier: &Quantifier, text: &str, text_pos: usize, elem_idx: usize) -> Option<usize> {
+    fn backtrack_quantified_charclass(
+        &self,
+        cc: &CharClass,
+        quantifier: &Quantifier,
+        text: &str,
+        text_pos: usize,
+        elem_idx: usize,
+    ) -> Option<usize> {
         let (min, max) = quantifier_bounds(quantifier);
         let remaining = &text[text_pos..];
         let rem_bytes = remaining.as_bytes();
 
         // Fast path for ASCII-only remaining text
-        let is_ascii = rem_bytes.iter().take(rem_bytes.len().min(256)).all(|&b| b < 128);
+        let is_ascii = rem_bytes
+            .iter()
+            .take(rem_bytes.len().min(256))
+            .all(|&b| b < 128);
 
         if is_ascii {
             // FAST: For negated single-char class (like [^\n] from .+), use memchr
@@ -668,7 +959,9 @@ impl Sequence {
                 for &byte in rem_bytes {
                     if cc.matches(byte as char) {
                         count += 1;
-                        if count >= max { break; }
+                        if count >= max {
+                            break;
+                        }
                     } else {
                         break;
                     }
@@ -695,7 +988,11 @@ impl Sequence {
                         // Found a position where next element can start
                         let consumed = try_pos - 1 - text_pos;
                         if consumed >= min {
-                            if let Some(final_pos) = self.match_elements_backtracking(text, elem_idx + 1, text_pos + consumed) {
+                            if let Some(final_pos) = self.match_elements_backtracking(
+                                text,
+                                elem_idx + 1,
+                                text_pos + consumed,
+                            ) {
                                 return Some(final_pos);
                             }
                         }
@@ -707,7 +1004,9 @@ impl Sequence {
 
             // Standard backtracking
             for try_count in (min..=max_count).rev() {
-                if let Some(final_pos) = self.match_elements_backtracking(text, elem_idx + 1, text_pos + try_count) {
+                if let Some(final_pos) =
+                    self.match_elements_backtracking(text, elem_idx + 1, text_pos + try_count)
+                {
                     return Some(final_pos);
                 }
             }
@@ -739,7 +1038,9 @@ impl Sequence {
 
         for try_count in (min..=max_count).rev() {
             let consumed = byte_positions[try_count];
-            if let Some(final_pos) = self.match_elements_backtracking(text, elem_idx + 1, text_pos + consumed) {
+            if let Some(final_pos) =
+                self.match_elements_backtracking(text, elem_idx + 1, text_pos + consumed)
+            {
                 return Some(final_pos);
             }
         }

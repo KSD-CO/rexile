@@ -34,7 +34,7 @@ pub struct Group {
     pub index: usize,
     /// Whether this is a capturing group (false for non-capturing (?:...))
     pub is_capturing: bool,
-    /// Name of the group (for named captures like (?P<name>...))
+    /// Name of the group (for named captures like (?P`<name>`...))
     pub name: Option<String>,
 }
 

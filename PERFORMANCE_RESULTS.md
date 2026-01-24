@@ -1,3 +1,8 @@
+
+> **Note for v0.2.0:** This file contains old benchmark results. See README.md for current performance metrics.
+> - Compilation: 10-100x faster than regex
+> - Matching: 1.4-1.9x faster on simple patterns, 2-10x slower on complex patterns
+
 # ReXile Performance Results
 
 ## Benchmark Comparison: ReXile vs regex crate

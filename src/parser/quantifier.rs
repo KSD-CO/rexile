@@ -254,9 +254,9 @@ pub fn parse_quantified_pattern(pattern: &str) -> Result<QuantifiedPattern, Stri
             use crate::parser::charclass::CharClass;
             // Create CharClass that excludes newline directly
             let mut dot_class = CharClass::new();
-            dot_class.add_char('\n');  // Add newline character
-            dot_class.negate();  // Negate to match anything EXCEPT newline
-            dot_class.finalize();  // Finalize to build internal structures
+            dot_class.add_char('\n'); // Add newline character
+            dot_class.negate(); // Negate to match anything EXCEPT newline
+            dot_class.finalize(); // Finalize to build internal structures
             Ok(QuantifiedPattern {
                 element: QuantifiedElement::CharClass(dot_class),
                 quantifier,

@@ -469,8 +469,7 @@ pub fn find_literal_ws_digits_all(text: &str, literal: &str) -> Vec<(usize, usiz
             continue;
         }
 
-
-/// Fast path for literal + whitespace + word: when\s+\w+
+        /// Fast path for literal + whitespace + word: when\s+\w+
         // Match at least one whitespace
         let rest = &text[after..];
         let bytes = rest.as_bytes();
@@ -632,7 +631,7 @@ fn strip_simple_captures(pattern: &str) -> String {
     let mut depth = 0;
     let chars: Vec<char> = pattern.chars().collect();
     let mut i = 0;
-    
+
     while i < chars.len() {
         match chars[i] {
             '(' => {
@@ -652,7 +651,7 @@ fn strip_simple_captures(pattern: &str) -> String {
             }
         }
     }
-    
+
     result
 }
 
@@ -750,7 +749,6 @@ pub fn detect_fast_path(pattern: &str) -> Option<FastPath> {
 
     None
 }
-
 
 // ============================================================================
 // Lazy iteration - find_at() helpers
@@ -864,18 +862,26 @@ pub fn find_literal_at(text: &str, literal: &str, start_pos: usize) -> Option<(u
     let len = literal.len();
     if len >= 3 {
         let finder = memmem::Finder::new(literal.as_bytes());
-        finder.find(search_text.as_bytes()).map(|pos| (start_pos + pos, start_pos + pos + len))
+        finder
+            .find(search_text.as_bytes())
+            .map(|pos| (start_pos + pos, start_pos + pos + len))
     } else if len == 1 {
         let byte = literal.as_bytes()[0];
         memchr(byte, search_text.as_bytes()).map(|pos| (start_pos + pos, start_pos + pos + 1))
     } else {
-        search_text.find(literal).map(|pos| (start_pos + pos, start_pos + pos + len))
+        search_text
+            .find(literal)
+            .map(|pos| (start_pos + pos, start_pos + pos + len))
     }
 }
 
 /// Find literal + whitespace starting from position
 #[inline]
-pub fn find_literal_plus_whitespace_at(text: &str, literal: &str, start_pos: usize) -> Option<(usize, usize)> {
+pub fn find_literal_plus_whitespace_at(
+    text: &str,
+    literal: &str,
+    start_pos: usize,
+) -> Option<(usize, usize)> {
     if start_pos >= text.len() {
         return None;
     }
@@ -906,13 +912,13 @@ pub fn find_literal_plus_whitespace_at(text: &str, literal: &str, start_pos: usi
 #[inline]
 pub fn find_literal_ws_word(text: &str, literal: &str) -> Option<(usize, usize)> {
     let finder = memmem::Finder::new(literal.as_bytes());
-    
+
     for pos in finder.find_iter(text.as_bytes()) {
         let after = pos + literal.len();
         if after >= text.len() {
             continue;
         }
-        
+
         // Match at least one whitespace
         let rest = &text[after..];
         let mut ws_count = 0;
@@ -923,17 +929,17 @@ pub fn find_literal_ws_word(text: &str, literal: &str) -> Option<(usize, usize)>
                 break;
             }
         }
-        
+
         if ws_count == 0 {
             continue;
         }
-        
+
         // Match word run
         let word_start = after + ws_count;
         if word_start >= text.len() {
             continue;
         }
-        
+
         let bytes = &text.as_bytes()[word_start..];
         let mut word_len = 0;
         for &b in bytes {
@@ -943,12 +949,12 @@ pub fn find_literal_ws_word(text: &str, literal: &str) -> Option<(usize, usize)>
                 break;
             }
         }
-        
+
         if word_len > 0 {
             return Some((pos, word_start + word_len));
         }
     }
-    
+
     None
 }
 
@@ -957,13 +963,13 @@ pub fn find_literal_ws_word(text: &str, literal: &str) -> Option<(usize, usize)>
 pub fn find_literal_ws_word_all(text: &str, literal: &str) -> Vec<(usize, usize)> {
     let mut results = Vec::new();
     let finder = memmem::Finder::new(literal.as_bytes());
-    
+
     for pos in finder.find_iter(text.as_bytes()) {
         let after = pos + literal.len();
         if after >= text.len() {
             continue;
         }
-        
+
         // Match at least one whitespace
         let rest = &text[after..];
         let mut ws_count = 0;
@@ -974,17 +980,17 @@ pub fn find_literal_ws_word_all(text: &str, literal: &str) -> Vec<(usize, usize)
                 break;
             }
         }
-        
+
         if ws_count == 0 {
             continue;
         }
-        
+
         // Match word run
         let word_start = after + ws_count;
         if word_start >= text.len() {
             continue;
         }
-        
+
         let bytes = &text.as_bytes()[word_start..];
         let mut word_len = 0;
         for &b in bytes {
@@ -994,25 +1000,28 @@ pub fn find_literal_ws_word_all(text: &str, literal: &str) -> Vec<(usize, usize)
                 break;
             }
         }
-        
+
         if word_len > 0 {
             results.push((pos, word_start + word_len));
         }
     }
-    
+
     results
 }
 
 /// Find literal + whitespace + word starting from position
 #[inline]
-pub fn find_literal_ws_word_at(text: &str, literal: &str, start_pos: usize) -> Option<(usize, usize)> {
+pub fn find_literal_ws_word_at(
+    text: &str,
+    literal: &str,
+    start_pos: usize,
+) -> Option<(usize, usize)> {
     if start_pos >= text.len() {
         return None;
     }
     let search_text = &text[start_pos..];
-    find_literal_ws_word(search_text, literal).map(|(rel_start, rel_end)| {
-        (start_pos + rel_start, start_pos + rel_end)
-    })
+    find_literal_ws_word(search_text, literal)
+        .map(|(rel_start, rel_end)| (start_pos + rel_start, start_pos + rel_end))
 }
 
 #[derive(Clone)]
@@ -1088,7 +1097,9 @@ impl FastPath {
     pub fn find_at(&self, text: &str, start_pos: usize) -> Option<(usize, usize)> {
         match self {
             FastPath::Literal(s) => find_literal_at(text, s, start_pos),
-            FastPath::LiteralPlusWhitespace(s) => find_literal_plus_whitespace_at(text, s, start_pos),
+            FastPath::LiteralPlusWhitespace(s) => {
+                find_literal_plus_whitespace_at(text, s, start_pos)
+            }
             FastPath::LiteralWhitespaceWord(s) => find_literal_ws_word_at(text, s, start_pos),
             FastPath::DigitRun => find_digit_run_at(text, start_pos),
             FastPath::WordRun => find_word_run_at(text, start_pos),
@@ -1100,7 +1111,8 @@ impl FastPath {
                     return None;
                 }
                 let remaining = &text[start_pos..];
-                self.find(remaining).map(|(rel_start, rel_end)| (start_pos + rel_start, start_pos + rel_end))
+                self.find(remaining)
+                    .map(|(rel_start, rel_end)| (start_pos + rel_start, start_pos + rel_end))
             }
         }
     }

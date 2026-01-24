@@ -63,14 +63,16 @@ impl CharClassId {
     fn matches_byte(&self, byte: u8, ch: char) -> bool {
         match self {
             CharClassId::Char(c) => byte == *c as u8,
-            CharClassId::Digit => byte >= b'0' && byte <= b'9',
+            CharClassId::Digit => (b'0'..=b'9').contains(&byte),
             CharClassId::Word => {
-                (byte >= b'a' && byte <= b'z')
-                    || (byte >= b'A' && byte <= b'Z')
-                    || (byte >= b'0' && byte <= b'9')
+                (b'a'..=b'z').contains(&byte)
+                    || (b'A'..=b'Z').contains(&byte)
+                    || (b'0'..=b'9').contains(&byte)
                     || byte == b'_'
             }
-            CharClassId::Whitespace => byte == b' ' || byte == b'\t' || byte == b'\n' || byte == b'\r',
+            CharClassId::Whitespace => {
+                byte == b' ' || byte == b'\t' || byte == b'\n' || byte == b'\r'
+            }
             CharClassId::Custom(cc) => cc.matches(ch),
         }
     }
@@ -228,6 +230,20 @@ impl DFA {
 
     /// Check if sequence can be compiled to DFA
     fn is_dfa_compilable(seq: &Sequence) -> bool {
+        // Prefer Sequence+NFA when all elements are QuantifiedCharClass(OneOrMore) or Char
+        // (the NFA with pre-computed transition table is faster than DFA for these patterns)
+        let nfa_compatible = seq.elements.len() >= 2
+            && seq.elements.iter().all(|e| {
+                matches!(
+                    e,
+                    SequenceElement::QuantifiedCharClass(_, Quantifier::OneOrMore)
+                        | SequenceElement::Char(_)
+                )
+            });
+        if nfa_compatible {
+            return false;
+        }
+
         // For now, only handle patterns like: quantified literal quantified literal
         // Example: \d+.\d+.\d+ (version numbers)
         // Avoid patterns with specific char anchors like '@', '://' - sequence matcher is faster with memchr
@@ -266,7 +282,7 @@ impl DFA {
         }
 
         // Second check: look for distinctive anchor chars that memchr can find quickly
-        for (_i, elem) in seq.elements.iter().enumerate() {
+        for elem in seq.elements.iter() {
             match elem {
                 SequenceElement::Char(ch) => {
                     // Skip DFA if there's a distinctive anchor char

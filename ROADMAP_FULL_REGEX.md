@@ -1,15 +1,27 @@
 # ReXile Full Regex Engine - Implementation Roadmap
 
-## Current Status (v0.1)
+## Current Status (v0.2.0)
 
-### ✅ Implemented
+### ✅ Implemented (v0.2.0)
 - Literal strings (`hello`)
 - Alternation (`foo|bar|baz`) - using aho-corasick
 - Anchors (`^start`, `end$`, `^exact$`)
 - Pattern caching (global cache with OnceLock)
 - Find operations (`find`, `find_all`)
+- Character classes `[a-z]`, `[0-9]`, `[^abc]` with negation
+- Quantifiers `*`, `+`, `?`
+- Escape sequences `\.`, `\d`, `\w`, `\s`, `\n`, `\t`
+- **Dot wildcard** `.`, `.*`, `.+` with backtracking (v0.2.0)
+- **Capturing groups** with auto-detection (v0.2.0)
+- Sequences and groups
+- Word boundaries `\b`, `\B`
 
-### ⏸️ Planned but Not Started
+### 🚧 In Progress / Planned
+- Bounded quantifiers `{n}`, `{n,m}`
+- Non-greedy quantifiers `*?`, `+?`
+- Lookahead/lookbehind `(?=...)`, `(?<=...)`
+- Backreferences `\1`, `\2`
+- Unicode support `\p{L}`, `\p{N}`
 - Character classes `[a-z]`, `[0-9]`, `[^abc]`
 - Quantifiers `*`, `+`, `?`, `{n,m}`
 - Escape sequences `\.`, `\d`, `\w`, `\s`
