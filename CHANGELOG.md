@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] - 2025-01-24
+
+### Fixed
+- **Critical: Backtracking with greedy quantifiers**: Implemented proper backtracking for patterns with greedy quantifiers followed by literals
+  - Pattern `a(.+)b` now correctly matches `"axxxb"` (backtracks from greedy `.+`)
+  - Pattern `\{(.+)\}` now correctly matches `"{ abc }"` (backtracks to leave `}` for literal match)
+  - Pattern `([^}]*)\{` now correctly matches `"salience 10 {"` (backtracks character class quantifier)
+  - Pattern `start(.+)end` now correctly matches `"start123end"`
+  - Added `match_elements_with_backtrack()` with smart strategy: try matching remaining elements first, then verify quantified element can match the substring
+  - Added `contains_quantified()` helper to recursively detect patterns needing backtracking
+  - All backtracking test cases now passing
+
+### Changed
+- Improved matching performance for complex patterns with captures by using intelligent backtracking instead of exhaustive search
+
 ## [0.2.3] - 2025-01-24
 
 ### Fixed
