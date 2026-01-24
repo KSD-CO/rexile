@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2025-01-24
+
+### Fixed
+- **Critical: Zero-width quantifier matching**: Fixed patterns with `*` quantifiers not matching when consuming zero characters
+  - Pattern `\s*a` now correctly matches `"a"` (with `\s*` consuming zero characters)
+  - Pattern `\s*\{` now correctly matches `"{"` (with `\s*` consuming zero characters)
+  - Pattern `a*b` now correctly matches `"b"` (with `a*` consuming zero characters)
+  - Implemented epsilon closure in NFA simulation to handle optional elements (min=0)
+  - Added `optional_bits` field to NfaTable to track elements that can be skipped
+  - Updated `is_dfa_compilable` to route `ZeroOrMore` patterns through NFA path
+- All 84 unit tests + 13 integration tests passing
+
+### Known Issues
+- Backtracking with capture groups followed by literals (e.g., `\{(.+)\}`) not working correctly
+- Alternation patterns with captures followed by literals (e.g., `(?:a|b)c`) not matching properly
+- These issues affect complex patterns used in GRL parsing but do not impact simple regex use cases
+
 ## [0.2.1] - 2025-01-24
 
 ### Added
