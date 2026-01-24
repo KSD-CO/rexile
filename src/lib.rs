@@ -1855,6 +1855,95 @@ impl Matcher {
         None
     }
 
+    /// Check if a matcher contains a quantified pattern
+    fn contains_quantified(matcher: &Matcher) -> bool {
+        match matcher {
+            Matcher::Quantified(_) | Matcher::QuantifiedCapture(_, _) => true,
+            Matcher::Capture(inner, _) => Self::contains_quantified(inner),
+            Matcher::PatternWithCaptures { elements, .. } => {
+                // If any element is quantified, the whole pattern can match multiple lengths
+                elements.iter().any(|elem| match elem {
+                    CompiledCaptureElement::Capture(m, _) | CompiledCaptureElement::NonCapture(m) => {
+                        Self::contains_quantified(m)
+                    }
+                })
+            }
+            _ => false,
+        }
+    }
+
+    /// Try to match sequence of elements with backtracking support
+    /// Returns (start, end) if successful
+    fn match_elements_with_backtrack(
+        text: &str,
+        start_pos: usize,
+        elements: &[CompiledCaptureElement],
+    ) -> Option<usize> {
+        // Base case: no more elements
+        if elements.is_empty() {
+            return Some(start_pos);
+        }
+
+        // Get first element
+        let first_element = &elements[0];
+        let first_matcher = match first_element {
+            CompiledCaptureElement::Capture(m, _) => m,
+            CompiledCaptureElement::NonCapture(m) => m,
+        };
+
+        // Check if this element contains a quantified pattern that needs backtracking
+        // This includes: Quantified, QuantifiedCapture, and Captures containing quantified patterns
+        let needs_backtracking = if elements.len() <= 1 {
+            false // No backtracking needed if this is the last element
+        } else {
+            // Check if first_matcher contains a quantified pattern
+            Self::contains_quantified(first_matcher)
+        };
+
+        if needs_backtracking {
+            // Quantified element followed by more elements - need backtracking
+            // Strategy: Try matching with progressively shorter lengths from remaining text
+
+            let remaining_text = &text[start_pos..];
+            let remaining_len = remaining_text.len();
+
+            // Try each possible length from longest to shortest
+            // Start from full remaining text down to 1 character
+            for try_len in (1..=remaining_len).rev() {
+                let next_pos = start_pos + try_len;
+
+                // Try to match remaining elements FIRST
+                if let Some(final_pos) =
+                    Self::match_elements_with_backtrack(text, next_pos, &elements[1..])
+                {
+                    // Remaining elements matched! Now check if first element can match this length
+                    let substring = &text[start_pos..next_pos];
+
+                    if first_matcher.is_match(substring) {
+                        // Verify it matches from the start
+                        if let Some((rel_start, _)) = first_matcher.find(substring) {
+                            if rel_start == 0 {
+                                return Some(final_pos);
+                            }
+                        }
+                    }
+                }
+            }
+
+            None
+        } else {
+            // Non-quantified element or last element - match normally
+            if let Some((rel_start, rel_end)) = first_matcher.find(&text[start_pos..]) {
+                if rel_start == 0 {
+                    let next_pos = start_pos + rel_end;
+                    // Match remaining elements
+                    return Self::match_elements_with_backtrack(text, next_pos, &elements[1..]);
+                }
+            }
+            None
+        }
+    }
+
     /// Find all quantified capture matches
     fn quantified_find_all(
         text: &str,
@@ -2003,32 +2092,14 @@ impl Matcher {
                     return matcher.find(text);
                 }
 
-                // Multiple elements: must match sequentially from same starting position
-                for start_pos in 0..text.len() {
-                    let mut pos = start_pos;
-                    let mut all_matched = true;
-
-                    for element in elements {
-                        let matcher = match element {
-                            CompiledCaptureElement::Capture(m, _) => m,
-                            CompiledCaptureElement::NonCapture(m) => m,
-                        };
-
-                        if let Some((rel_start, rel_end)) = matcher.find(&text[pos..]) {
-                            if rel_start != 0 {
-                                // Element must match at current position
-                                all_matched = false;
-                                break;
-                            }
-                            pos += rel_end;
-                        } else {
-                            all_matched = false;
-                            break;
+                // Multiple elements: try matching with backtracking support
+                for start_pos in 0..=text.len() {
+                    if let Some(end_pos) =
+                        Self::match_elements_with_backtrack(text, start_pos, elements)
+                    {
+                        if end_pos > start_pos || elements.is_empty() {
+                            return Some((start_pos, end_pos));
                         }
-                    }
-
-                    if all_matched {
-                        return Some((start_pos, pos));
                     }
                 }
                 None
