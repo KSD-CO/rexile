@@ -18,6 +18,7 @@ ReXile is a **lightweight regex alternative** that achieves **exceptional compil
 **Key Features:**
 - ✅ Literal searches with SIMD acceleration
 - ✅ Multi-pattern matching (alternations)
+- ✅ **Alternation with captures** (`(?:(a)|(b))`) - NEW in v0.2.3
 - ✅ Character classes with negation
 - ✅ Quantifiers (`*`, `+`, `?`)
 - ✅ **Non-greedy quantifiers** (`*?`, `+?`, `??`) - NEW in v0.2.1
@@ -113,6 +114,13 @@ assert!(dotall.is_match(multiline));    // (?s) makes .* match across newlines
 let group = Pattern::new(r#"(?:"test"|foo)"#).unwrap();
 assert!(group.is_match("\"test\""));    // Matches quoted "test"
 assert!(group.is_match("foo"));         // Or matches foo
+
+// Alternation with captures (NEW in v0.2.3)
+let alt_caps = Pattern::new(r#"(?:"([^"]+)"|([a-z]+))"#).unwrap();
+let caps1 = alt_caps.captures("\"hello\"").unwrap();
+assert_eq!(caps1.get(1), Some("hello")); // Matched quoted string
+let caps2 = alt_caps.captures("world").unwrap();
+assert_eq!(caps2.get(2), Some("world"));  // Matched unquoted identifier
 
 // Digit matching (DigitRun fast path - 1.4-1.9x faster than regex!)
 let digits = Pattern::new("\\d+").unwrap();

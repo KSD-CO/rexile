@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2025-01-24
+
+### Fixed
+- **Critical: Alternation with captures**: Fixed patterns with alternation branches containing capture groups
+  - Pattern `(?:(a)|(b))` now correctly matches `"a"` and `"b"` with proper capture groups
+  - Pattern `(?:"([^"]+)"|([a-zA-Z_]\w*))` now works for matching quoted or unquoted identifiers
+  - Pattern `(?:a|b)c` now correctly matches `"ac"` and `"bc"`
+  - Added new AST variant `AlternationWithCaptures` to properly handle alternation with captures
+  - Implemented `split_by_alternation()` to detect top-level `|` operators
+  - All alternation patterns in test suite now passing
+
+### Known Issues
+- Backtracking with greedy quantifiers in captures: Patterns like `\{(.+)\}` fail because `.+` greedily consumes everything including the final `}`, and the engine doesn't backtrack. This affects complex patterns with greedy captures followed by literals. Consider using character classes like `[^}]+` instead of `.+` as a workaround.
+
 ## [0.2.2] - 2025-01-24
 
 ### Fixed

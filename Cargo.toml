@@ -1,10 +1,10 @@
 [package]
 name = "rexile"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 authors = ["Ton That Vu <ttvuhm@gmail.com>"]
 license = "MIT OR Apache-2.0"
-description = "A blazing-fast regex engine with 10-100x faster compilation and competitive matching performance - now with dot wildcard, non-greedy quantifiers, DOTALL mode, and non-capturing groups"
+description = "A blazing-fast regex engine with 10-100x faster compilation and competitive matching performance - now with alternation with captures, non-greedy quantifiers, DOTALL mode, and more"
 repository = "https://github.com/KSD-CO/rexile"
 documentation = "https://docs.rs/rexile"
 homepage = "https://github.com/KSD-CO/rexile"
