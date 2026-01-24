@@ -877,6 +877,10 @@ enum Ast {
         elements: Vec<CaptureElement>,
         total_groups: usize,
     }, // Phase 8.1: Hello (\w+)
+    AlternationWithCaptures {
+        branches: Vec<Ast>,
+        total_groups: usize,
+    }, // Alternation where branches may contain captures: (a)|(b) or (?:(a)|(b))
     Backreference(usize),     // Phase 9: Backreference to capture group (\1, \2, etc.)
     CaseInsensitive(Box<Ast>), // Wrap AST with case-insensitive matching
 }
@@ -1443,6 +1447,10 @@ enum Matcher {
         elements: Vec<CompiledCaptureElement>,
         total_groups: usize,
     }, // Phase 8.1
+    AlternationWithCaptures {
+        branches: Vec<Matcher>,
+        total_groups: usize,
+    }, // Alternation where branches may contain captures: (a)|(b) or (?:(a)|(b))
     Backreference(usize),         // Phase 9: Backreference to capture group
     DFA(DFA),                     // Phase 9.2: DFA-optimized sequence matcher
     CaseInsensitive(Box<Matcher>), // Case-insensitive wrapper for (?i)
@@ -1613,6 +1621,15 @@ impl Matcher {
             Matcher::SequenceWithFlags(seq, flags) => {
                 // Sequence matching with flags (e.g., DOTALL)
                 seq.is_match_with_flags(text, flags)
+            }
+            Matcher::AlternationWithCaptures { branches, .. } => {
+                // Try each branch - return true if ANY branch matches
+                for branch in branches {
+                    if branch.is_match(text) {
+                        return true;
+                    }
+                }
+                false
             }
             Matcher::CaseInsensitive(inner) => {
                 // Case-insensitive matching: convert both to lowercase
@@ -2028,6 +2045,20 @@ impl Matcher {
                 // Find with flags (e.g., DOTALL mode where . matches newlines)
                 seq.find_with_flags(text, flags)
             }
+            Matcher::AlternationWithCaptures { branches, .. } => {
+                // Try each branch in order (leftmost-first), return first match
+                let mut best_match: Option<(usize, usize)> = None;
+
+                for branch in branches {
+                    if let Some((start, end)) = branch.find(text) {
+                        // Keep the leftmost (earliest starting) match
+                        if best_match.is_none() || start < best_match.unwrap().0 {
+                            best_match = Some((start, end));
+                        }
+                    }
+                }
+                best_match
+            }
             Matcher::CaseInsensitive(inner) => {
                 // Case-insensitive find: search in lowercased text
                 // But we need to return positions in original text
@@ -2268,6 +2299,36 @@ impl Matcher {
 
                 matches
             }
+            Matcher::AlternationWithCaptures { branches, .. } => {
+                // Find all matches from any branch
+                let mut matches = Vec::new();
+                let mut search_start = 0;
+
+                while search_start < text.len() {
+                    // Try each branch and find the leftmost match
+                    let mut best_match: Option<(usize, usize)> = None;
+
+                    for branch in branches {
+                        if let Some((start, end)) = branch.find(&text[search_start..]) {
+                            let abs_start = search_start + start;
+                            let abs_end = search_start + end;
+
+                            if best_match.is_none() || abs_start < best_match.unwrap().0 {
+                                best_match = Some((abs_start, abs_end));
+                            }
+                        }
+                    }
+
+                    if let Some((start, end)) = best_match {
+                        matches.push((start, end));
+                        search_start = end.max(start + 1);
+                    } else {
+                        break;
+                    }
+                }
+
+                matches
+            }
             Matcher::CaseInsensitive(inner) => {
                 // Case-insensitive find_all
                 let lower_text = text.to_lowercase();
@@ -2468,6 +2529,21 @@ fn compile_ast(ast: &Ast) -> Result<Matcher, PatternError> {
             }
             Ok(Matcher::PatternWithCaptures {
                 elements: compiled_elements,
+                total_groups: *total_groups,
+            })
+        }
+        Ast::AlternationWithCaptures {
+            branches,
+            total_groups,
+        } => {
+            // Compile each branch
+            let mut compiled_branches = Vec::new();
+            for branch_ast in branches {
+                let branch_matcher = compile_ast(branch_ast)?;
+                compiled_branches.push(branch_matcher);
+            }
+            Ok(Matcher::AlternationWithCaptures {
+                branches: compiled_branches,
                 total_groups: *total_groups,
             })
         }
@@ -2676,11 +2752,131 @@ fn parse_pattern_with_captures(pattern: &str) -> Result<Ast, PatternError> {
     Ok(ast)
 }
 
+/// Split pattern by top-level '|' characters (not inside groups)
+/// Returns None if no top-level alternation found
+fn split_by_alternation(pattern: &str) -> Option<Vec<String>> {
+    let mut branches = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0;
+    let mut chars = pattern.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '(' => {
+                depth += 1;
+                current.push(ch);
+            }
+            ')' => {
+                depth -= 1;
+                current.push(ch);
+            }
+            '|' if depth == 0 => {
+                // Top-level alternation found
+                branches.push(current.clone());
+                current.clear();
+            }
+            '\\' => {
+                // Escape sequence - consume next char too
+                current.push(ch);
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+            }
+            _ => {
+                current.push(ch);
+            }
+        }
+    }
+
+    // Add the last branch
+    if !current.is_empty() || !branches.is_empty() {
+        branches.push(current);
+    }
+
+    // Only return Some if we found actual alternation (more than 1 branch)
+    if branches.len() > 1 {
+        Some(branches)
+    } else {
+        None
+    }
+}
+
 /// Inner recursive parser that tracks group numbers across nested captures
 fn parse_pattern_with_captures_inner(
     pattern: &str,
     group_counter: &mut usize,
 ) -> Result<(Ast, usize), PatternError> {
+    // FIRST: Check if this pattern contains top-level alternation
+    if let Some(branches) = split_by_alternation(pattern) {
+        // This is an alternation pattern like (a)|(b) or foo|bar
+        let start_group = *group_counter;
+        let mut parsed_branches = Vec::new();
+
+        for branch in branches {
+            // Parse each branch independently
+            let (branch_ast, _) = parse_pattern_with_captures_inner(&branch, group_counter)?;
+            parsed_branches.push(branch_ast);
+        }
+
+        let total_groups = *group_counter - 1;
+
+        // Create an alternation AST
+        // For now, we need to represent alternation with captures
+        // We'll create a PatternWithCaptures that contains the alternation logic
+        // But first check if all branches are simple literals
+        let all_literals = parsed_branches.iter().all(|ast| matches!(ast, Ast::Literal(_)));
+
+        if all_literals {
+            // Simple case: all branches are literals like "a"|"b"
+            let literals: Vec<String> = parsed_branches
+                .into_iter()
+                .filter_map(|ast| {
+                    if let Ast::Literal(s) = ast {
+                        Some(s)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            return Ok((Ast::Alternation(literals), total_groups));
+        } else {
+            // Complex case: branches contain captures or other complex patterns
+            // Try to convert branches to sequences for ParsedAlternation
+            let mut sequences = Vec::new();
+            for branch_ast in &parsed_branches {
+                // Try to extract a sequence from each branch
+                if let Ast::Sequence(seq) = branch_ast {
+                    sequences.push(seq.clone());
+                } else {
+                    // Can't use ParsedAlternation for non-sequence branches
+                    break;
+                }
+            }
+
+            if sequences.len() == parsed_branches.len() {
+                // All branches are sequences - use ParsedAlternation
+                use crate::parser::group::{Group, GroupContent};
+                return Ok((
+                    Ast::Group(Group::new_non_capturing(GroupContent::ParsedAlternation(
+                        sequences,
+                    ))),
+                    total_groups,
+                ));
+            } else {
+                // Mixed types or non-sequences (like Capture, Literal, etc.)
+                // Use the new AlternationWithCaptures variant
+                return Ok((
+                    Ast::AlternationWithCaptures {
+                        branches: parsed_branches,
+                        total_groups,
+                    },
+                    total_groups,
+                ));
+            }
+        }
+    }
+
+    // NO alternation at top level - parse as sequence
     let mut elements: Vec<CaptureElement> = Vec::new();
     let mut pos = 0;
     let start_group = *group_counter;
