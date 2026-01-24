@@ -20,7 +20,10 @@ ReXile is a **lightweight regex alternative** that achieves **exceptional compil
 - ✅ Multi-pattern matching (alternations)
 - ✅ Character classes with negation
 - ✅ Quantifiers (`*`, `+`, `?`)
+- ✅ **Non-greedy quantifiers** (`*?`, `+?`, `??`) - NEW in v0.2.1
 - ✅ **Dot wildcard** (`.`, `.*`, `.+`) with backtracking
+- ✅ **DOTALL mode** (`(?s)`) - Dot matches newlines - NEW in v0.2.1
+- ✅ **Non-capturing groups** (`(?:...)`) with alternations - NEW in v0.2.1
 - ✅ Escape sequences (`\d`, `\w`, `\s`, etc.)
 - ✅ Sequences and groups
 - ✅ Word boundaries (`\b`, `\B`)
@@ -97,6 +100,20 @@ let plus = Pattern::new("a.+c").unwrap();
 assert!(plus.is_match("abc"));         // .+ matches 'b' (requires at least one char)
 assert!(!plus.is_match("ac"));         // .+ needs at least 1 character
 
+// Non-greedy quantifiers (NEW in v0.2.1)
+let lazy = Pattern::new(r"start\{.*?\}").unwrap();
+assert_eq!(lazy.find("start{abc}end{xyz}"), Some((0, 10))); // Matches "start{abc}", not greedy
+
+// DOTALL mode - dot matches newlines (NEW in v0.2.1)
+let dotall = Pattern::new(r"(?s)rule\s+.*?\}").unwrap();
+let multiline = "rule test {\n  content\n}";
+assert!(dotall.is_match(multiline));    // (?s) makes .* match across newlines
+
+// Non-capturing groups with alternation (NEW in v0.2.1)
+let group = Pattern::new(r#"(?:"test"|foo)"#).unwrap();
+assert!(group.is_match("\"test\""));    // Matches quoted "test"
+assert!(group.is_match("foo"));         // Or matches foo
+
 // Digit matching (DigitRun fast path - 1.4-1.9x faster than regex!)
 let digits = Pattern::new("\\d+").unwrap();
 let matches = digits.find_all("Order #12345 costs $67.89");
@@ -170,12 +187,14 @@ ReXile uses **JIT-style specialized implementations** for common patterns:
 | Exact match | `^exact$` | ✅ Supported |
 | Character classes | `[a-z]`, `[0-9]`, `[^abc]` | ✅ Supported |
 | Quantifiers | `*`, `+`, `?` | ✅ Supported |
+| **Non-greedy quantifiers** | `.*?`, `+?`, `??` | ✅ **Supported (v0.2.1)** |
 | **Dot wildcard** | `.`, `.*`, `.+` | ✅ **Supported (v0.2.0)** |
+| **DOTALL mode** | `(?s)` - dot matches newlines | ✅ **Supported (v0.2.1)** |
 | Escape sequences | `\d`, `\w`, `\s`, `\.`, `\n`, `\t` | ✅ Supported |
 | Sequences | `ab+c*`, `\d+\w*` | ✅ Supported |
-| Groups | `(abc)`, `(?:...)` | ✅ Supported |
-| Word boundaries | `\b`, `\B` | ✅ Supported |
+| **Non-capturing groups** | `(?:abc\|def)` | ✅ **Supported (v0.2.1)** |
 | **Capturing groups** | Extract `(group)` | ✅ **Supported (v0.2.0)** |
+| Word boundaries | `\b`, `\B` | ✅ Supported |
 | Bounded quantifiers | `{n}`, `{n,m}` | 🚧 Planned |
 | Lookahead/lookbehind | `(?=...)`, `(?<=...)` | 🚧 Planned |
 | Backreferences | `\1`, `\2` | 🚧 Planned |
@@ -370,6 +389,9 @@ Contributions welcome! ReXile is actively maintained and evolving.
 - ✅ Core regex features complete
 - ✅ **Dot wildcard** (`.`, `.*`, `.+`) with backtracking - **v0.2.0**
 - ✅ **Capturing groups** - Auto-detection and extraction - **v0.2.0**
+- ✅ **Non-greedy quantifiers** (`.*?`, `+?`, `??`) - **v0.2.1**
+- ✅ **DOTALL mode** (`(?s)`) for multiline matching - **v0.2.1**
+- ✅ **Non-capturing groups** (`(?:...)`) with alternations - **v0.2.1**
 - ✅ 10-100x faster compilation
 - 🔄 Advanced features: bounded quantifiers `{n,m}`, lookahead, Unicode support
 
@@ -384,7 +406,6 @@ Contributions welcome! ReXile is actively maintained and evolving.
 - 📋 More fast path patterns
 - 📋 Unicode support
 - 📋 Documentation improvements
-- 📋 Non-greedy quantifiers (`*?`, `+?`)
 
 ## 📜 License
 
@@ -413,13 +434,13 @@ ReXile achieves competitive performance through **intelligent specialization** r
 
 ---
 
-**Status:** ✅ Production Ready (v0.2.0)
+**Status:** ✅ Production Ready (v0.2.1)
 
 - ✅ **Compilation Speed:** 10-100x faster than regex crate
 - ✅ **Matching Speed:** 1.4-1.9x faster on simple patterns
 - ✅ **Memory:** 15x less compilation, 5x less peak
-- ✅ **Features:** Core regex + dot wildcard + capturing groups
-- ✅ **Testing:** 77 unit tests passing, comprehensive benchmarks
+- ✅ **Features:** Core regex + dot wildcard + capturing groups + non-greedy + DOTALL + non-capturing groups
+- ✅ **Testing:** 84 unit tests + 13 group integration tests passing
 - ✅ **Real-world validated:** GRL parsing, rule engines, DSL compilers
 
 

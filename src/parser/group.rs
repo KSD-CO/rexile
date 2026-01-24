@@ -29,6 +29,8 @@ pub enum GroupContent {
     Alternation(Vec<String>),
     /// Nested sequence
     Sequence(Sequence),
+    /// Alternation with parsed sequences (for complex alternatives like "[a-z]+|\d+")
+    ParsedAlternation(Vec<Sequence>),
 }
 
 impl Group {
@@ -91,6 +93,15 @@ impl Group {
                 None
             }
             GroupContent::Sequence(seq) => seq.match_at(remaining),
+            GroupContent::ParsedAlternation(sequences) => {
+                // Try each alternative sequence (leftmost first)
+                for seq in sequences {
+                    if let Some(consumed) = seq.match_at(remaining) {
+                        return Some(consumed);
+                    }
+                }
+                None
+            }
         }
     }
 
@@ -248,9 +259,9 @@ fn find_common_prefix(alternatives: &[String]) -> Option<String> {
 
 fn quantifier_bounds(q: &Quantifier) -> (usize, usize) {
     match q {
-        Quantifier::ZeroOrMore => (0, usize::MAX),
-        Quantifier::OneOrMore => (1, usize::MAX),
-        Quantifier::ZeroOrOne => (0, 1),
+        Quantifier::ZeroOrMore | Quantifier::ZeroOrMoreLazy => (0, usize::MAX),
+        Quantifier::OneOrMore | Quantifier::OneOrMoreLazy => (1, usize::MAX),
+        Quantifier::ZeroOrOne | Quantifier::ZeroOrOneLazy => (0, 1),
         Quantifier::Exactly(n) => (*n, *n),
         Quantifier::AtLeast(n) => (*n, usize::MAX),
         Quantifier::Between(n, m) => (*n, *m),
@@ -332,23 +343,35 @@ pub fn parse_group(pattern: &str) -> Result<(Group, usize), String> {
     // Check for quantifier after group
     if bytes_consumed < pattern.len() {
         let remaining = &pattern[bytes_consumed..];
-        if let Some(ch) = remaining.chars().next() {
-            if let Some(quantifier) = parse_simple_quantifier(ch) {
-                bytes_consumed += ch.len_utf8();
-                return Ok((group.with_quantifier(quantifier), bytes_consumed));
-            }
+        let (quantifier_opt, qlen) = parse_quantifier_with_lazy(remaining);
+        if let Some(quantifier) = quantifier_opt {
+            bytes_consumed += qlen;
+            return Ok((group.with_quantifier(quantifier), bytes_consumed));
         }
     }
 
     Ok((group, bytes_consumed))
 }
 
-fn parse_simple_quantifier(ch: char) -> Option<Quantifier> {
-    match ch {
-        '*' => Some(Quantifier::ZeroOrMore),
-        '+' => Some(Quantifier::OneOrMore),
-        '?' => Some(Quantifier::ZeroOrOne),
-        _ => None,
+/// Parse quantifier including lazy variants (*, +, ?, *?, +?, ??)
+/// Returns (Option<Quantifier>, bytes_consumed)
+fn parse_quantifier_with_lazy(remaining: &str) -> (Option<Quantifier>, usize) {
+    let chars: Vec<char> = remaining.chars().take(2).collect();
+    if chars.is_empty() {
+        return (None, 0);
+    }
+
+    let first = chars[0];
+    let has_lazy = chars.len() > 1 && chars[1] == '?';
+
+    match first {
+        '*' if has_lazy => (Some(Quantifier::ZeroOrMoreLazy), 2),
+        '*' => (Some(Quantifier::ZeroOrMore), 1),
+        '+' if has_lazy => (Some(Quantifier::OneOrMoreLazy), 2),
+        '+' => (Some(Quantifier::OneOrMore), 1),
+        '?' if has_lazy => (Some(Quantifier::ZeroOrOneLazy), 2),
+        '?' => (Some(Quantifier::ZeroOrOne), 1),
+        _ => (None, 0),
     }
 }
 

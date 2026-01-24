@@ -132,7 +132,7 @@ use advanced::{Lookaround, LookaroundType};
 use engine::DFA;
 use parser::{
     is_sequence_pattern, parse_escape, parse_quantified_pattern, parse_sequence,
-    starts_with_escape, BoundaryType, CharClass, Group, QuantifiedPattern, Sequence,
+    starts_with_escape, BoundaryType, CharClass, Flags, Group, QuantifiedPattern, Sequence,
 };
 
 // Re-export public types
@@ -148,6 +148,7 @@ pub struct Pattern {
         optimization::literal::LiteralKind,
     )>,
     fast_path: Option<optimization::fast_path::FastPath>, // JIT-style fast path
+    flags: Flags,                                         // Regex flags: (?i), (?m), (?s)
 }
 
 /// Type alias for convenience
@@ -155,25 +156,50 @@ pub type ReXile = Pattern;
 
 impl Pattern {
     pub fn new(pattern: &str) -> Result<Self, PatternError> {
+        // Parse inline flags like (?i), (?m), (?s) at the start of the pattern
+        let (flags, effective_pattern) =
+            if let Some((parsed_flags, rest)) = Flags::parse_from_pattern(pattern) {
+                (parsed_flags, rest)
+            } else {
+                (Flags::new(), pattern)
+            };
+
         // Auto-detect if pattern has capturing groups
-        let has_captures = pattern.contains('(') && !pattern.contains("(?:");
+        // But handle anchored patterns with groups separately: ^(hello), (world)$
+        let has_anchored_group = (effective_pattern.starts_with("^(")
+            || effective_pattern.ends_with(")$"))
+            && effective_pattern.contains('(');
+
+        let has_captures = effective_pattern.contains('(')
+            && !effective_pattern.contains("(?:")
+            && !has_anchored_group;
+
         let ast = if has_captures {
-            parse_pattern_with_captures(pattern)?
+            parse_pattern_with_captures_with_flags(effective_pattern, &flags)?
         } else {
-            parse_pattern(pattern)?
+            parse_pattern_with_flags(effective_pattern, &flags)?
         };
         let matcher = compile_ast(&ast)?;
 
         // Try to detect fast path first (JIT-style optimization)
-        let fast_path = optimization::fast_path::detect_fast_path(pattern);
+        // Note: fast path doesn't support flags yet, so skip if flags are set
+        let fast_path = if flags.any_set() {
+            None
+        } else {
+            optimization::fast_path::detect_fast_path(effective_pattern)
+        };
 
         // Extract literals and create prefilter
-        let literals = optimization::literal::extract_from_pattern(pattern);
+        let literals = optimization::literal::extract_from_pattern(effective_pattern);
 
-        // Only use prefilter for Prefix literals
+        // Only use prefilter for Prefix literals and patterns without groups
+        // Groups can cause incorrect literal extraction that breaks leftmost-first semantics
         // Inner literals require expensive bounded verification
+        let has_groups = effective_pattern.contains("(?:")
+            || (effective_pattern.contains('(') && !effective_pattern.contains("(?"));
         let prefilter = if !literals.is_empty()
             && literals.kind == optimization::literal::LiteralKind::Prefix
+            && !has_groups
         {
             let pf = optimization::prefilter::Prefilter::from_literals(&literals);
             if pf.is_available() {
@@ -189,6 +215,7 @@ impl Pattern {
             matcher,
             prefilter,
             fast_path,
+            flags,
         })
     }
 
@@ -820,7 +847,8 @@ impl std::error::Error for PatternError {}
 #[derive(Debug, Clone, PartialEq)]
 enum Ast {
     Literal(String),
-    Dot, // Matches any character except newline
+    Dot,    // Matches any character except newline
+    DotAll, // Matches any character INCLUDING newline (for (?s) flag)
     Alternation(Vec<String>),
     Anchored {
         literal: String,
@@ -835,10 +863,12 @@ enum Ast {
     CharClass(CharClass),
     Quantified(QuantifiedPattern),
     Sequence(Sequence),
+    SequenceWithFlags(Sequence, Flags), // Sequence with flags applied
     Group(Group),
     Boundary(BoundaryType),   // Phase 6: Word boundary support
     Lookaround(Lookaround),   // Phase 7: Lookahead/lookbehind
     Capture(Box<Ast>, usize), // Phase 8: Capture group (pattern, group_index)
+    QuantifiedCapture(Box<Ast>, parser::quantifier::Quantifier), // Capture with quantifier: (foo)+
     CombinedWithLookaround {
         prefix: Box<Ast>,
         lookaround: Lookaround,
@@ -848,6 +878,7 @@ enum Ast {
         total_groups: usize,
     }, // Phase 8.1: Hello (\w+)
     Backreference(usize),     // Phase 9: Backreference to capture group (\1, \2, etc.)
+    CaseInsensitive(Box<Ast>), // Wrap AST with case-insensitive matching
 }
 
 /// Parse patterns that contain groups combined with other elements
@@ -895,7 +926,8 @@ fn parse_pattern_with_groups(pattern: &str) -> Result<Ast, PatternError> {
                                 break;
                             }
                         }
-                        parser::group::GroupContent::Alternation(_parts) => {
+                        parser::group::GroupContent::Alternation(_)
+                        | parser::group::GroupContent::ParsedAlternation(_) => {
                             // Can't easily combine alternations
                             all_parsed = false;
                             break;
@@ -973,7 +1005,8 @@ fn parse_pattern_with_groups(pattern: &str) -> Result<Ast, PatternError> {
                                 None
                             }
                         }
-                        parser::group::GroupContent::Alternation(_parts) => {
+                        parser::group::GroupContent::Alternation(_)
+                        | parser::group::GroupContent::ParsedAlternation(_) => {
                             // For alternation like ^(foo|bar), can't use simple Anchored
                             None
                         }
@@ -1034,6 +1067,9 @@ fn parse_pattern_with_groups(pattern: &str) -> Result<Ast, PatternError> {
                         // Simple literal + suffix
                         let combined = format!("{}{}", s, suffix);
                         return Ok(Ast::Literal(combined));
+                    }
+                    parser::group::GroupContent::ParsedAlternation(_) => {
+                        // Complex alternation with suffix - fall through
                     }
                 }
             }
@@ -1268,11 +1304,6 @@ fn parse_pattern(pattern: &str) -> Result<Ast, PatternError> {
     }
 
     // Check if pattern contains dots - needs sequence parsing
-    eprintln!(
-        "[DEBUG] parse_pattern final check: pattern='{}', contains_dot={}",
-        pattern,
-        pattern.contains('.')
-    );
     if pattern.contains('.') {
         // Pattern like "a.c" needs to be parsed as sequence with dot wildcard
         use crate::parser::sequence::{Sequence, SequenceElement};
@@ -1293,100 +1324,94 @@ fn parse_pattern(pattern: &str) -> Result<Ast, PatternError> {
     Ok(Ast::Literal(pattern.to_string()))
 }
 
-/// Pre-computed multi-literal searcher using byte-pair hash table
-#[derive(Debug, Clone)]
-struct SmallLiteralSearcher {
-    /// Pattern bytes stored contiguously
-    patterns: Vec<Vec<u8>>,
-    /// Hash table: for each 2-byte hash, which patterns could match (bitmask)
-    hash_table: [u8; 256],
-    /// Minimum pattern length
-    min_len: usize,
+/// Parse pattern with flags applied
+/// This handles (?i) case-insensitive, (?m) multiline, (?s) dotall flags
+fn parse_pattern_with_flags(pattern: &str, flags: &Flags) -> Result<Ast, PatternError> {
+    // If dotall flag is set, we need to handle . differently
+    // If case_insensitive is set, wrap result in CaseInsensitive
+
+    if flags.dot_matches_newline {
+        // Parse the pattern with dot matching newlines
+        let ast = parse_pattern_dotall(pattern, flags)?;
+        if flags.case_insensitive {
+            return Ok(Ast::CaseInsensitive(Box::new(ast)));
+        }
+        return Ok(ast);
+    }
+
+    // Parse normally
+    let ast = parse_pattern(pattern)?;
+    if flags.case_insensitive {
+        return Ok(Ast::CaseInsensitive(Box::new(ast)));
+    }
+    Ok(ast)
 }
 
-impl SmallLiteralSearcher {
-    fn new(patterns: &[String]) -> Self {
-        let pattern_bytes: Vec<Vec<u8>> = patterns.iter().map(|s| s.as_bytes().to_vec()).collect();
-        let min_len = pattern_bytes.iter().map(|p| p.len()).min().unwrap_or(0);
-        // Build hash table: hash first 2 bytes of each pattern
-        let mut hash_table = [0u8; 256];
-        for (i, pat) in pattern_bytes.iter().enumerate() {
-            if pat.len() >= 2 {
-                let h = (pat[0].wrapping_mul(31).wrapping_add(pat[1])) as usize % 256;
-                hash_table[h] |= 1u8 << i;
+/// Parse pattern with DOTALL mode: . matches newlines
+fn parse_pattern_dotall(pattern: &str, flags: &Flags) -> Result<Ast, PatternError> {
+    if pattern.is_empty() {
+        return Ok(Ast::Literal(String::new()));
+    }
+
+    // Check for single dot wildcard
+    if pattern == "." {
+        return Ok(Ast::DotAll);
+    }
+
+    // Check if pattern contains dots - needs sequence parsing with DotAll
+    if pattern.contains('.') {
+        // Check if this is a sequence pattern
+        if is_sequence_pattern(pattern) {
+            // Parse the sequence and apply DOTALL flag
+            match parse_sequence(pattern) {
+                Ok(seq) => return Ok(Ast::SequenceWithFlags(seq, *flags)),
+                Err(_) => {
+                    // Fall through to other parsers
+                }
+            }
+        }
+
+        // Pattern like "a.c" needs to be parsed as sequence with dot wildcard
+        use crate::parser::sequence::{Sequence, SequenceElement};
+        let mut elements = Vec::new();
+
+        for ch in pattern.chars() {
+            if ch == '.' {
+                // Use DotAll element (will be handled by SequenceWithFlags)
+                elements.push(SequenceElement::Dot);
             } else {
-                // Single byte pattern: mark all hash buckets with this byte as first
-                for second in 0..=255u8 {
-                    let h = (pat[0].wrapping_mul(31).wrapping_add(second)) as usize % 256;
-                    hash_table[h] |= 1u8 << i;
-                }
+                elements.push(SequenceElement::Char(ch));
             }
         }
-        SmallLiteralSearcher {
-            patterns: pattern_bytes,
-            hash_table,
-            min_len,
-        }
+
+        return Ok(Ast::SequenceWithFlags(Sequence::new(elements), *flags));
     }
 
-    #[inline]
-    fn is_match(&self, text: &[u8]) -> bool {
-        if text.len() < self.min_len {
-            return false;
-        }
-        let end = text.len().saturating_sub(1);
-        // Scan using 2-byte sliding window with hash table lookup
-        for i in 0..end {
-            let h = (text[i].wrapping_mul(31).wrapping_add(text[i + 1])) as usize % 256;
-            let candidates = self.hash_table[h];
-            if candidates != 0 {
-                // Verify each candidate pattern
-                let remaining = &text[i..];
-                let mut bits = candidates;
-                while bits != 0 {
-                    let idx = bits.trailing_zeros() as usize;
-                    bits &= bits - 1;
-                    let pat = &self.patterns[idx];
-                    if remaining.len() >= pat.len() && &remaining[..pat.len()] == pat.as_slice() {
-                        return true;
-                    }
-                }
-            }
-        }
-        // Check last byte for single-byte patterns
-        if self.min_len == 1 && !text.is_empty() {
-            let last = text.len() - 1;
-            for pat in &self.patterns {
-                if pat.len() == 1 && text[last] == pat[0] {
-                    return true;
-                }
-            }
-        }
-        false
+    // For non-dot patterns, delegate to normal parsing
+    parse_pattern(pattern)
+}
+
+/// Parse patterns with captures and flags
+fn parse_pattern_with_captures_with_flags(
+    pattern: &str,
+    flags: &Flags,
+) -> Result<Ast, PatternError> {
+    // For now, parse normally and wrap if case-insensitive
+    // TODO: proper flags handling for captures
+    let ast = parse_pattern_with_captures(pattern)?;
+
+    if flags.case_insensitive {
+        return Ok(Ast::CaseInsensitive(Box::new(ast)));
     }
 
-    fn find(&self, text: &[u8]) -> Option<(usize, usize)> {
-        if text.len() < self.min_len {
-            return None;
-        }
-        let mut best: Option<(usize, usize)> = None;
-        for pat in &self.patterns {
-            if let Some(pos) = memmem::find(text, pat) {
-                let end = pos + pat.len();
-                if best.is_none() || pos < best.unwrap().0 {
-                    best = Some((pos, end));
-                }
-            }
-        }
-        best
-    }
+    // If DOTALL flag is set and the pattern has sequences, we need special handling
+    // For now, return as-is - full support requires more work
+    Ok(ast)
 }
 
 #[derive(Debug, Clone)]
 enum Matcher {
     Literal(String),
-    SmallLiterals(SmallLiteralSearcher),
-    PackedLiterals(aho_corasick::packed::Searcher),
     MultiLiteral(AhoCorasick),
     AnchoredLiteral {
         literal: String,
@@ -1401,12 +1426,14 @@ enum Matcher {
     CharClass(CharClass),
     Quantified(QuantifiedPattern),
     Sequence(Sequence),
+    SequenceWithFlags(Sequence, Flags), // Sequence with flags (e.g., DOTALL)
     Group(Group),
     DigitRun,                                  // Specialized fast path for \d+ pattern
     WordRun,                                   // Specialized fast path for \w+ pattern
     Boundary(BoundaryType),                    // Phase 6: Word boundary matcher
     Lookaround(Box<Lookaround>, Box<Matcher>), // Phase 7: Lookaround with compiled inner matcher
     Capture(Box<Matcher>, usize), // Phase 8: Capture matcher (inner pattern, group_index)
+    QuantifiedCapture(Box<Matcher>, parser::quantifier::Quantifier), // Quantified capture: (foo)+
     CombinedWithLookaround {
         prefix: Box<Matcher>,
         lookaround: Box<Lookaround>,
@@ -1418,6 +1445,7 @@ enum Matcher {
     }, // Phase 8.1
     Backreference(usize),         // Phase 9: Backreference to capture group
     DFA(DFA),                     // Phase 9.2: DFA-optimized sequence matcher
+    CaseInsensitive(Box<Matcher>), // Case-insensitive wrapper for (?i)
 }
 
 /// Compiled capture element
@@ -1431,8 +1459,6 @@ impl Matcher {
     fn is_match(&self, text: &str) -> bool {
         match self {
             Matcher::Literal(lit) => memmem::find(text.as_bytes(), lit.as_bytes()).is_some(),
-            Matcher::SmallLiterals(searcher) => searcher.is_match(text.as_bytes()),
-            Matcher::PackedLiterals(searcher) => searcher.find(text.as_bytes()).is_some(),
             Matcher::MultiLiteral(ac) => ac.is_match(text),
             Matcher::AnchoredLiteral {
                 literal,
@@ -1513,6 +1539,10 @@ impl Matcher {
                 // Capture groups don't affect matching, just check inner pattern
                 inner_matcher.is_match(text)
             }
+            Matcher::QuantifiedCapture(inner_matcher, quantifier) => {
+                // Quantified capture - match inner pattern with quantifier semantics
+                Self::quantified_is_match(text, inner_matcher, quantifier)
+            }
             Matcher::CombinedWithLookaround {
                 prefix,
                 lookaround,
@@ -1546,7 +1576,16 @@ impl Matcher {
                     return false;
                 }
 
-                // Fast path: no backreferences, simple sequential matching
+                // Special case: single element can match anywhere
+                if elements.len() == 1 {
+                    let matcher = match &elements[0] {
+                        CompiledCaptureElement::Capture(m, _) => m,
+                        CompiledCaptureElement::NonCapture(m) => m,
+                    };
+                    return matcher.is_match(text);
+                }
+
+                // Multiple elements: must match sequentially
                 let mut pos = 0;
                 for element in elements {
                     let matcher = match element {
@@ -1570,6 +1609,15 @@ impl Matcher {
             Matcher::DFA(dfa) => {
                 // DFA-optimized sequence matching
                 dfa.is_match(text)
+            }
+            Matcher::SequenceWithFlags(seq, flags) => {
+                // Sequence matching with flags (e.g., DOTALL)
+                seq.is_match_with_flags(text, flags)
+            }
+            Matcher::CaseInsensitive(inner) => {
+                // Case-insensitive matching: convert both to lowercase
+                let lower_text = text.to_lowercase();
+                inner.is_match(&lower_text)
             }
         }
     }
@@ -1743,16 +1791,84 @@ impl Matcher {
         })
     }
 
+    /// Match quantified capture pattern
+    fn quantified_is_match(
+        text: &str,
+        inner_matcher: &Matcher,
+        quantifier: &parser::quantifier::Quantifier,
+    ) -> bool {
+        Self::quantified_find(text, inner_matcher, quantifier).is_some()
+    }
+
+    /// Find quantified capture pattern
+    fn quantified_find(
+        text: &str,
+        inner_matcher: &Matcher,
+        quantifier: &parser::quantifier::Quantifier,
+    ) -> Option<(usize, usize)> {
+        let (min, max) = quantifier_bounds(quantifier);
+
+        // Try to match at each position in text
+        for start_pos in 0..text.len() {
+            let mut pos = start_pos;
+            let mut count = 0;
+
+            // Match inner pattern as many times as possible (greedy)
+            while count < max && pos < text.len() {
+                if let Some((rel_start, rel_end)) = inner_matcher.find(&text[pos..]) {
+                    // Must match at current position
+                    if rel_start != 0 {
+                        break;
+                    }
+                    if rel_end == 0 {
+                        break; // Avoid infinite loops on zero-width matches
+                    }
+                    pos += rel_end;
+                    count += 1;
+                } else {
+                    break;
+                }
+            }
+
+            if count >= min {
+                return Some((start_pos, pos));
+            }
+        }
+
+        None
+    }
+
+    /// Find all quantified capture matches
+    fn quantified_find_all(
+        text: &str,
+        inner_matcher: &Matcher,
+        quantifier: &parser::quantifier::Quantifier,
+    ) -> Vec<(usize, usize)> {
+        let mut matches = Vec::new();
+        let mut search_pos = 0;
+
+        while search_pos < text.len() {
+            if let Some((start, end)) =
+                Self::quantified_find(&text[search_pos..], inner_matcher, quantifier)
+            {
+                matches.push((search_pos + start, search_pos + end));
+                search_pos += start + 1; // Avoid overlapping
+                if start == end {
+                    search_pos += 1; // Avoid infinite loop on zero-width match
+                }
+            } else {
+                break;
+            }
+        }
+
+        matches
+    }
+
     fn find(&self, text: &str) -> Option<(usize, usize)> {
         match self {
             Matcher::Literal(lit) => {
                 let pos = memmem::find(text.as_bytes(), lit.as_bytes())?;
                 Some((pos, pos + lit.len()))
-            }
-            Matcher::SmallLiterals(searcher) => searcher.find(text.as_bytes()),
-            Matcher::PackedLiterals(searcher) => {
-                let mat = searcher.find(text.as_bytes())?;
-                Some((mat.start(), mat.end()))
             }
             Matcher::MultiLiteral(ac) => {
                 let mat = ac.find(text)?;
@@ -1830,6 +1946,10 @@ impl Matcher {
                 // Capture groups don't affect position, use inner matcher
                 inner_matcher.find(text)
             }
+            Matcher::QuantifiedCapture(inner_matcher, quantifier) => {
+                // Find quantified capture pattern
+                Self::quantified_find(text, inner_matcher, quantifier)
+            }
             Matcher::CombinedWithLookaround {
                 prefix,
                 lookaround,
@@ -1857,7 +1977,16 @@ impl Matcher {
                 None
             }
             Matcher::PatternWithCaptures { elements, .. } => {
-                // Find first match of all elements in sequence
+                // Special case: single element can match anywhere
+                if elements.len() == 1 {
+                    let matcher = match &elements[0] {
+                        CompiledCaptureElement::Capture(m, _) => m,
+                        CompiledCaptureElement::NonCapture(m) => m,
+                    };
+                    return matcher.find(text);
+                }
+
+                // Multiple elements: must match sequentially from same starting position
                 for start_pos in 0..text.len() {
                     let mut pos = start_pos;
                     let mut all_matched = true;
@@ -1894,6 +2023,17 @@ impl Matcher {
             Matcher::DFA(dfa) => {
                 // DFA-optimized find
                 dfa.find(text)
+            }
+            Matcher::SequenceWithFlags(seq, flags) => {
+                // Find with flags (e.g., DOTALL mode where . matches newlines)
+                seq.find_with_flags(text, flags)
+            }
+            Matcher::CaseInsensitive(inner) => {
+                // Case-insensitive find: search in lowercased text
+                // But we need to return positions in original text
+                // For simplicity, convert to lowercase and search
+                let lower_text = text.to_lowercase();
+                inner.find(&lower_text)
             }
         }
     }
@@ -1967,25 +2107,6 @@ impl Matcher {
                     .map(|pos| (pos, pos + lit.len()))
                     .collect()
             }
-            Matcher::SmallLiterals(searcher) => {
-                // find_all using sequential find with advancing position
-                let bytes = text.as_bytes();
-                let mut results = Vec::new();
-                let mut pos = 0;
-                while pos < bytes.len() {
-                    if let Some((s, e)) = searcher.find(&bytes[pos..]) {
-                        results.push((pos + s, pos + e));
-                        pos += e;
-                    } else {
-                        break;
-                    }
-                }
-                results
-            }
-            Matcher::PackedLiterals(searcher) => searcher
-                .find_iter(text.as_bytes())
-                .map(|mat| (mat.start(), mat.end()))
-                .collect(),
             Matcher::MultiLiteral(ac) => ac
                 .find_iter(text)
                 .map(|mat| (mat.start(), mat.end()))
@@ -2035,6 +2156,10 @@ impl Matcher {
             Matcher::Capture(inner_matcher, _group_index) => {
                 // Capture groups don't affect find_all, use inner matcher
                 inner_matcher.find_all(text)
+            }
+            Matcher::QuantifiedCapture(inner_matcher, quantifier) => {
+                // Find all quantified capture matches
+                Self::quantified_find_all(text, inner_matcher, quantifier)
             }
             Matcher::CombinedWithLookaround {
                 prefix,
@@ -2124,6 +2249,29 @@ impl Matcher {
                 }
 
                 matches
+            }
+            Matcher::SequenceWithFlags(seq, flags) => {
+                // Find all with flags
+                let mut matches = Vec::new();
+                let mut search_start = 0;
+
+                while search_start < text.len() {
+                    if let Some((start, end)) = seq.find_with_flags(&text[search_start..], flags) {
+                        let abs_start = search_start + start;
+                        let abs_end = search_start + end;
+                        matches.push((abs_start, abs_end));
+                        search_start = abs_end.max(abs_start + 1);
+                    } else {
+                        break;
+                    }
+                }
+
+                matches
+            }
+            Matcher::CaseInsensitive(inner) => {
+                // Case-insensitive find_all
+                let lower_text = text.to_lowercase();
+                inner.find_all(&lower_text)
             }
         }
     }
@@ -2219,30 +2367,6 @@ fn compile_ast(ast: &Ast) -> Result<Matcher, PatternError> {
             Ok(Matcher::CharClass(char_class))
         }
         Ast::Alternation(parts) => {
-            // For small alternations with unique first bytes, use memchr-based search
-            if parts.len() <= 8 && parts.iter().all(|p| !p.is_empty() && p.is_ascii()) {
-                let first_bytes: Vec<u8> = parts.iter().map(|p| p.as_bytes()[0]).collect();
-                // Check if first bytes are unique enough for memchr approach
-                let mut seen = [false; 256];
-                let all_unique = first_bytes.iter().all(|&b| {
-                    if seen[b as usize] {
-                        false
-                    } else {
-                        seen[b as usize] = true;
-                        true
-                    }
-                });
-                if all_unique {
-                    return Ok(Matcher::SmallLiterals(SmallLiteralSearcher::new(parts)));
-                }
-            }
-            // Try packed/Teddy searcher (SIMD-accelerated)
-            if let Some(searcher) =
-                aho_corasick::packed::Searcher::new(parts.iter().map(|s| s.as_bytes()))
-            {
-                return Ok(Matcher::PackedLiterals(searcher));
-            }
-            // Fallback to full Aho-Corasick automaton
             use aho_corasick::MatchKind;
             let ac = AhoCorasick::builder()
                 .match_kind(MatchKind::LeftmostFirst)
@@ -2305,6 +2429,14 @@ fn compile_ast(ast: &Ast) -> Result<Matcher, PatternError> {
             let inner_matcher = compile_ast(inner_ast)?;
             Ok(Matcher::Capture(Box::new(inner_matcher), *group_index))
         }
+        Ast::QuantifiedCapture(inner_ast, quantifier) => {
+            // Compile the inner pattern and create a quantified capture matcher
+            let inner_matcher = compile_ast(inner_ast)?;
+            Ok(Matcher::QuantifiedCapture(
+                Box::new(inner_matcher),
+                quantifier.clone(),
+            ))
+        }
         Ast::CombinedWithLookaround { prefix, lookaround } => {
             // Compile both the prefix and the lookaround's inner pattern
             let prefix_matcher = compile_ast(prefix)?;
@@ -2340,6 +2472,38 @@ fn compile_ast(ast: &Ast) -> Result<Matcher, PatternError> {
             })
         }
         Ast::Backreference(group_num) => Ok(Matcher::Backreference(*group_num)),
+        Ast::DotAll => {
+            // DotAll matches ANY character including newline
+            // Create a character class that matches everything
+            use crate::parser::charclass::CharClass;
+            // Use empty negated class which matches everything
+            let mut char_class = CharClass::new();
+            char_class.add_range('\0', char::MAX); // Match all unicode
+            char_class.finalize();
+            Ok(Matcher::CharClass(char_class))
+        }
+        Ast::SequenceWithFlags(seq, flags) => {
+            // Compile sequence with flag awareness
+            Ok(Matcher::SequenceWithFlags(seq.clone(), *flags))
+        }
+        Ast::CaseInsensitive(inner) => {
+            // Compile inner and wrap with case-insensitive matcher
+            let inner_matcher = compile_ast(inner)?;
+            Ok(Matcher::CaseInsensitive(Box::new(inner_matcher)))
+        }
+    }
+}
+
+/// Get min and max repetitions for a quantifier
+fn quantifier_bounds(q: &parser::quantifier::Quantifier) -> (usize, usize) {
+    use parser::quantifier::Quantifier;
+    match q {
+        Quantifier::ZeroOrMore | Quantifier::ZeroOrMoreLazy => (0, usize::MAX),
+        Quantifier::OneOrMore | Quantifier::OneOrMoreLazy => (1, usize::MAX),
+        Quantifier::ZeroOrOne | Quantifier::ZeroOrOneLazy => (0, 1),
+        Quantifier::Exactly(n) => (*n, *n),
+        Quantifier::AtLeast(n) => (*n, usize::MAX),
+        Quantifier::Between(n, m) => (*n, *m),
     }
 }
 
@@ -2546,8 +2710,57 @@ fn parse_pattern_with_captures_inner(
                 let inner = &pattern[pos + 1..close_idx];
                 let (inner_ast, _) = parse_pattern_with_captures_inner(inner, group_counter)?;
 
-                elements.push(CaptureElement::Capture(inner_ast, my_group_num));
-                pos = close_idx + 1;
+                // Check for quantifier after the group
+                let mut after_group = close_idx + 1;
+                let mut quantifier: Option<parser::quantifier::Quantifier> = None;
+
+                if after_group < pattern.len() {
+                    let remaining = &pattern[after_group..];
+                    let chars: Vec<char> = remaining.chars().take(2).collect();
+                    if !chars.is_empty() {
+                        let first = chars[0];
+                        let has_lazy = chars.len() > 1 && chars[1] == '?';
+
+                        match first {
+                            '*' if has_lazy => {
+                                quantifier = Some(parser::quantifier::Quantifier::ZeroOrMoreLazy);
+                                after_group += 2;
+                            }
+                            '*' => {
+                                quantifier = Some(parser::quantifier::Quantifier::ZeroOrMore);
+                                after_group += 1;
+                            }
+                            '+' if has_lazy => {
+                                quantifier = Some(parser::quantifier::Quantifier::OneOrMoreLazy);
+                                after_group += 2;
+                            }
+                            '+' => {
+                                quantifier = Some(parser::quantifier::Quantifier::OneOrMore);
+                                after_group += 1;
+                            }
+                            '?' if has_lazy => {
+                                quantifier = Some(parser::quantifier::Quantifier::ZeroOrOneLazy);
+                                after_group += 2;
+                            }
+                            '?' => {
+                                quantifier = Some(parser::quantifier::Quantifier::ZeroOrOne);
+                                after_group += 1;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                // Build the capture AST with optional quantifier
+                if let Some(q) = quantifier {
+                    elements.push(CaptureElement::Capture(
+                        Ast::QuantifiedCapture(Box::new(inner_ast), q),
+                        my_group_num,
+                    ));
+                } else {
+                    elements.push(CaptureElement::Capture(inner_ast, my_group_num));
+                }
+                pos = after_group;
             } else {
                 return Err(PatternError::ParseError(
                     "Unmatched parenthesis".to_string(),
@@ -2721,4 +2934,32 @@ fn char_class_find() {
 
     let matches = p.find_all("a1b2c3");
     assert_eq!(matches, vec![(1, 2), (3, 4), (5, 6)]);
+}
+
+#[test]
+fn debug_parse_group() {
+    let pattern = "(foo|bar)+";
+    match parser::group::parse_group(pattern) {
+        Ok((group, bytes_consumed)) => {
+            eprintln!("bytes_consumed: {}", bytes_consumed);
+            eprintln!("pattern.len(): {}", pattern.len());
+            eprintln!("group: {:?}", group);
+            assert_eq!(
+                bytes_consumed,
+                pattern.len(),
+                "Group should consume entire pattern"
+            );
+        }
+        Err(e) => {
+            panic!("Error: {}", e);
+        }
+    }
+
+    // Test actual matching
+    eprintln!("\n--- Testing Pattern::new ---");
+    let re = Pattern::new(pattern).unwrap();
+    eprintln!("Pattern created: {:?}", re);
+    eprintln!("is_match('foo'): {}", re.is_match("foo"));
+    eprintln!("is_match('bar'): {}", re.is_match("bar"));
+    eprintln!("is_match('foobar'): {}", re.is_match("foobar"));
 }

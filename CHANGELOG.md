@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2025-01-24
+
+### Added
+- **Non-greedy (lazy) quantifiers**: Full support for `*?`, `+?`, and `??`
+  - Pattern `.*?` matches as few characters as possible
+  - Pattern `.+?` requires at least one character but matches minimally
+  - Pattern `??` matches zero or one time, preferring zero
+  - Example: `start\{.*?\}` matches `"start{abc}"` not `"start{abc}end{xyz}"`
+- **DOTALL mode**: `(?s)` flag makes dot match newlines
+  - Pattern `(?s).*` matches across line boundaries
+  - Pattern `(?s)rule\s+.*?\}` correctly matches multi-line rule definitions
+  - Enables matching of multi-line text blocks with dot wildcard
+- **Non-capturing groups with alternations**: `(?:...)` support
+  - Pattern `(?:"test"|foo)` matches either quoted "test" or literal foo
+  - Full support for complex alternations inside groups
+  - Groups can be quantified: `(?:abc|def)+`
+  - Integrated with sequence matching and backtracking
+
+### Fixed
+- DOTALL backtracking consistency: Ensures all quantified elements in DOTALL mode correctly call DOTALL continuation paths
+- Prefilter disabled for patterns with groups to maintain correctness
+- Non-capturing group matching in complex patterns
+
+### Changed
+- Updated crate description to include new features
+- Test suite expanded to 84 unit tests + 13 group integration tests
+
+### Performance
+- **Zero regression**: Maintains 13/15 patterns faster than regex (0.75x total time)
+- All optimizations from v0.2.0 preserved while adding new features
+
 ## [0.2.0] - 2025-01-XX
 
 ### Added
@@ -56,5 +87,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 10 specialized fast paths for common patterns
 - Minimal dependencies (only `memchr` and `aho-corasick`)
 
-[0.2.0]: https://github.com/yourusername/rexile/compare/v0.1.1...v0.2.0
-[0.1.1]: https://github.com/yourusername/rexile/releases/tag/v0.1.1
+[0.2.1]: https://github.com/KSD-CO/rexile/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/KSD-CO/rexile/compare/v0.1.1...v0.2.0
+[0.1.1]: https://github.com/KSD-CO/rexile/releases/tag/v0.1.1

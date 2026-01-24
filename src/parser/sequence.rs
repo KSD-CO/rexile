@@ -5,6 +5,7 @@
 /// - \d+\w* (escape sequence followed by quantified escape)
 /// - hello\d+ (literal followed by quantified escape)
 use crate::parser::charclass::CharClass;
+use crate::parser::group::Group;
 use crate::parser::quantifier::Quantifier;
 
 /// A single element in a sequence
@@ -22,6 +23,10 @@ pub enum SequenceElement {
     QuantifiedCharClass(CharClass, Quantifier),
     /// A literal string (e.g., "hello" in "hello\d+")
     Literal(String),
+    /// A group element (e.g., (?:foo|bar) or (abc) in a sequence)
+    Group(Group),
+    /// A quantified group (e.g., (?:foo|bar)+ in a sequence)
+    QuantifiedGroup(Group, Quantifier),
 }
 
 impl SequenceElement {
@@ -42,6 +47,14 @@ impl SequenceElement {
                     }
                 }
                 SequenceElement::QuantifiedCharClass(_, quantifier) => {
+                    let (min, _) = quantifier_bounds(quantifier);
+                    if min == 0 {
+                        Some(0)
+                    } else {
+                        None
+                    }
+                }
+                SequenceElement::QuantifiedGroup(_, quantifier) => {
                     let (min, _) = quantifier_bounds(quantifier);
                     if min == 0 {
                         Some(0)
@@ -91,13 +104,19 @@ impl SequenceElement {
                     None
                 }
             }
+            SequenceElement::Group(group) => group.match_at(text, pos),
+            SequenceElement::QuantifiedGroup(group, quantifier) => {
+                match_quantified_group(group, quantifier, text, pos)
+            }
         }
     }
 }
 
 /// Match a quantified character
+/// For lazy quantifiers, this returns minimum match; backtracking will try more
 fn match_quantified_char(ch: char, quantifier: &Quantifier, text: &str) -> Option<usize> {
     let (min, max) = quantifier_bounds(quantifier);
+    let is_lazy = quantifier.is_lazy();
 
     // Count matching characters WITHOUT collecting into Vec
     let mut count = 0;
@@ -113,18 +132,20 @@ fn match_quantified_char(ch: char, quantifier: &Quantifier, text: &str) -> Optio
         return None; // Not enough matches
     }
 
-    // Greedy: take as many as possible (up to max)
-    let actual_count = count.min(max);
+    // Lazy: return minimum match; Greedy: return maximum match
+    let actual_count = if is_lazy { min } else { count.min(max) };
     Some(text.chars().take(actual_count).map(|c| c.len_utf8()).sum())
 }
 
 /// Match a quantified character class
+/// For lazy quantifiers, this returns minimum match; backtracking will try more
 fn match_quantified_charclass(
     cc: &CharClass,
     quantifier: &Quantifier,
     text: &str,
 ) -> Option<usize> {
     let (min, max) = quantifier_bounds(quantifier);
+    let is_lazy = quantifier.is_lazy();
 
     // OPTIMIZATION: For negated single-char class like [^"], use memchr to find terminator
     if cc.negated && cc.chars.len() == 1 && cc.ranges.is_empty() {
@@ -143,7 +164,8 @@ fn match_quantified_charclass(
                 return None;
             }
 
-            let actual_count = char_count.min(max);
+            // Lazy: return minimum match; Greedy: return maximum match
+            let actual_count = if is_lazy { min } else { char_count.min(max) };
             return Some(
                 matched_text
                     .chars()
@@ -168,17 +190,55 @@ fn match_quantified_charclass(
         return None; // Not enough matches
     }
 
-    // Greedy: take as many as possible (up to max)
-    let actual_count = count.min(max);
+    // Lazy: return minimum match; Greedy: return maximum match
+    let actual_count = if is_lazy { min } else { count.min(max) };
     Some(text.chars().take(actual_count).map(|c| c.len_utf8()).sum())
+}
+
+/// Match a quantified group (greedy: max match, lazy: min match)
+fn match_quantified_group(
+    group: &Group,
+    quantifier: &Quantifier,
+    text: &str,
+    pos: usize,
+) -> Option<usize> {
+    let (min, max) = quantifier_bounds(quantifier);
+    let is_lazy = quantifier.is_lazy();
+
+    // Find all possible match lengths by repeatedly matching the group
+    let mut byte_positions: Vec<usize> = Vec::new();
+    byte_positions.push(0); // 0 repetitions = 0 bytes
+    let mut current_pos = pos;
+    let mut count = 0;
+
+    while count < max && current_pos <= text.len() {
+        if let Some(consumed) = group.match_at(text, current_pos) {
+            if consumed == 0 {
+                break; // Prevent infinite loop on zero-width matches
+            }
+            current_pos += consumed;
+            count += 1;
+            byte_positions.push(current_pos - pos);
+        } else {
+            break;
+        }
+    }
+
+    if count < min {
+        return None;
+    }
+
+    // Lazy: return minimum match; Greedy: return maximum match
+    let actual_count = if is_lazy { min } else { count.min(max) };
+    Some(byte_positions[actual_count])
 }
 
 /// Get min/max bounds for a quantifier
 fn quantifier_bounds(q: &Quantifier) -> (usize, usize) {
     match q {
-        Quantifier::ZeroOrMore => (0, usize::MAX),
-        Quantifier::OneOrMore => (1, usize::MAX),
-        Quantifier::ZeroOrOne => (0, 1),
+        Quantifier::ZeroOrMore | Quantifier::ZeroOrMoreLazy => (0, usize::MAX),
+        Quantifier::OneOrMore | Quantifier::OneOrMoreLazy => (1, usize::MAX),
+        Quantifier::ZeroOrOne | Quantifier::ZeroOrOneLazy => (0, 1),
         Quantifier::Exactly(n) => (*n, *n),
         Quantifier::AtLeast(n) => (*n, usize::MAX),
         Quantifier::Between(n, m) => (*n, *m),
@@ -289,6 +349,291 @@ impl Sequence {
             return result;
         }
         self.find(text).is_some()
+    }
+
+    /// Check if the sequence matches with flags applied
+    /// Flags can modify behavior (e.g., DOTALL makes . match newlines)
+    pub fn is_match_with_flags(&self, text: &str, flags: &crate::parser::flags::Flags) -> bool {
+        self.find_with_flags(text, flags).is_some()
+    }
+
+    /// Find match with flags applied
+    pub fn find_with_flags(
+        &self,
+        text: &str,
+        flags: &crate::parser::flags::Flags,
+    ) -> Option<(usize, usize)> {
+        // If DOTALL flag is set, replace Dot elements with "any char" matching
+        if flags.dot_matches_newline {
+            // For DOTALL mode, we need to match . against any character including \n
+            // We do this by modifying the matching logic for Dot elements
+            for start_pos in 0..text.len() {
+                if let Some(end_pos) = self.match_at_with_dotall(text, start_pos) {
+                    return Some((start_pos, end_pos));
+                }
+            }
+            return None;
+        }
+
+        // No special flags, use normal find
+        self.find(text)
+    }
+
+    /// Match at position with DOTALL flag (. matches newlines)
+    fn match_at_with_dotall(&self, text: &str, start_pos: usize) -> Option<usize> {
+        self.match_elements_backtracking_dotall(text, 0, start_pos)
+    }
+
+    /// Backtracking match with DOTALL mode
+    fn match_elements_backtracking_dotall(
+        &self,
+        text: &str,
+        elem_idx: usize,
+        text_pos: usize,
+    ) -> Option<usize> {
+        // Base case: matched all elements
+        if elem_idx >= self.elements.len() {
+            return Some(text_pos);
+        }
+
+        let element = &self.elements[elem_idx];
+        let remaining = if text_pos < text.len() {
+            &text[text_pos..]
+        } else {
+            ""
+        };
+
+        match element {
+            // Handle Dot specially in DOTALL mode - match ANY character
+            SequenceElement::Dot => {
+                if let Some(ch) = remaining.chars().next() {
+                    // In DOTALL mode, dot matches ANY character including newline
+                    let consumed = ch.len_utf8();
+                    self.match_elements_backtracking_dotall(text, elem_idx + 1, text_pos + consumed)
+                } else {
+                    None
+                }
+            }
+            // QuantifiedChar with backtracking in DOTALL mode
+            SequenceElement::QuantifiedChar(ch, quantifier) => {
+                let (min, max) = (quantifier.min_matches(), quantifier.max_matches());
+                let is_lazy = quantifier.is_lazy();
+                let ch_len = ch.len_utf8();
+
+                let mut max_count = 0;
+                let mut byte_positions: Vec<usize> = Vec::new();
+                byte_positions.push(0);
+                let mut byte_offset = 0;
+                for c in remaining.chars() {
+                    if c == *ch {
+                        max_count += 1;
+                        byte_offset += ch_len;
+                        byte_positions.push(byte_offset);
+                        if max_count >= max {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+
+                if max_count < min {
+                    return None;
+                }
+                let max_count = max_count.min(max);
+
+                if is_lazy {
+                    for try_count in min..=max_count {
+                        let consumed = byte_positions[try_count];
+                        if let Some(final_pos) = self.match_elements_backtracking_dotall(
+                            text,
+                            elem_idx + 1,
+                            text_pos + consumed,
+                        ) {
+                            return Some(final_pos);
+                        }
+                    }
+                } else {
+                    for try_count in (min..=max_count).rev() {
+                        let consumed = byte_positions[try_count];
+                        if let Some(final_pos) = self.match_elements_backtracking_dotall(
+                            text,
+                            elem_idx + 1,
+                            text_pos + consumed,
+                        ) {
+                            return Some(final_pos);
+                        }
+                    }
+                }
+                None
+            }
+            // QuantifiedCharClass - handle both dot class (matches newlines in DOTALL) and normal
+            SequenceElement::QuantifiedCharClass(cc, quantifier) => {
+                // Check if this is a "dot class" [^\n] - if so, match everything in DOTALL mode
+                let is_dot_class = cc.negated
+                    && cc.chars.len() == 1
+                    && cc.chars[0] == '\n'
+                    && cc.ranges.is_empty();
+                let (min, max) = (quantifier.min_matches(), quantifier.max_matches());
+                let is_lazy = quantifier.is_lazy();
+
+                if is_dot_class {
+                    // In DOTALL mode, dot class matches any character including newlines
+                    let max_count = remaining.chars().count().min(max);
+
+                    if max_count < min {
+                        return None;
+                    }
+
+                    // Build byte positions
+                    let mut byte_positions: Vec<usize> = Vec::new();
+                    byte_positions.push(0);
+                    let mut byte_offset = 0;
+                    for (i, ch) in remaining.chars().enumerate() {
+                        if i >= max_count {
+                            break;
+                        }
+                        byte_offset += ch.len_utf8();
+                        byte_positions.push(byte_offset);
+                    }
+
+                    if is_lazy {
+                        for try_count in min..=max_count {
+                            let consumed = byte_positions[try_count];
+                            if let Some(final_pos) = self.match_elements_backtracking_dotall(
+                                text,
+                                elem_idx + 1,
+                                text_pos + consumed,
+                            ) {
+                                return Some(final_pos);
+                            }
+                        }
+                    } else {
+                        for try_count in (min..=max_count).rev() {
+                            let consumed = byte_positions[try_count];
+                            if let Some(final_pos) = self.match_elements_backtracking_dotall(
+                                text,
+                                elem_idx + 1,
+                                text_pos + consumed,
+                            ) {
+                                return Some(final_pos);
+                            }
+                        }
+                    }
+                    None
+                } else {
+                    // Normal quantified charclass - backtrack with DOTALL continuation
+                    let mut max_count = 0;
+                    let mut byte_positions: Vec<usize> = Vec::new();
+                    byte_positions.push(0);
+                    let mut byte_offset = 0;
+                    for c in remaining.chars() {
+                        if cc.matches(c) {
+                            max_count += 1;
+                            byte_offset += c.len_utf8();
+                            byte_positions.push(byte_offset);
+                            if max_count >= max {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+
+                    if max_count < min {
+                        return None;
+                    }
+                    let max_count = max_count.min(max);
+
+                    if is_lazy {
+                        for try_count in min..=max_count {
+                            let consumed = byte_positions[try_count];
+                            if let Some(final_pos) = self.match_elements_backtracking_dotall(
+                                text,
+                                elem_idx + 1,
+                                text_pos + consumed,
+                            ) {
+                                return Some(final_pos);
+                            }
+                        }
+                    } else {
+                        for try_count in (min..=max_count).rev() {
+                            let consumed = byte_positions[try_count];
+                            if let Some(final_pos) = self.match_elements_backtracking_dotall(
+                                text,
+                                elem_idx + 1,
+                                text_pos + consumed,
+                            ) {
+                                return Some(final_pos);
+                            }
+                        }
+                    }
+                    None
+                }
+            }
+            // Quantified group with backtracking in DOTALL mode
+            SequenceElement::QuantifiedGroup(group, quantifier) => {
+                let (min, max) = (quantifier.min_matches(), quantifier.max_matches());
+                let is_lazy = quantifier.is_lazy();
+
+                // Find all possible match lengths
+                let mut byte_positions: Vec<usize> = Vec::new();
+                byte_positions.push(0);
+                let mut current_pos = text_pos;
+                let mut count = 0;
+
+                while count < max && current_pos <= text.len() {
+                    if let Some(consumed) = group.match_at(text, current_pos) {
+                        if consumed == 0 {
+                            break;
+                        }
+                        current_pos += consumed;
+                        count += 1;
+                        byte_positions.push(current_pos - text_pos);
+                    } else {
+                        break;
+                    }
+                }
+
+                if count < min {
+                    return None;
+                }
+                let max_count = count.min(max);
+
+                if is_lazy {
+                    for try_count in min..=max_count {
+                        let consumed = byte_positions[try_count];
+                        if let Some(final_pos) = self.match_elements_backtracking_dotall(
+                            text,
+                            elem_idx + 1,
+                            text_pos + consumed,
+                        ) {
+                            return Some(final_pos);
+                        }
+                    }
+                } else {
+                    for try_count in (min..=max_count).rev() {
+                        let consumed = byte_positions[try_count];
+                        if let Some(final_pos) = self.match_elements_backtracking_dotall(
+                            text,
+                            elem_idx + 1,
+                            text_pos + consumed,
+                        ) {
+                            return Some(final_pos);
+                        }
+                    }
+                }
+                None
+            }
+            // Other elements use standard matching
+            _ => {
+                if let Some(consumed) = element.match_at(text, text_pos) {
+                    self.match_elements_backtracking_dotall(text, elem_idx + 1, text_pos + consumed)
+                } else {
+                    None
+                }
+            }
+        }
     }
 
     /// Element-level Thompson NFA simulation using pre-computed transition table.
@@ -867,6 +1212,9 @@ impl Sequence {
             SequenceElement::QuantifiedCharClass(cc, quantifier) => {
                 self.backtrack_quantified_charclass(cc, quantifier, text, text_pos, elem_idx)
             }
+            SequenceElement::QuantifiedGroup(group, quantifier) => {
+                self.backtrack_quantified_group(group, quantifier, text, text_pos, elem_idx)
+            }
             // Non-quantified elements: simple match
             _ => {
                 if let Some(consumed) = elem.match_at(text, text_pos) {
@@ -878,7 +1226,7 @@ impl Sequence {
         }
     }
 
-    /// Backtracking for quantified char: try greedy first, then shorter matches
+    /// Backtracking for quantified char: try greedy first (or lazy first for lazy quantifiers)
     fn backtrack_quantified_char(
         &self,
         ch: char,
@@ -888,6 +1236,7 @@ impl Sequence {
         elem_idx: usize,
     ) -> Option<usize> {
         let (min, max) = quantifier_bounds(quantifier);
+        let is_lazy = quantifier.is_lazy();
         let remaining = &text[text_pos..];
         let ch_len = ch.len_utf8();
 
@@ -915,19 +1264,31 @@ impl Sequence {
         }
         max_count = max_count.min(max);
 
-        // Try from max_count down to min (greedy-first backtracking)
-        for try_count in (min..=max_count).rev() {
-            let consumed = byte_positions[try_count];
-            if let Some(final_pos) =
-                self.match_elements_backtracking(text, elem_idx + 1, text_pos + consumed)
-            {
-                return Some(final_pos);
+        if is_lazy {
+            // Lazy: try from min to max_count (prefer shorter matches first)
+            for try_count in min..=max_count {
+                let consumed = byte_positions[try_count];
+                if let Some(final_pos) =
+                    self.match_elements_backtracking(text, elem_idx + 1, text_pos + consumed)
+                {
+                    return Some(final_pos);
+                }
+            }
+        } else {
+            // Greedy: try from max_count down to min (prefer longer matches first)
+            for try_count in (min..=max_count).rev() {
+                let consumed = byte_positions[try_count];
+                if let Some(final_pos) =
+                    self.match_elements_backtracking(text, elem_idx + 1, text_pos + consumed)
+                {
+                    return Some(final_pos);
+                }
             }
         }
         None
     }
 
-    /// Backtracking for quantified charclass: try greedy first, then shorter matches
+    /// Backtracking for quantified charclass: try greedy first (or lazy first for lazy quantifiers)
     fn backtrack_quantified_charclass(
         &self,
         cc: &CharClass,
@@ -937,6 +1298,7 @@ impl Sequence {
         elem_idx: usize,
     ) -> Option<usize> {
         let (min, max) = quantifier_bounds(quantifier);
+        let is_lazy = quantifier.is_lazy();
         let remaining = &text[text_pos..];
         let rem_bytes = remaining.as_bytes();
 
@@ -973,6 +1335,18 @@ impl Sequence {
                 return None;
             }
 
+            // For lazy quantifiers, skip the optimization and just try from min to max
+            if is_lazy {
+                for try_count in min..=max_count {
+                    if let Some(final_pos) =
+                        self.match_elements_backtracking(text, elem_idx + 1, text_pos + try_count)
+                    {
+                        return Some(final_pos);
+                    }
+                }
+                return None;
+            }
+
             // OPTIMIZATION: If next element is a QuantifiedCharClass, find its first match
             // position from the right instead of trying every position
             if let Some(next_cc) = self.peek_next_charclass(elem_idx + 1) {
@@ -1002,7 +1376,7 @@ impl Sequence {
                 return None;
             }
 
-            // Standard backtracking
+            // Standard greedy backtracking
             for try_count in (min..=max_count).rev() {
                 if let Some(final_pos) =
                     self.match_elements_backtracking(text, elem_idx + 1, text_pos + try_count)
@@ -1036,12 +1410,85 @@ impl Sequence {
         }
         max_count = max_count.min(max);
 
-        for try_count in (min..=max_count).rev() {
-            let consumed = byte_positions[try_count];
-            if let Some(final_pos) =
-                self.match_elements_backtracking(text, elem_idx + 1, text_pos + consumed)
-            {
-                return Some(final_pos);
+        if is_lazy {
+            // Lazy: try from min to max_count (prefer shorter matches first)
+            for try_count in min..=max_count {
+                let consumed = byte_positions[try_count];
+                if let Some(final_pos) =
+                    self.match_elements_backtracking(text, elem_idx + 1, text_pos + consumed)
+                {
+                    return Some(final_pos);
+                }
+            }
+        } else {
+            // Greedy: try from max_count down to min (prefer longer matches first)
+            for try_count in (min..=max_count).rev() {
+                let consumed = byte_positions[try_count];
+                if let Some(final_pos) =
+                    self.match_elements_backtracking(text, elem_idx + 1, text_pos + consumed)
+                {
+                    return Some(final_pos);
+                }
+            }
+        }
+        None
+    }
+
+    /// Backtracking for quantified group: try greedy first (or lazy first for lazy quantifiers)
+    fn backtrack_quantified_group(
+        &self,
+        group: &Group,
+        quantifier: &Quantifier,
+        text: &str,
+        text_pos: usize,
+        elem_idx: usize,
+    ) -> Option<usize> {
+        let (min, max) = quantifier_bounds(quantifier);
+        let is_lazy = quantifier.is_lazy();
+
+        // Find all possible match lengths by repeatedly matching the group
+        let mut byte_positions: Vec<usize> = Vec::new();
+        byte_positions.push(0); // 0 repetitions = 0 bytes consumed
+        let mut current_pos = text_pos;
+        let mut count = 0;
+
+        while count < max && current_pos <= text.len() {
+            if let Some(consumed) = group.match_at(text, current_pos) {
+                if consumed == 0 {
+                    break; // Prevent infinite loop on zero-width matches
+                }
+                current_pos += consumed;
+                count += 1;
+                byte_positions.push(current_pos - text_pos);
+            } else {
+                break;
+            }
+        }
+
+        if count < min {
+            return None;
+        }
+        let max_count = count.min(max);
+
+        if is_lazy {
+            // Lazy: try from min to max_count (prefer shorter matches first)
+            for try_count in min..=max_count {
+                let consumed = byte_positions[try_count];
+                if let Some(final_pos) =
+                    self.match_elements_backtracking(text, elem_idx + 1, text_pos + consumed)
+                {
+                    return Some(final_pos);
+                }
+            }
+        } else {
+            // Greedy: try from max_count down to min (prefer longer matches first)
+            for try_count in (min..=max_count).rev() {
+                let consumed = byte_positions[try_count];
+                if let Some(final_pos) =
+                    self.match_elements_backtracking(text, elem_idx + 1, text_pos + consumed)
+                {
+                    return Some(final_pos);
+                }
             }
         }
         None

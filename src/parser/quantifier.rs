@@ -53,6 +53,49 @@ pub enum Quantifier {
     AtLeast(usize),
     /// {n,m} - Between n and m times
     Between(usize, usize),
+    /// *? - Zero or more (non-greedy/lazy)
+    ZeroOrMoreLazy,
+    /// +? - One or more (non-greedy/lazy)
+    OneOrMoreLazy,
+    /// ?? - Zero or one (non-greedy/lazy)
+    ZeroOrOneLazy,
+}
+
+impl Quantifier {
+    /// Check if this quantifier is lazy (non-greedy)
+    #[inline]
+    pub fn is_lazy(&self) -> bool {
+        matches!(
+            self,
+            Quantifier::ZeroOrMoreLazy | Quantifier::OneOrMoreLazy | Quantifier::ZeroOrOneLazy
+        )
+    }
+
+    /// Get the minimum number of matches required
+    #[inline]
+    pub fn min_matches(&self) -> usize {
+        match self {
+            Quantifier::ZeroOrMore | Quantifier::ZeroOrMoreLazy => 0,
+            Quantifier::OneOrMore | Quantifier::OneOrMoreLazy => 1,
+            Quantifier::ZeroOrOne | Quantifier::ZeroOrOneLazy => 0,
+            Quantifier::Exactly(n) => *n,
+            Quantifier::AtLeast(n) => *n,
+            Quantifier::Between(min, _) => *min,
+        }
+    }
+
+    /// Get the maximum number of matches allowed
+    #[inline]
+    pub fn max_matches(&self) -> usize {
+        match self {
+            Quantifier::ZeroOrMore | Quantifier::ZeroOrMoreLazy => usize::MAX,
+            Quantifier::OneOrMore | Quantifier::OneOrMoreLazy => usize::MAX,
+            Quantifier::ZeroOrOne | Quantifier::ZeroOrOneLazy => 1,
+            Quantifier::Exactly(n) => *n,
+            Quantifier::AtLeast(_) => usize::MAX,
+            Quantifier::Between(_, max) => *max,
+        }
+    }
 }
 
 /// A quantified pattern: element + quantifier
@@ -85,9 +128,9 @@ impl QuantifiedPattern {
 
             // Check quantifier constraints
             let valid = match self.quantifier {
-                Quantifier::ZeroOrMore => true,
-                Quantifier::OneOrMore => match_count >= 1,
-                Quantifier::ZeroOrOne => match_count <= 1,
+                Quantifier::ZeroOrMore | Quantifier::ZeroOrMoreLazy => true,
+                Quantifier::OneOrMore | Quantifier::OneOrMoreLazy => match_count >= 1,
+                Quantifier::ZeroOrOne | Quantifier::ZeroOrOneLazy => match_count <= 1,
                 Quantifier::Exactly(n) => match_count == n,
                 Quantifier::AtLeast(n) => match_count >= n,
                 Quantifier::Between(min, max) => match_count >= min && match_count <= max,
@@ -111,9 +154,9 @@ impl QuantifiedPattern {
 
         // Check if quantifier constraints are satisfied
         let valid = match self.quantifier {
-            Quantifier::ZeroOrMore => true, // Any count is OK
-            Quantifier::OneOrMore => match_count >= 1,
-            Quantifier::ZeroOrOne => match_count <= 1,
+            Quantifier::ZeroOrMore | Quantifier::ZeroOrMoreLazy => true, // Any count is OK
+            Quantifier::OneOrMore | Quantifier::OneOrMoreLazy => match_count >= 1,
+            Quantifier::ZeroOrOne | Quantifier::ZeroOrOneLazy => match_count <= 1,
             Quantifier::Exactly(n) => match_count == n,
             Quantifier::AtLeast(n) => match_count >= n,
             Quantifier::Between(min, max) => match_count >= min && match_count <= max,
@@ -274,9 +317,14 @@ pub fn parse_quantified_pattern(pattern: &str) -> Result<QuantifiedPattern, Stri
 
 fn parse_quantifier(s: &str) -> Result<Quantifier, String> {
     match s {
+        // Greedy quantifiers
         "*" => Ok(Quantifier::ZeroOrMore),
         "+" => Ok(Quantifier::OneOrMore),
         "?" => Ok(Quantifier::ZeroOrOne),
+        // Non-greedy (lazy) quantifiers
+        "*?" => Ok(Quantifier::ZeroOrMoreLazy),
+        "+?" => Ok(Quantifier::OneOrMoreLazy),
+        "??" => Ok(Quantifier::ZeroOrOneLazy),
         "" => Ok(Quantifier::Exactly(1)), // No quantifier = exactly once
         _ if s.starts_with('{') && s.ends_with('}') => {
             let inner = &s[1..s.len() - 1];
@@ -302,6 +350,14 @@ fn parse_quantifier(s: &str) -> Result<Quantifier, String> {
                 Err("Invalid quantifier".to_string())
             }
         }
+        // Handle {n}? and {n,m}? lazy quantifiers
+        _ if s.ends_with("?") && s.len() > 1 => {
+            // Strip the trailing ? and parse the base quantifier
+            let base = &s[..s.len() - 1];
+            // For now, just parse without lazy support for bounded quantifiers
+            // This will fall through to the error case
+            Err(format!("Lazy bounded quantifiers not yet supported: {}", s))
+        }
         _ => Err(format!("Unknown quantifier: {}", s)),
     }
 }
@@ -321,6 +377,23 @@ mod tests {
             parse_quantifier("{1,5}").unwrap(),
             Quantifier::Between(1, 5)
         );
+    }
+
+    #[test]
+    fn test_parse_lazy_quantifiers() {
+        assert_eq!(parse_quantifier("*?").unwrap(), Quantifier::ZeroOrMoreLazy);
+        assert_eq!(parse_quantifier("+?").unwrap(), Quantifier::OneOrMoreLazy);
+        assert_eq!(parse_quantifier("??").unwrap(), Quantifier::ZeroOrOneLazy);
+    }
+
+    #[test]
+    fn test_quantifier_is_lazy() {
+        assert!(!Quantifier::ZeroOrMore.is_lazy());
+        assert!(!Quantifier::OneOrMore.is_lazy());
+        assert!(!Quantifier::ZeroOrOne.is_lazy());
+        assert!(Quantifier::ZeroOrMoreLazy.is_lazy());
+        assert!(Quantifier::OneOrMoreLazy.is_lazy());
+        assert!(Quantifier::ZeroOrOneLazy.is_lazy());
     }
 
     #[test]

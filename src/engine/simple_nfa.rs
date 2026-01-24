@@ -115,6 +115,8 @@ impl SimpleNFA {
                 }
                 Some(current)
             }
+            // Groups not supported in simple NFA
+            SequenceElement::Group(_) | SequenceElement::QuantifiedGroup(_, _) => None,
         }
     }
 
