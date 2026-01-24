@@ -230,13 +230,14 @@ impl DFA {
 
     /// Check if sequence can be compiled to DFA
     fn is_dfa_compilable(seq: &Sequence) -> bool {
-        // Prefer Sequence+NFA when all elements are QuantifiedCharClass(OneOrMore) or Char
+        // Prefer Sequence+NFA when all elements are QuantifiedCharClass(OneOrMore/ZeroOrMore) or Char
         // (the NFA with pre-computed transition table is faster than DFA for these patterns)
         let nfa_compatible = seq.elements.len() >= 2
             && seq.elements.iter().all(|e| {
                 matches!(
                     e,
                     SequenceElement::QuantifiedCharClass(_, Quantifier::OneOrMore)
+                        | SequenceElement::QuantifiedCharClass(_, Quantifier::ZeroOrMore)
                         | SequenceElement::Char(_)
                 )
             });

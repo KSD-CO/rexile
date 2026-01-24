@@ -255,6 +255,8 @@ struct NfaTable {
     /// Bitmask of elements that can "stay" (quantified with +, *, etc.)
     /// Char elements (exact match) cannot stay - they advance immediately
     quantified_bits: u32,
+    /// Bitmask of elements that are optional (min=0, can be skipped via epsilon transition)
+    optional_bits: u32,
     /// Number of elements
     n: usize,
 }
@@ -284,12 +286,27 @@ impl Sequence {
             return None;
         }
 
-        // Validate elements and compute quantified_bits
+        // Validate elements and compute quantified_bits and optional_bits
         let mut quantified_bits: u32 = 0;
+        let mut optional_bits: u32 = 0;
         for (i, elem) in elements.iter().enumerate() {
             match elem {
-                SequenceElement::QuantifiedCharClass(_, Quantifier::OneOrMore) => {
-                    quantified_bits |= 1u32 << i; // Can stay
+                SequenceElement::QuantifiedCharClass(_, quantifier) => {
+                    let (min, _max) = quantifier_bounds(quantifier);
+
+                    // Elements that are optional (min=0) can be skipped
+                    if min == 0 {
+                        optional_bits |= 1u32 << i;
+                    }
+
+                    // Elements with quantifiers that can match multiple times can "stay"
+                    match quantifier {
+                        Quantifier::OneOrMore | Quantifier::OneOrMoreLazy |
+                        Quantifier::ZeroOrMore | Quantifier::ZeroOrMoreLazy => {
+                            quantified_bits |= 1u32 << i; // Can stay
+                        }
+                        _ => {} // ZeroOrOne, Exactly(1), etc. don't stay
+                    }
                 }
                 SequenceElement::Char(_) => {
                     // Char elements don't stay (match exactly 1 char)
@@ -330,6 +347,7 @@ impl Sequence {
             byte_elem_mask,
             accept_mask: 1u32 << (n - 1),
             quantified_bits,
+            optional_bits,
             n,
         })
     }
@@ -772,8 +790,17 @@ impl Sequence {
     fn run_nfa(&self, table: &NfaTable, bytes: &[u8]) -> bool {
         let accept_mask = table.accept_mask;
         let quantified_bits = table.quantified_bits;
+        let optional_bits = table.optional_bits;
         let byte_elem_mask = &table.byte_elem_mask;
-        let mut active: u32 = 0;
+
+        // Start at element 0, then compute initial epsilon closure
+        let mut active: u32 = 1u32;  // Initially at element 0
+        active = self.compute_epsilon_closure(active, optional_bits, table.n);
+
+        // Check if we can accept before processing any bytes (e.g., pattern "a*" matching "")
+        if active & accept_mask != 0 {
+            return true;
+        }
 
         for &byte in bytes {
             let elem_mask = if byte < 128 {
@@ -790,9 +817,15 @@ impl Sequence {
                 mask
             };
 
-            active = (active & elem_mask & quantified_bits)
-                | ((active << 1) & elem_mask)
-                | (elem_mask & 1u32);
+            // Standard NFA transition
+            let mut next_active = (active & elem_mask & quantified_bits)  // Stay in quantified element
+                | ((active << 1) & elem_mask)                             // Advance to next element
+                | (elem_mask & 1u32);                                      // Start at element 0 (for ".*" patterns)
+
+            // Compute epsilon closure after transition
+            next_active = self.compute_epsilon_closure(next_active, optional_bits, table.n);
+
+            active = next_active;
 
             if active & accept_mask != 0 {
                 return true;
@@ -800,6 +833,31 @@ impl Sequence {
         }
 
         false
+    }
+
+    /// Compute epsilon closure: for each active state, follow epsilon transitions
+    /// An epsilon transition exists from element i to element i+1 if element i is optional (min=0)
+    #[inline]
+    fn compute_epsilon_closure(&self, mut active: u32, optional_bits: u32, n: usize) -> u32 {
+        // Repeatedly follow epsilon transitions until no new states are added
+        loop {
+            let before = active;
+
+            // For each active position i, if element i is optional, we can also be at i+1
+            for i in 0..n {
+                if (active & (1u32 << i)) != 0 && (optional_bits & (1u32 << i)) != 0 {
+                    // Element i is active and optional, so we can skip it
+                    if i + 1 < n {
+                        active |= 1u32 << (i + 1);
+                    }
+                }
+            }
+
+            if active == before {
+                break;
+            }
+        }
+        active
     }
 
     /// Find the sequence anywhere in text
