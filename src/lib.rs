@@ -1089,7 +1089,7 @@ fn parse_pattern(pattern: &str) -> Result<Ast, PatternError> {
                 let inner = &pattern[1..close_idx];
 
                 // If inner contains captures, let parse_pattern_with_captures handle it
-                if !inner.contains('(') || inner.starts_with("(?") {
+                if !contains_unescaped_paren(inner) || inner.starts_with("(?") {
                     // Simple capture with no nesting
                     let inner_ast = parse_pattern(inner)?;
                     return Ok(Ast::Capture(Box::new(inner_ast), 1)); // Group 1
@@ -1118,7 +1118,7 @@ fn parse_pattern(pattern: &str) -> Result<Ast, PatternError> {
             false
         };
 
-    if pattern.contains('(')
+    if contains_unescaped_paren(pattern)
         && !pattern.starts_with('^')
         && !pattern.ends_with('$')
         && !is_quantified_group
@@ -1136,7 +1136,7 @@ fn parse_pattern(pattern: &str) -> Result<Ast, PatternError> {
 
     // Special handling for patterns with groups and other elements
     // e.g., ^(hello), (foo)(bar), prefix(foo|bar), (foo|bar)suffix
-    if pattern.contains('(') {
+    if contains_unescaped_paren(pattern) {
         // Try to parse as complex pattern with groups
         if let Ok(ast) = parse_pattern_with_groups(pattern) {
             return Ok(ast);
@@ -2006,6 +2006,28 @@ impl Matcher {
             None
         } else {
             // Non-quantified element or last element - match normally
+
+            // Special case: if first element is AlternationWithCaptures, try all branches
+            if let Matcher::AlternationWithCaptures { branches, .. } = first_matcher {
+                // Try each branch - return first one that leads to complete match
+                for branch in branches {
+                    if let Some((rel_start, rel_end)) = branch.find(&text[start_pos..]) {
+                        if rel_start == 0 {
+                            let next_pos = start_pos + rel_end;
+                            // Try to match remaining elements with this branch
+                            if let Some(final_pos) =
+                                Self::match_elements_with_backtrack(text, next_pos, &elements[1..])
+                            {
+                                return Some(final_pos);
+                            }
+                            // This branch didn't lead to complete match, try next branch
+                        }
+                    }
+                }
+                return None;
+            }
+
+            // Regular case: non-alternation element
             if let Some((rel_start, rel_end)) = first_matcher.find(&text[start_pos..]) {
                 if rel_start == 0 {
                     let next_pos = start_pos + rel_end;
@@ -2861,6 +2883,38 @@ fn parse_combined_with_lookaround(pattern: &str) -> Result<Ast, PatternError> {
 
 /// Find the index of the matching closing parenthesis
 /// Returns None if no match found
+/// Check if a pattern contains unescaped parentheses (not \( or \) and not inside [...])
+fn contains_unescaped_paren(pattern: &str) -> bool {
+    let bytes = pattern.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 1 < bytes.len() {
+            i += 2; // Skip escaped character
+        } else if bytes[i] == b'[' {
+            // Skip character class to avoid counting parens inside it
+            i += 1;
+            if i < bytes.len() && bytes[i] == b'^' {
+                i += 1;
+            }
+            while i < bytes.len() {
+                if bytes[i] == b'\\' {
+                    i += 2;
+                } else if bytes[i] == b']' {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+        } else if bytes[i] == b'(' || bytes[i] == b')' {
+            return true;
+        } else {
+            i += 1;
+        }
+    }
+    false
+}
+
 fn find_matching_paren(pattern: &str, start: usize) -> Option<usize> {
     let bytes = pattern.as_bytes();
     if start >= bytes.len() || bytes[start] != b'(' {
@@ -2868,8 +2922,34 @@ fn find_matching_paren(pattern: &str, start: usize) -> Option<usize> {
     }
 
     let mut depth = 0;
-    for (i, &ch) in bytes[start..].iter().enumerate() {
-        match ch {
+    let mut i = 0;
+    while i < bytes[start..].len() {
+        match bytes[start + i] {
+            b'\\' => {
+                // Skip next character (could be escaped parenthesis)
+                i += 2;
+                continue;
+            }
+            b'[' => {
+                // Skip character class [...] to avoid counting ) inside it
+                i += 1;
+                // Handle negation [^...]
+                if i < bytes[start..].len() && bytes[start + i] == b'^' {
+                    i += 1;
+                }
+                // Skip until closing ]
+                while i < bytes[start..].len() {
+                    if bytes[start + i] == b'\\' {
+                        i += 2; // Skip escaped character
+                    } else if bytes[start + i] == b']' {
+                        i += 1;
+                        break;
+                    } else {
+                        i += 1;
+                    }
+                }
+                continue;
+            }
             b'(' => depth += 1,
             b')' => {
                 depth -= 1;
@@ -2877,12 +2957,9 @@ fn find_matching_paren(pattern: &str, start: usize) -> Option<usize> {
                     return Some(start + i);
                 }
             }
-            b'\\' => {
-                // Skip next character (could be escaped parenthesis)
-                // This is a simple approach, doesn't handle all edge cases
-            }
             _ => {}
         }
+        i += 1;
     }
 
     None // Unmatched
@@ -2906,6 +2983,32 @@ fn split_by_alternation(pattern: &str) -> Option<Vec<String>> {
 
     while let Some(ch) = chars.next() {
         match ch {
+            '\\' => {
+                // Escape sequence - consume next char too
+                current.push(ch);
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+            }
+            '[' => {
+                // Skip character class to avoid counting parens inside it
+                current.push(ch);
+                // Handle negation [^...]
+                if chars.peek() == Some(&'^') {
+                    current.push(chars.next().unwrap());
+                }
+                // Consume until closing ]
+                while let Some(c) = chars.next() {
+                    current.push(c);
+                    if c == '\\' {
+                        if let Some(next) = chars.next() {
+                            current.push(next);
+                        }
+                    } else if c == ']' {
+                        break;
+                    }
+                }
+            }
             '(' => {
                 depth += 1;
                 current.push(ch);
@@ -2918,13 +3021,6 @@ fn split_by_alternation(pattern: &str) -> Option<Vec<String>> {
                 // Top-level alternation found
                 branches.push(current.clone());
                 current.clear();
-            }
-            '\\' => {
-                // Escape sequence - consume next char too
-                current.push(ch);
-                if let Some(next) = chars.next() {
-                    current.push(next);
-                }
             }
             _ => {
                 current.push(ch);
@@ -3122,10 +3218,39 @@ fn parse_pattern_with_captures_inner(
             }
 
             // Find the next capture group, backreference, or end of pattern
-            let next_paren = pattern[pos..]
-                .find('(')
-                .map(|i| pos + i)
-                .unwrap_or(pattern.len());
+            // Skip escaped parentheses and character classes when searching
+            let next_paren = {
+                let mut search_pos = pos;
+                let mut result = pattern.len();
+                let bytes = pattern.as_bytes();
+                while search_pos < bytes.len() {
+                    if bytes[search_pos] == b'\\' && search_pos + 1 < bytes.len() {
+                        search_pos += 2; // Skip escaped character
+                    } else if bytes[search_pos] == b'[' {
+                        // Skip character class to avoid finding ( inside it
+                        search_pos += 1;
+                        if search_pos < bytes.len() && bytes[search_pos] == b'^' {
+                            search_pos += 1;
+                        }
+                        while search_pos < bytes.len() {
+                            if bytes[search_pos] == b'\\' {
+                                search_pos += 2;
+                            } else if bytes[search_pos] == b']' {
+                                search_pos += 1;
+                                break;
+                            } else {
+                                search_pos += 1;
+                            }
+                        }
+                    } else if bytes[search_pos] == b'(' {
+                        result = search_pos;
+                        break;
+                    } else {
+                        search_pos += 1;
+                    }
+                }
+                result
+            };
 
             // Find next backreference \digit (search from current position + 1 to avoid finding current char)
             let mut search_pos = pos;

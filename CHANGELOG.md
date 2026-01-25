@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.6] - 2025-01-25
+
+### Fixed
+- **Critical: Character classes in parenthesis matching**: Fixed parser to properly skip character classes when matching parentheses
+  - Pattern `([^)])` now parses correctly - the `)` inside `[^)]` is no longer counted as closing paren
+  - Fixed `find_matching_paren()` to skip over `[...]` character classes including negated classes `[^...]`
+  - Fixed `contains_unescaped_paren()` to ignore parentheses inside character classes
+  - Fixed next-paren search in `parse_pattern_with_captures_inner()` to skip character classes
+  - Prevents infinite recursion when patterns contain character classes with parentheses inside them
+
+- **Critical: Escaped parentheses handling**: Fixed parser to properly handle escaped parentheses `\(` and `\)`
+  - Pattern `\(a\)` now parses correctly without infinite recursion
+  - Added `contains_unescaped_paren()` helper to distinguish between `(` and `\(`
+  - Updated `parse_pattern()` to only call `parse_pattern_with_captures()` for patterns with actual unescaped parens
+  - Prevents stack overflow when parsing patterns with escaped parentheses mixed with captures
+
+- **Critical: Alternation in character class context**: Fixed `split_by_alternation()` to skip character classes
+  - Pattern `([^)])(x|y)` now parses correctly
+  - Depth tracking no longer gets confused by `)` inside `[^)]`
+  - Prevents "Unmatched parenthesis" errors for valid patterns with character classes
+
+- **Critical: Alternation with sequence matching**: Fixed alternation matching when used in sequences
+  - Pattern `(http|https)://` now correctly matches both "http://" and "https://"
+  - Added special handling in `match_elements_with_backtrack()` to try all branches of `AlternationWithCaptures`
+  - When first branch doesn't lead to complete match, tries subsequent branches instead of failing
+  - Test `test_complex_real_world_patterns` now passing
+
+### Changed
+- All GRL regex patterns now compile successfully including complex ones like `([a-zA-Z_]\w*)\s*\(([^)]*)\)\s*(>=|<=|==|!=|>|<|contains|matches)\s*(.+)`
+- Character class handling is now consistent across all parser functions
+- Escaped character handling is now consistent across all parser functions
+
 ## [0.2.5] - 2025-01-25
 
 ### Fixed
