@@ -202,6 +202,8 @@ pub fn parse_sequence(pattern: &str) -> Result<Sequence, String> {
                 elements.push(SequenceElement::CharClass(cc));
             } else if let Some(ch) = seq.to_char() {
                 elements.push(SequenceElement::Char(ch));
+            } else if let Some(boundary_type) = seq.to_boundary() {
+                elements.push(SequenceElement::Boundary(boundary_type));
             } else {
                 return Err("Invalid escape in sequence".to_string());
             }

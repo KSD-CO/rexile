@@ -170,8 +170,13 @@ impl Pattern {
             || effective_pattern.ends_with(")$"))
             && effective_pattern.contains('(');
 
+        // Check for capture groups, but exclude special patterns like (?:...), (?=...), (?!...), etc.
         let has_captures = effective_pattern.contains('(')
             && !effective_pattern.contains("(?:")
+            && !effective_pattern.contains("(?=")
+            && !effective_pattern.contains("(?!")
+            && !effective_pattern.contains("(?<=")
+            && !effective_pattern.contains("(?<!")
             && !has_anchored_group;
 
         let ast = if has_captures {
@@ -1061,6 +1066,18 @@ fn parse_pattern_with_groups(pattern: &str) -> Result<Ast, PatternError> {
 }
 
 fn parse_pattern(pattern: &str) -> Result<Ast, PatternError> {
+    parse_pattern_with_depth(pattern, 0)
+}
+
+const MAX_RECURSION_DEPTH: usize = 100;
+
+fn parse_pattern_with_depth(pattern: &str, depth: usize) -> Result<Ast, PatternError> {
+    if depth > MAX_RECURSION_DEPTH {
+        return Err(PatternError::ParseError(
+            "Pattern too complex: recursion depth exceeded".to_string(),
+        ));
+    }
+
     if pattern.is_empty() {
         return Ok(Ast::Literal(String::new()));
     }
@@ -1071,7 +1088,7 @@ fn parse_pattern(pattern: &str) -> Result<Ast, PatternError> {
         || pattern.starts_with("(?<=")
         || pattern.starts_with("(?<!")
     {
-        return parse_lookaround(pattern);
+        return parse_lookaround(pattern, depth);
     }
 
     // Phase 7.2: Check for combined patterns with lookaround: foo(?=bar), \d+(?!x)
@@ -1081,7 +1098,7 @@ fn parse_pattern(pattern: &str) -> Result<Ast, PatternError> {
         || pattern.contains("(?<!")
     {
         // Try to parse as combined pattern with lookaround
-        if let Ok(ast) = parse_combined_with_lookaround(pattern) {
+        if let Ok(ast) = parse_combined_with_lookaround(pattern, depth) {
             return Ok(ast);
         }
     }
@@ -1098,7 +1115,7 @@ fn parse_pattern(pattern: &str) -> Result<Ast, PatternError> {
                 // If inner contains captures, let parse_pattern_with_captures handle it
                 if !contains_unescaped_paren(inner) || inner.starts_with("(?") {
                     // Simple capture with no nesting
-                    let inner_ast = parse_pattern(inner)?;
+                    let inner_ast = parse_pattern_with_depth(inner, depth + 1)?;
                     return Ok(Ast::Capture(Box::new(inner_ast), 1)); // Group 1
                 }
                 // Else: fall through to parse_pattern_with_captures below
@@ -1155,11 +1172,14 @@ fn parse_pattern(pattern: &str) -> Result<Ast, PatternError> {
     let has_end_anchor = pattern.ends_with('$');
 
     if has_start_anchor || has_end_anchor {
-        let literal = pattern
-            .strip_prefix('^')
-            .unwrap_or(pattern)
-            .strip_suffix('$')
-            .unwrap_or(pattern);
+        // Strip anchors properly - don't fall back to original pattern
+        let mut literal = pattern;
+        if has_start_anchor {
+            literal = literal.strip_prefix('^').unwrap();
+        }
+        if has_end_anchor {
+            literal = literal.strip_suffix('$').unwrap();
+        }
 
         // Don't treat anchored patterns as sequences
         return Ok(Ast::Anchored {
@@ -1969,7 +1989,7 @@ impl Matcher {
                     if let Some((rel_start, rel_end)) = m.find(&text[start_pos..]) {
                         if rel_start == 0 {
                             let next_pos = start_pos + rel_end;
-                            if let Some((final_pos, mut remaining_caps)) =
+                            if let Some((final_pos, remaining_caps)) =
                                 Self::match_elements_with_backtrack_and_captures(
                                     text,
                                     next_pos,
@@ -2836,7 +2856,7 @@ fn is_word_charclass(cc: &CharClass) -> bool {
 }
 
 /// Parse lookaround assertion patterns: (?=...), (?!...), (?<=...), (?<!...)
-fn parse_lookaround(pattern: &str) -> Result<Ast, PatternError> {
+fn parse_lookaround(pattern: &str, depth: usize) -> Result<Ast, PatternError> {
     let lookaround_type = if pattern.starts_with("(?=") {
         LookaroundType::PositiveLookahead
     } else if pattern.starts_with("(?!") {
@@ -2867,7 +2887,7 @@ fn parse_lookaround(pattern: &str) -> Result<Ast, PatternError> {
         }
 
         let inner = &pattern[prefix_len..close_idx];
-        let inner_ast = parse_pattern(inner)?;
+        let inner_ast = parse_pattern_with_depth(inner, depth + 1)?;
 
         Ok(Ast::Lookaround(Lookaround::new(lookaround_type, inner_ast)))
     } else {
@@ -2878,7 +2898,7 @@ fn parse_lookaround(pattern: &str) -> Result<Ast, PatternError> {
 }
 
 /// Parse combined patterns with lookaround: foo(?=bar), \d+(?!x), etc.
-fn parse_combined_with_lookaround(pattern: &str) -> Result<Ast, PatternError> {
+fn parse_combined_with_lookaround(pattern: &str, depth: usize) -> Result<Ast, PatternError> {
     // Find the lookaround position
     let lookaround_patterns = ["(?=", "(?!", "(?<=", "(?<!"];
 
@@ -2894,7 +2914,7 @@ fn parse_combined_with_lookaround(pattern: &str) -> Result<Ast, PatternError> {
             let lookaround_part = &pattern[pos..];
 
             // Parse the prefix
-            let prefix_ast = parse_pattern(prefix)?;
+            let prefix_ast = parse_pattern_with_depth(prefix, depth + 1)?;
 
             // Parse the lookaround
             let lookaround_type = if lookaround_start == "(?=" {
@@ -2916,7 +2936,7 @@ fn parse_combined_with_lookaround(pattern: &str) -> Result<Ast, PatternError> {
                 }
 
                 let inner = &lookaround_part[prefix_len..close_idx];
-                let inner_ast = parse_pattern(inner)?;
+                let inner_ast = parse_pattern_with_depth(inner, depth + 1)?;
 
                 let lookaround = Lookaround::new(lookaround_type, inner_ast);
 

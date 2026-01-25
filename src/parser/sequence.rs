@@ -4,6 +4,7 @@
 /// - ab+c* (char followed by quantified char followed by quantified char)
 /// - \d+\w* (escape sequence followed by quantified escape)
 /// - hello\d+ (literal followed by quantified escape)
+use crate::parser::boundary::BoundaryType;
 use crate::parser::charclass::CharClass;
 use crate::parser::group::Group;
 use crate::parser::quantifier::Quantifier;
@@ -27,6 +28,8 @@ pub enum SequenceElement {
     Group(Group),
     /// A quantified group (e.g., (?:foo|bar)+ in a sequence)
     QuantifiedGroup(Group, Quantifier),
+    /// A word boundary (e.g., \b or \B)
+    Boundary(BoundaryType),
 }
 
 impl SequenceElement {
@@ -36,6 +39,7 @@ impl SequenceElement {
         let remaining = &text[pos..];
 
         // Don't reject empty remaining for quantified elements (they can match zero times)
+        // and boundaries (they are zero-width)
         if remaining.is_empty() {
             return match self {
                 SequenceElement::QuantifiedChar(_, quantifier) => {
@@ -57,6 +61,14 @@ impl SequenceElement {
                 SequenceElement::QuantifiedGroup(_, quantifier) => {
                     let (min, _) = quantifier_bounds(quantifier);
                     if min == 0 {
+                        Some(0)
+                    } else {
+                        None
+                    }
+                }
+                SequenceElement::Boundary(boundary_type) => {
+                    // Boundary is zero-width, check if it matches at end of text
+                    if boundary_type.matches_at(text, pos) {
                         Some(0)
                     } else {
                         None
@@ -107,6 +119,14 @@ impl SequenceElement {
             SequenceElement::Group(group) => group.match_at(text, pos),
             SequenceElement::QuantifiedGroup(group, quantifier) => {
                 match_quantified_group(group, quantifier, text, pos)
+            }
+            SequenceElement::Boundary(boundary_type) => {
+                // Boundary is zero-width, so we return 0 if it matches, None otherwise
+                if boundary_type.matches_at(text, pos) {
+                    Some(0)
+                } else {
+                    None
+                }
             }
         }
     }
@@ -357,6 +377,13 @@ impl Sequence {
     pub fn match_at(&self, text: &str) -> Option<usize> {
         // Use backtracking-enabled matching from start
         self.match_elements_backtracking(text, 0, 0)
+    }
+
+    /// Check if the sequence matches at a specific position in text
+    /// Returns bytes consumed if match, None otherwise
+    /// This preserves the full text context for boundary checks
+    fn match_at_pos(&self, text: &str, pos: usize) -> Option<usize> {
+        self.match_elements_backtracking(text, 0, pos)
     }
 
     /// Check if the sequence matches anywhere in text (optimized)
@@ -877,7 +904,7 @@ impl Sequence {
 
                         // Validate remaining elements
                         if let Some(consumed) =
-                            self.match_at_skip(&text[after_prefix..], skip_count)
+                            self.match_at_skip_from(text, after_prefix, skip_count)
                         {
                             return Some((match_start, after_prefix + consumed));
                         }
@@ -901,7 +928,7 @@ impl Sequence {
 
                         // Validate remaining elements
                         if let Some(consumed) =
-                            self.match_at_skip(&text[after_prefix..], skip_count)
+                            self.match_at_skip_from(text, after_prefix, skip_count)
                         {
                             return Some((match_start, after_prefix + consumed));
                         }
@@ -996,7 +1023,7 @@ impl Sequence {
                             while try_pos < window.len() {
                                 if let Some(foffset) = fc.find_first(&window[try_pos..]) {
                                     let abs_start = search_start + try_pos + foffset;
-                                    if let Some(consumed) = self.match_at(&text[abs_start..]) {
+                                    if let Some(consumed) = self.match_at_pos(text, abs_start) {
                                         return Some((abs_start, abs_start + consumed));
                                     }
                                     try_pos += foffset + 1;
@@ -1017,7 +1044,7 @@ impl Sequence {
                 while pos < text.len() {
                     if let Some(offset) = fc.find_first(&text[pos..]) {
                         let start_pos = pos + offset;
-                        if let Some(consumed) = self.match_at(&text[start_pos..]) {
+                        if let Some(consumed) = self.match_at_pos(text, start_pos) {
                             return Some((start_pos, start_pos + consumed));
                         }
                         pos = start_pos + 1;
@@ -1031,7 +1058,7 @@ impl Sequence {
 
         // Fallback: sequential search
         for (start_pos, _) in text.char_indices() {
-            if let Some(consumed) = self.match_at(&text[start_pos..]) {
+            if let Some(consumed) = self.match_at_pos(text, start_pos) {
                 return Some((start_pos, start_pos + consumed));
             }
         }
@@ -1140,7 +1167,7 @@ impl Sequence {
             if pos > text.len() {
                 return None;
             }
-            match elem.match_at(&text[pos..], 0) {
+            match elem.match_at(text, pos) {
                 Some(consumed) => pos += consumed,
                 None => return None,
             }
@@ -1226,6 +1253,13 @@ impl Sequence {
                         return None;
                     }
                 }
+                SequenceElement::Boundary(boundary_type) => {
+                    // Boundary is zero-width, just check if it matches at current position
+                    if !boundary_type.matches_at(text, match_start) {
+                        return None;
+                    }
+                    // Don't move match_start since boundary is zero-width
+                }
                 _ => {
                     // Other elements not supported in reverse yet
                     return None;
@@ -1246,6 +1280,22 @@ impl Sequence {
 
         // Use backtracking-enabled matching
         self.match_elements_backtracking(text, start_idx, 0)
+    }
+
+    /// Match remaining elements starting from a specific position in the full text
+    /// This preserves context needed for boundary checks
+    /// Returns the number of bytes consumed (not absolute position)
+    fn match_at_skip_from(&self, text: &str, text_pos: usize, skip_count: usize) -> Option<usize> {
+        if skip_count == 0 {
+            return Some(0); // No more elements to match
+        }
+
+        let start_idx = self.elements.len() - skip_count;
+
+        // Use backtracking with the full text and actual position
+        // Returns absolute end position, convert to bytes consumed
+        self.match_elements_backtracking(text, start_idx, text_pos)
+            .map(|end_pos| end_pos - text_pos)
     }
 
     /// Match elements with backtracking support for quantified elements
@@ -1573,7 +1623,7 @@ impl Sequence {
 
                 for found_pos in finder.find_iter(text.as_bytes()) {
                     let after_prefix = found_pos + prefix_bytes.len();
-                    if let Some(consumed) = self.match_at_skip(&text[after_prefix..], skip_count) {
+                    if let Some(consumed) = self.match_at_skip_from(text, after_prefix, skip_count) {
                         results.push((found_pos, after_prefix + consumed));
                     }
                 }
@@ -1585,7 +1635,7 @@ impl Sequence {
 
                 for found_pos in memchr_iter(byte, text.as_bytes()) {
                     let after_prefix = found_pos + 1;
-                    if let Some(consumed) = self.match_at_skip(&text[after_prefix..], skip_count) {
+                    if let Some(consumed) = self.match_at_skip_from(text, after_prefix, skip_count) {
                         results.push((found_pos, after_prefix + consumed));
                     }
                 }

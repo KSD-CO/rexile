@@ -63,6 +63,42 @@ impl CharClass {
         let mut i = 0;
 
         while i < pattern_chars.len() {
+            // Check for escape sequences like \s, \d, \w
+            if pattern_chars[i] == '\\' && i + 1 < pattern_chars.len() {
+                let escape_char = pattern_chars[i + 1];
+                match escape_char {
+                    's' => {
+                        // Whitespace: space, tab, newline, carriage return, form feed, vertical tab
+                        chars.push(' ');
+                        chars.push('\t');
+                        chars.push('\n');
+                        chars.push('\r');
+                        chars.push('\x0C'); // form feed
+                        chars.push('\x0B'); // vertical tab
+                        i += 2;
+                    }
+                    'd' => {
+                        // Digits 0-9
+                        ranges.push(('0', '9'));
+                        i += 2;
+                    }
+                    'w' => {
+                        // Word characters: a-z, A-Z, 0-9, _
+                        ranges.push(('a', 'z'));
+                        ranges.push(('A', 'Z'));
+                        ranges.push(('0', '9'));
+                        chars.push('_');
+                        i += 2;
+                    }
+                    _ => {
+                        // Other escapes like \., \-, etc. - treat as literal
+                        chars.push(escape_char);
+                        i += 2;
+                    }
+                }
+                continue;
+            }
+
             // Check for range (a-z)
             if i + 2 < pattern_chars.len() && pattern_chars[i + 1] == '-' {
                 let start = pattern_chars[i];

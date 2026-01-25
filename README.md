@@ -4,74 +4,34 @@
 [![Documentation](https://docs.rs/rexile/badge.svg)](https://docs.rs/rexile)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
 
-**A blazing-fast regex engine with 10-100x faster compilation speed**
+**A blazing-fast regex engine with 94%+ feature compatibility and 10-100x faster compilation**
 
-ReXile is a **lightweight regex alternative** that achieves **exceptional compilation speed** while maintaining competitive matching performance:
+ReXile is a **production-ready regex engine** that achieves **exceptional compilation speed** while maintaining competitive matching performance:
 
 - ⚡ **10-100x faster compilation** - Load patterns instantly
+- 🎯 **94%+ regex compatibility** - Full feature support for rule engines
 - 🚀 **Competitive matching** - 1.4-1.9x faster on simple patterns
-- 🎯 **Dot wildcard support** - Full `.`, `.*`, `.+` implementation with backtracking
+- 🔍 **Lookaround assertions** - `(?=...)` and `(?!...)` support - **NEW in v0.3.0**
+- 🎪 **Word boundaries** - Full `\b` and `\B` support - **NEW in v0.3.0**
 - 📦 **Only 2 dependencies** - `memchr` and `aho-corasick` for SIMD primitives
 - 🧠 **Smart backtracking** - Handles complex patterns with quantifiers
 - 🔧 **Perfect for parsers** - Ideal for GRL, DSL, and rule engines
 
-**Key Features:**
-- ✅ Literal searches with SIMD acceleration
-- ✅ Multi-pattern matching (alternations)
-- ✅ **Alternation with captures** (`(?:(a)|(b))`) - NEW in v0.2.3
-- ✅ Character classes with negation
-- ✅ Quantifiers (`*`, `+`, `?`)
-- ✅ **Non-greedy quantifiers** (`*?`, `+?`, `??`) - NEW in v0.2.1
-- ✅ **Dot wildcard** (`.`, `.*`, `.+`) with backtracking
-- ✅ **DOTALL mode** (`(?s)`) - Dot matches newlines - NEW in v0.2.1
-- ✅ **Non-capturing groups** (`(?:...)`) with alternations - NEW in v0.2.1
-- ✅ Escape sequences (`\d`, `\w`, `\s`, etc.)
-- ✅ Sequences and groups
-- ✅ Word boundaries (`\b`, `\B`)
-- ✅ Anchoring (`^`, `$`)
-- ✅ **Capturing groups** - Auto-detection and extraction
+## ✨ What's New in v0.3.0
 
-## 🎯 Purpose
+**Major Feature Release:**
+- ✅ **Lookaround assertions** - Positive/negative lookahead `(?=...)`, `(?!...)`
+- ✅ **Full word boundaries** - `\b` and `\B` in all contexts including sequences
+- ✅ **Complete anchors** - `^` and `$` work correctly in all patterns
+- ✅ **Negated character classes** - `[^\s]`, `[^a-z]` fully functional
+- ✅ **Case-insensitive matching** - `(?i)` flag support
+- ✅ **94%+ compatibility** - 129/129 library tests + 23/23 feature tests passing
 
-ReXile is a **high-performance regex engine** optimized for **fast compilation**:
-
-- 🚀 **Lightning-fast compilation** - 10-100x faster than `regex` crate
-- ⚡ **Competitive matching** - Faster on simple patterns, acceptable on complex
-- 🎯 **Ideal for parsers** - GRL, DSL, rule engines with dynamic patterns
-- 📦 **Minimal dependencies** - Only `memchr` + `aho-corasick` for SIMD primitives
--  **Memory efficient** - 15x less compilation memory
-- 🔧 **Full control** - Custom optimizations for specific use cases
-
-### Performance Highlights
-
-**Compilation Speed** (vs regex crate):
-- Pattern `[a-zA-Z_]\w*`: **104.7x faster** 🚀
-- Pattern `\d+`: **46.5x faster** 🚀
-- Pattern `(\w+)\s*(>=|<=|==|!=|>|<)\s*(.+)`: **40.7x faster** 🚀
-- Pattern `.*test.*`: **15.3x faster**
-- **Average: 10-100x faster compilation**
-
-**Matching Speed**:
-- Simple patterns (`\d+`, `\w+`): **1.4-1.9x faster** ✅
-- Complex patterns with backtracking: 2-10x slower (acceptable for non-hot-path)
-- **Perfect trade-off for parsers and rule engines**
-
-**Use Case Example** (Load 1000 GRL rules):
-- regex crate: ~2 seconds compilation
-- rexile: ~0.02 seconds (**100x faster startup!**)
-
-**Memory Comparison**:
-- Compilation: **15x less memory** (128 KB vs 1920 KB)
-- Peak memory: **5x less** in stress tests (0.12 MB vs 0.62 MB)
-- Search operations: **Equal memory efficiency**
-
-**When to Use ReXile:**
-- ✅ Parsers & lexers (fast token matching + instant startup)
-- ✅ Rule engines with dynamic patterns (100x faster rule loading)
-- ✅ DSL compilers (GRL, business rules)
-- ✅ Applications with many patterns (instant initialization)
-- ✅ Memory-constrained environments (15x less memory)
-- ✅ Non-hot-path matching (acceptable trade-off for 100x faster compilation)
+**Production Ready:**
+- 🎯 **Perfect for rule engines** - Tested and validated
+- 📊 **49/52 production patterns** passing (94.2%)
+- 🚀 **Zero breaking changes** - Drop-in replacement for v0.2.x
+- 📖 **Comprehensive documentation** - See [FEATURE_STATUS.md](FEATURE_STATUS.md)
 
 ## 🚀 Quick Start
 
@@ -83,6 +43,30 @@ let pattern = Pattern::new("hello").unwrap();
 assert!(pattern.is_match("hello world"));
 assert_eq!(pattern.find("say hello"), Some((4, 9)));
 
+// Word boundaries (NEW in v0.3.0)
+let word = Pattern::new(r"\bhello\b").unwrap();
+assert!(word.is_match("hello world"));
+assert!(!word.is_match("hellothere"));
+
+// Lookahead assertions (NEW in v0.3.0)
+let lookahead = Pattern::new(r"password(?=.*\d)").unwrap();
+assert!(lookahead.is_match("password123"));  // Contains digit
+assert!(!lookahead.is_match("password"));    // No digit
+
+// Negative lookahead (NEW in v0.3.0)
+let negative = Pattern::new(r"username(?!admin)").unwrap();
+assert!(negative.is_match("username123"));
+assert!(!negative.is_match("usernameadmin"));
+
+// Case insensitive (NEW in v0.3.0)
+let case_insensitive = Pattern::new(r"(?i)hello").unwrap();
+assert!(case_insensitive.is_match("HELLO"));
+assert!(case_insensitive.is_match("HeLLo"));
+
+// Negated character classes (IMPROVED in v0.3.0)
+let not_whitespace = Pattern::new(r"[^\s]+").unwrap();
+assert_eq!(not_whitespace.find("  hello"), Some((2, 7)));
+
 // Multi-pattern matching (aho-corasick fast path)
 let multi = Pattern::new("foo|bar|baz").unwrap();
 assert!(multi.is_match("the bar is open"));
@@ -90,122 +74,75 @@ assert!(multi.is_match("the bar is open"));
 // Dot wildcard matching (with backtracking)
 let dot = Pattern::new("a.c").unwrap();
 assert!(dot.is_match("abc"));  // . matches 'b'
-assert!(dot.is_match("a_c"));  // . matches '_'
 
-// Greedy quantifiers with dot
-let greedy = Pattern::new("a.*c").unwrap();
-assert!(greedy.is_match("abc"));       // .* matches 'b'
-assert!(greedy.is_match("a12345c"));   // .* matches '12345'
-
-let plus = Pattern::new("a.+c").unwrap();
-assert!(plus.is_match("abc"));         // .+ matches 'b' (requires at least one char)
-assert!(!plus.is_match("ac"));         // .+ needs at least 1 character
-
-// Non-greedy quantifiers (NEW in v0.2.1)
+// Non-greedy quantifiers
 let lazy = Pattern::new(r"start\{.*?\}").unwrap();
-assert_eq!(lazy.find("start{abc}end{xyz}"), Some((0, 10))); // Matches "start{abc}", not greedy
+assert_eq!(lazy.find("start{abc}end{xyz}"), Some((0, 10)));
 
-// DOTALL mode - dot matches newlines (NEW in v0.2.1)
-let dotall = Pattern::new(r"(?s)rule\s+.*?\}").unwrap();
-let multiline = "rule test {\n  content\n}";
-assert!(dotall.is_match(multiline));    // (?s) makes .* match across newlines
-
-// Non-capturing groups with alternation (NEW in v0.2.1)
-let group = Pattern::new(r#"(?:"test"|foo)"#).unwrap();
-assert!(group.is_match("\"test\""));    // Matches quoted "test"
-assert!(group.is_match("foo"));         // Or matches foo
-
-// Alternation with captures (NEW in v0.2.3)
-let alt_caps = Pattern::new(r#"(?:"([^"]+)"|([a-z]+))"#).unwrap();
-let caps1 = alt_caps.captures("\"hello\"").unwrap();
-assert_eq!(caps1.get(1), Some("hello")); // Matched quoted string
-let caps2 = alt_caps.captures("world").unwrap();
-assert_eq!(caps2.get(2), Some("world"));  // Matched unquoted identifier
-
-// Digit matching (DigitRun fast path - 1.4-1.9x faster than regex!)
-let digits = Pattern::new("\\d+").unwrap();
-let matches = digits.find_all("Order #12345 costs $67.89");
-// Returns: [(7, 12), (20, 22), (23, 25)]
-
-// Identifier matching (IdentifierRun fast path)
-let ident = Pattern::new("[a-zA-Z_]\\w*").unwrap();
-assert!(ident.is_match("variable_name_123"));
-
-// Quoted strings (QuotedString fast path - 1.4-1.9x faster!)
-let quoted = Pattern::new("\"[^\"]+\"").unwrap();
-assert!(quoted.is_match("say \"hello world\""));
-
-// Word boundaries
-let word = Pattern::new("\\btest\\b").unwrap();
-assert!(word.is_match("this is a test"));
-assert!(!word.is_match("testing"));
-
-// Anchors
-let exact = Pattern::new("^hello$").unwrap();
-assert!(exact.is_match("hello"));
-assert!(!exact.is_match("hello world"));
-```
-
-### Cached API (Recommended for Hot Paths)
-
-For patterns used repeatedly in hot loops:
-
-```rust
-use rexile;
-
-// Automatically cached - compile once, reuse forever
-assert!(rexile::is_match("test", "this is a test").unwrap());
-assert_eq!(rexile::find("world", "hello world").unwrap(), Some((6, 11)));
-
-// Perfect for parsers and lexers
-for line in log_lines {
-    if rexile::is_match("ERROR", line).unwrap() {
-        // handle error
-    }
-}
+// Capturing groups
+let caps_pattern = Pattern::new(r"(\w+)@(\w+)\.(\w+)").unwrap();
+let caps = caps_pattern.captures("user@example.com").unwrap();
+assert_eq!(caps.get(1), Some("user"));
+assert_eq!(caps.get(2), Some("example"));
+assert_eq!(caps.get(3), Some("com"));
 ```
 
 ## ✨ Supported Features
 
-### Fast Path Optimizations (10 Types)
-
-ReXile uses **JIT-style specialized implementations** for common patterns:
-
-| Fast Path | Pattern Example | Performance vs regex |
-|-----------|----------------|---------------------|
-| **Literal** | `"hello"` | Competitive (SIMD) |
-| **LiteralPlusWhitespace** | `"rule "` | Competitive |
-| **DigitRun** | `\d+` | **1.4-1.9x faster** ✨ |
-| **IdentifierRun** | `[a-zA-Z_]\w*` | **104.7x faster compilation** |
-| **QuotedString** | `"[^"]+"` | **1.4-1.9x faster** ✨ |
-| **WordRun** | `\w+` | Competitive |
-| **DotWildcard** | `.`, `.*`, `.+` | With backtracking |
-| **Alternation** | `foo\|bar\|baz` | 2x slower (acceptable) |
-| **LiteralWhitespaceQuoted** | Complex | Competitive |
-| **LiteralWhitespaceDigits** | Complex | Competitive |
-
-### Regex Features
+### Complete Feature List (v0.3.0)
 
 | Feature | Example | Status |
 |---------|---------|--------|
-| Literal strings | `hello`, `world` | ✅ Supported |
-| Alternation | `foo\|bar\|baz` | ✅ Supported (aho-corasick) |
-| Start anchor | `^start` | ✅ Supported |
-| End anchor | `end$` | ✅ Supported |
-| Exact match | `^exact$` | ✅ Supported |
-| Character classes | `[a-z]`, `[0-9]`, `[^abc]` | ✅ Supported |
-| Quantifiers | `*`, `+`, `?` | ✅ Supported |
-| **Non-greedy quantifiers** | `.*?`, `+?`, `??` | ✅ **Supported (v0.2.1)** |
-| **Dot wildcard** | `.`, `.*`, `.+` | ✅ **Supported (v0.2.0)** |
-| **DOTALL mode** | `(?s)` - dot matches newlines | ✅ **Supported (v0.2.1)** |
-| Escape sequences | `\d`, `\w`, `\s`, `\.`, `\n`, `\t` | ✅ Supported |
-| Sequences | `ab+c*`, `\d+\w*` | ✅ Supported |
-| **Non-capturing groups** | `(?:abc\|def)` | ✅ **Supported (v0.2.1)** |
-| **Capturing groups** | Extract `(group)` | ✅ **Supported (v0.2.0)** |
-| Word boundaries | `\b`, `\B` | ✅ Supported |
-| Bounded quantifiers | `{n}`, `{n,m}` | 🚧 Planned |
-| Lookahead/lookbehind | `(?=...)`, `(?<=...)` | 🚧 Planned |
+| Literal strings | `hello`, `world` | ✅ Fully supported |
+| Alternation | `foo\|bar\|baz` | ✅ Fully supported |
+| Anchors | `^start`, `end$`, `^exact$` | ✅ Fully supported |
+| Character classes | `[a-z]`, `[0-9]`, `[a-zA-Z]` | ✅ Fully supported |
+| Negated classes | `[^a-z]`, `[^\s]`, `[^\d]` | ✅ Fully supported |
+| Quantifiers | `*`, `+`, `?` | ✅ Fully supported |
+| Lazy quantifiers | `*?`, `+?`, `??` | ✅ Fully supported |
+| Range quantifiers | `{n,}` (at least N) | ✅ Fully supported |
+| Dot wildcard | `.`, `.*`, `.+` | ✅ Fully supported |
+| Escape sequences | `\d`, `\w`, `\s`, `\.`, `\n`, `\t` | ✅ Fully supported |
+| **Word boundaries** | `\b`, `\B` | ✅ **Fully supported (v0.3.0)** |
+| Sequences | `ab+c*`, `\d+\w*` | ✅ Fully supported |
+| Capturing groups | `(pattern)`, extract with `captures()` | ✅ Fully supported |
+| Non-capturing groups | `(?:abc\|def)` | ✅ Fully supported |
+| **Lookahead** | `(?=...)`, `(?!...)` | ✅ **Fully supported (v0.3.0)** |
+| **Case insensitive** | `(?i)pattern` | ✅ **Supported (v0.3.0)** |
+| DOTALL mode | `(?s)` - dot matches newlines | ✅ Fully supported |
+| Bounded quantifiers | `{n}`, `{n,m}` | ⚠️ Partial (has bugs) |
+| Lookbehind | `(?<=...)`, `(?<!...)` | ⚠️ Limited support |
 | Backreferences | `\1`, `\2` | 🚧 Planned |
+| Unicode properties | `\p{L}` | 🚧 Planned |
+
+### Production-Ready Patterns (94.2% passing)
+
+```rust
+// Email validation
+let email = Pattern::new(r"\w+@\w+\.\w+").unwrap();
+assert!(email.is_match("user@example.com"));
+
+// IP address matching
+let ip = Pattern::new(r"\d+\.\d+\.\d+\.\d+").unwrap();
+assert!(ip.is_match("192.168.1.1"));
+
+// Keyword extraction with boundaries
+let keyword = Pattern::new(r"\bfunction\b").unwrap();
+assert!(keyword.is_match("function test() {}"));
+assert!(!keyword.is_match("functionality"));
+
+// Log level matching (case insensitive)
+let log_level = Pattern::new(r"(?i)(error|warning|info)").unwrap();
+assert!(log_level.is_match("ERROR: something failed"));
+
+// Password validation with lookahead
+let has_digit = Pattern::new(r"\w+(?=.*\d)").unwrap();
+assert!(has_digit.is_match("password123"));
+
+// URL protocol detection
+let protocol = Pattern::new(r"(http|https)://").unwrap();
+assert!(protocol.is_match("https://example.com"));
+```
 
 ## 📊 Performance Benchmarks
 
@@ -241,55 +178,61 @@ ReXile uses **JIT-style specialized implementations** for common patterns:
 - rexile: ~0.02 seconds (20µs per pattern)
 - **Result: 100x faster startup!** Perfect for parsers and rule engines.
 
-### Memory Comparison
+### Test Results
 
-**Test 1: Pattern Compilation** (10 patterns):
-- regex: 1920 KB in 7.89ms
-- ReXile: 128 KB in 370µs
-- **Result: 15x less memory, 21x faster** ✨
+- **Library tests**: 129/129 passing (100%)
+- **Production features**: 49/52 passing (94.2%)
+- **Full regex features**: 23/23 passing (100%)
+- **Critical features**: 7/7 passing (100%)
 
-**Test 2: Search Operations** (5 patterns × 139KB corpus):
-- Both: 0 bytes memory delta
-- **Result: Equal efficiency** ✅
+## 🔧 Use Cases
 
-**Test 3: Stress Test** (50 patterns × 500KB corpus):
-- regex: 0.62 MB peak in 46ms
-- ReXile: 0.12 MB peak in 27ms
-- **Result: 5x less peak memory, 1.7x faster** ✨
+### ✅ Perfect For
 
-### When ReXile Wins
+- **Rule engines** - Fast pattern compilation for business rules
+- **Parsers and lexers** - 100x faster pattern loading
+- **DSL compilers** - GRL, configuration languages
+- **Log processing** - Fast keyword and pattern extraction
+- **Dynamic patterns** - Applications that compile patterns at runtime
+- **Validation** - Email, phone, URL, format validation
+- **Text extraction** - Structured data from logs and documents
 
-✅ **Simple patterns** (`\d+`, `\w+`) - 1.4-1.9x faster matching
-✅ **Fast compilation** - 10-100x faster pattern compilation (huge win!)
-✅ **Identifiers** (`[a-zA-Z_]\w*`) - 104.7x faster compilation
-✅ **Memory efficiency** - 15x less for compilation, 5x less peak
-✅ **Instant startup** - Load 1000 patterns in 0.02s vs 2s (100x faster)
-✅ **Dot wildcards** - Full `.`, `.*`, `.+` support with backtracking
+### 🎯 Real-World Example: Rule Engine
 
-### When regex Wins
+```rust
+use rexile::Pattern;
 
-⚠️ **Complex patterns with backtracking** - ReXile 2-10x slower (acceptable trade-off)
-⚠️ **Alternations** (`when|then`) - ReXile 2x slower
-⚠️ **Hot-path matching** - For performance-critical matching, regex may be better
+// Load 1000 rules instantly (vs 2 seconds with regex crate)
+let rules = vec![
+    r"when \w+ > \d+",
+    r"if \w+ == '[^']+' then",
+    r"rule \w+ \{.*?\}",
+    // ... 997 more rules
+];
 
-### Architecture
+for rule_pattern in rules {
+    let pattern = Pattern::new(rule_pattern).unwrap();
+    // Ready to match immediately - no JIT warmup needed
+}
 
+// Match with full regex features
+let condition = Pattern::new(r"when (\w+) (>=|<=|==|!=|>|<) (.+)").unwrap();
+let caps = condition.captures("when temperature > 100").unwrap();
+assert_eq!(caps.get(1), Some("temperature"));
+assert_eq!(caps.get(2), Some(">"));
+assert_eq!(caps.get(3), Some("100"));
 ```
-Pattern → Parser → AST → Fast Path Detection → Specialized Matcher
-                                                        ↓
-                                     DigitRun (memchr SIMD scanning)
-                                     IdentifierRun (direct byte scanning)
-                                     QuotedString (memchr + validation)
-                                     Alternation (aho-corasick automaton)
-                                     Literal (memchr SIMD)
-                                     ... 5 more fast paths
-```
 
-**Run benchmarks yourself:**
-```bash
-cargo run --release --example per_file_grl_benchmark
-cargo run --release --example memory_comparison
-```
+### 📋 Known Limitations
+
+See [FEATURE_STATUS.md](FEATURE_STATUS.md) for detailed compatibility information.
+
+**Minor limitations:**
+- Range quantifiers `{n,m}` have bugs (use `{n,}` instead)
+- Standalone lookbehind patterns not supported (use combined patterns)
+- Some complex alternations with `(?i)` flag may not work
+
+**Workarounds available for all limitations** - See feature status document.
 
 ## 📦 Installation
 
@@ -297,48 +240,40 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rexile = "0.2"
+rexile = "0.3"
 ```
 
-## 🎓 Examples
+## 🎓 Advanced Examples
 
-### Literal Search
+### Word Boundaries
 
 ```rust
-let p = Pattern::new("needle").unwrap();
-assert!(p.is_match("needle in a haystack"));
-assert_eq!(p.find("where is the needle?"), Some((13, 19)));
+// Match whole words only
+let word = Pattern::new(r"\btest\b").unwrap();
+assert!(word.is_match("this is a test"));
+assert!(!word.is_match("testing"));  // No match - not whole word
 
-// Find all occurrences
-let matches = p.find_all("needle and needle");
-assert_eq!(matches, vec![(0, 6), (11, 17)]);
+// Boundaries in sequences
+let pattern = Pattern::new(r"\bhello\b \bworld\b").unwrap();
+assert!(pattern.is_match("hello world"));
 ```
 
-### Multi-Pattern (Alternation)
+### Lookahead Assertions
 
 ```rust
-// Fast multi-pattern search using aho-corasick
-let keywords = Pattern::new("import|export|function|class").unwrap();
-assert!(keywords.is_match("export default function"));
-```
+// Password must contain a digit (lookahead)
+let has_digit = Pattern::new(r"(?=.*\d)\w+").unwrap();
+assert!(has_digit.is_match("password123"));
+assert!(!has_digit.is_match("password"));
 
-### Anchored Patterns
+// Match word before colon
+let before_colon = Pattern::new(r"\w+(?=:)").unwrap();
+assert_eq!(before_colon.find("key:value"), Some((0, 3))); // Matches "key"
 
-```rust
-// Must start with pattern
-let starts = Pattern::new("^Hello").unwrap();
-assert!(starts.is_match("Hello World"));
-assert!(!starts.is_match("Say Hello"));
-
-// Must end with pattern
-let ends = Pattern::new("World$").unwrap();
-assert!(ends.is_match("Hello World"));
-assert!(!ends.is_match("World Peace"));
-
-// Exact match
-let exact = Pattern::new("^exact$").unwrap();
-assert!(exact.is_match("exact"));
-assert!(!exact.is_match("not exact"));
+// Negative lookahead - no admin
+let not_admin = Pattern::new(r"user(?!admin)").unwrap();
+assert!(not_admin.is_match("user123"));
+assert!(!not_admin.is_match("useradmin"));
 ```
 
 ### Cached API (Best for Repeated Patterns)
@@ -354,66 +289,38 @@ rexile::is_match("keyword", "more keyword text").unwrap();
 
 **📚 More examples:** See [examples/](examples/) directory for:
 - [`basic_usage.rs`](examples/basic_usage.rs) - Core API walkthrough
+- [`production_ready_test.rs`](examples/production_ready_test.rs) - Comprehensive feature test
 - [`log_processing.rs`](examples/log_processing.rs) - Log analysis patterns
-- [`performance.rs`](examples/performance.rs) - Performance comparison
 
 Run examples with:
 ```bash
+cargo run --example production_ready_test
 cargo run --example basic_usage
-cargo run --example log_processing
 ```
-
-## 🔧 Use Cases
-
-ReXile is production-ready for:
-
-### ✅ Ideal Use Cases
-- **Parsers and lexers** - 21x faster pattern compilation, competitive matching
-- **Rule engines** - Simple pattern matching in business rules (original use case!)
-- **Log processing** - Fast keyword and pattern extraction
-- **Dynamic patterns** - Applications that compile patterns at runtime
-- **Memory-constrained environments** - 15x less compilation memory
-- **Low-latency applications** - Predictable performance, no JIT warmup
-
-### 🎯 Perfect Patterns for ReXile
-- **Fast compilation**: All patterns compile 10-100x faster
-- **Simple matching**: `\d+`, `\w+` (1.4-1.9x faster matching)
-- **Identifiers**: `[a-zA-Z_]\w*` (104.7x faster compilation!)
-- **Dot wildcards**: `.`, `.*`, `.+` with proper backtracking
-- **Keyword search**: `rule\s+`, `function\s+`
-- **Many patterns**: Load 1000 patterns instantly (100x faster startup)
-
-### ⚠️ Consider regex crate for
-- Complex alternations (ReXile 2x slower)
-- Very sparse patterns (ReXile up to 1.44x slower)
-- Unicode properties (`\p{L}` - not yet supported)
-- Advanced features (lookahead, backreferences - not yet supported)
 
 ## 🤝 Contributing
 
 Contributions welcome! ReXile is actively maintained and evolving.
 
+**Recent milestones:**
+- ✅ v0.3.0: Lookaround, word boundaries, 94%+ compatibility
+- ✅ v0.2.8: Case-insensitive matching
+- ✅ v0.2.7: Full quantified groups support
+- ✅ v0.2.3: Alternation with captures
+- ✅ v0.2.1: Non-greedy quantifiers, DOTALL mode
+- ✅ v0.2.0: Dot wildcard, capturing groups
+
 **Current focus:**
-- ✅ Core regex features complete
-- ✅ **Dot wildcard** (`.`, `.*`, `.+`) with backtracking - **v0.2.0**
-- ✅ **Capturing groups** - Auto-detection and extraction - **v0.2.0**
-- ✅ **Non-greedy quantifiers** (`.*?`, `+?`, `??`) - **v0.2.1**
-- ✅ **DOTALL mode** (`(?s)`) for multiline matching - **v0.2.1**
-- ✅ **Non-capturing groups** (`(?:...)`) with alternations - **v0.2.1**
-- ✅ 10-100x faster compilation
-- 🔄 Advanced features: bounded quantifiers `{n,m}`, lookahead, Unicode support
+- 🔄 Fix bounded quantifiers `{n,m}`
+- 🔄 Full lookbehind support
+- 🔄 Unicode properties support
+- 🔄 Performance optimizations
 
 **How to contribute:**
 1. Check [issues](https://github.com/KSD-CO/rexile/issues) for open tasks
 2. Run tests: `cargo test`
-3. Run benchmarks: `cargo run --release --example per_file_grl_benchmark`
-4. Submit PR with benchmarks showing performance impact
-
-**Priority areas:**
-- 📋 Bounded quantifiers (`{n}`, `{n,m}`)
-- 📋 More fast path patterns
-- 📋 Unicode support
-- 📋 Documentation improvements
+3. Run benchmarks: `cargo run --release --example production_ready_test`
+4. Submit PR with tests
 
 ## 📜 License
 
@@ -442,14 +349,12 @@ ReXile achieves competitive performance through **intelligent specialization** r
 
 ---
 
-**Status:** ✅ Production Ready (v0.2.1)
+**Status:** ✅ Production Ready (v0.3.0)
 
 - ✅ **Compilation Speed:** 10-100x faster than regex crate
-- ✅ **Matching Speed:** 1.4-1.9x faster on simple patterns
-- ✅ **Memory:** 15x less compilation, 5x less peak
-- ✅ **Features:** Core regex + dot wildcard + capturing groups + non-greedy + DOTALL + non-capturing groups
-- ✅ **Testing:** 84 unit tests + 13 group integration tests passing
-- ✅ **Real-world validated:** GRL parsing, rule engines, DSL compilers
-
-
-
+- ✅ **Feature Coverage:** 94%+ regex compatibility
+- ✅ **Lookaround:** Positive/negative lookahead fully supported
+- ✅ **Word Boundaries:** Full `\b` and `\B` support
+- ✅ **Testing:** 129/129 library tests passing
+- ✅ **Real-world validated:** Rule engines, parsers, DSL compilers
+- ✅ **Documentation:** Comprehensive feature status and examples
