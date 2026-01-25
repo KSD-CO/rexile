@@ -1043,8 +1043,8 @@ impl Sequence {
                             while try_pos < window.len() {
                                 if let Some(foffset) = fc.find_first(&window[try_pos..]) {
                                     let abs_start = search_start + try_pos + foffset;
-                                    if let Some(consumed) = self.match_at_pos(text, abs_start) {
-                                        return Some((abs_start, abs_start + consumed));
+                                    if let Some(final_pos) = self.match_at_pos(text, abs_start) {
+                                        return Some((abs_start, final_pos));
                                     }
                                     try_pos += foffset + 1;
                                 } else {
@@ -1064,8 +1064,8 @@ impl Sequence {
                 while pos < text.len() {
                     if let Some(offset) = fc.find_first(&text[pos..]) {
                         let start_pos = pos + offset;
-                        if let Some(consumed) = self.match_at_pos(text, start_pos) {
-                            return Some((start_pos, start_pos + consumed));
+                        if let Some(final_pos) = self.match_at_pos(text, start_pos) {
+                            return Some((start_pos, final_pos));
                         }
                         pos = start_pos + 1;
                     } else {
@@ -1078,8 +1078,8 @@ impl Sequence {
 
         // Fallback: sequential search
         for (start_pos, _) in text.char_indices() {
-            if let Some(consumed) = self.match_at_pos(text, start_pos) {
-                return Some((start_pos, start_pos + consumed));
+            if let Some(final_pos) = self.match_at_pos(text, start_pos) {
+                return Some((start_pos, final_pos));
             }
         }
 

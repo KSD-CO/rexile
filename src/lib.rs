@@ -3086,10 +3086,185 @@ fn compile_ast(ast: &Ast) -> Result<Matcher, PatternError> {
             Ok(Matcher::SequenceWithFlags(seq.clone(), *flags))
         }
         Ast::CaseInsensitive(inner) => {
-            // Compile inner and wrap with case-insensitive matcher
-            let inner_matcher = compile_ast(inner)?;
+            // Lowercase the pattern before compiling
+            let lowercased = lowercase_ast(inner);
+            let inner_matcher = compile_ast(&lowercased)?;
             Ok(Matcher::CaseInsensitive(Box::new(inner_matcher)))
         }
+    }
+}
+
+/// Lowercase all literals in an AST for case-insensitive matching
+fn lowercase_ast(ast: &Ast) -> Ast {
+    match ast {
+        Ast::Literal(s) => Ast::Literal(s.to_lowercase()),
+        Ast::Alternation(branches) => {
+            Ast::Alternation(branches.iter().map(|s| s.to_lowercase()).collect())
+        }
+        Ast::Group(g) => {
+            // Lowercase group content
+            let mut new_group = g.clone();
+            new_group.content = match &g.content {
+                parser::group::GroupContent::Single(s) => {
+                    parser::group::GroupContent::Single(s.to_lowercase())
+                }
+                parser::group::GroupContent::Alternation(branches) => {
+                    parser::group::GroupContent::Alternation(
+                        branches.iter().map(|s| s.to_lowercase()).collect(),
+                    )
+                }
+                parser::group::GroupContent::Sequence(seq) => {
+                    let mut new_seq = seq.clone();
+                    new_seq.elements = new_seq
+                        .elements
+                        .into_iter()
+                        .map(|elem| match elem {
+                            parser::sequence::SequenceElement::Literal(s) => {
+                                parser::sequence::SequenceElement::Literal(s.to_lowercase())
+                            }
+                            parser::sequence::SequenceElement::Char(c) => {
+                                let lowered: String = c.to_lowercase().collect();
+                                if lowered.len() == 1 {
+                                    parser::sequence::SequenceElement::Char(
+                                        lowered.chars().next().unwrap(),
+                                    )
+                                } else {
+                                    parser::sequence::SequenceElement::Literal(lowered)
+                                }
+                            }
+                            other => other,
+                        })
+                        .collect();
+                    parser::group::GroupContent::Sequence(new_seq)
+                }
+                parser::group::GroupContent::ParsedAlternation(sequences) => {
+                    let new_sequences: Vec<_> = sequences
+                        .iter()
+                        .map(|seq| {
+                            let mut new_seq = seq.clone();
+                            new_seq.elements = new_seq
+                                .elements
+                                .into_iter()
+                                .map(|elem| match elem {
+                                    parser::sequence::SequenceElement::Literal(s) => {
+                                        parser::sequence::SequenceElement::Literal(s.to_lowercase())
+                                    }
+                                    parser::sequence::SequenceElement::Char(c) => {
+                                        let lowered: String = c.to_lowercase().collect();
+                                        if lowered.len() == 1 {
+                                            parser::sequence::SequenceElement::Char(
+                                                lowered.chars().next().unwrap(),
+                                            )
+                                        } else {
+                                            parser::sequence::SequenceElement::Literal(lowered)
+                                        }
+                                    }
+                                    other => other,
+                                })
+                                .collect();
+                            new_seq
+                        })
+                        .collect();
+                    parser::group::GroupContent::ParsedAlternation(new_sequences)
+                }
+            };
+            Ast::Group(new_group)
+        }
+        Ast::Sequence(seq) => {
+            let mut new_seq = seq.clone();
+            // Lowercase literals in sequence elements
+            new_seq.elements = new_seq
+                .elements
+                .into_iter()
+                .map(|elem| match elem {
+                    parser::sequence::SequenceElement::Literal(s) => {
+                        parser::sequence::SequenceElement::Literal(s.to_lowercase())
+                    }
+                    parser::sequence::SequenceElement::Char(c) => {
+                        // Lowercase single char
+                        let lowered: String = c.to_lowercase().collect();
+                        if lowered.len() == 1 {
+                            parser::sequence::SequenceElement::Char(lowered.chars().next().unwrap())
+                        } else {
+                            // Multi-char lowercase (rare), convert to literal
+                            parser::sequence::SequenceElement::Literal(lowered)
+                        }
+                    }
+                    other => other, // CharClass, Quantified elements, etc. don't need lowercasing
+                })
+                .collect();
+            Ast::Sequence(new_seq)
+        }
+        Ast::Anchored { literal, start, end } => Ast::Anchored {
+            literal: literal.to_lowercase(),
+            start: *start,
+            end: *end,
+        },
+        Ast::AnchoredPattern { inner, start, end } => Ast::AnchoredPattern {
+            inner: Box::new(lowercase_ast(inner)),
+            start: *start,
+            end: *end,
+        },
+        Ast::SequenceWithFlags(seq, flags) => {
+            let mut new_seq = seq.clone();
+            new_seq.elements = new_seq
+                .elements
+                .into_iter()
+                .map(|elem| match elem {
+                    parser::sequence::SequenceElement::Literal(s) => {
+                        parser::sequence::SequenceElement::Literal(s.to_lowercase())
+                    }
+                    parser::sequence::SequenceElement::Char(c) => {
+                        let lowered: String = c.to_lowercase().collect();
+                        if lowered.len() == 1 {
+                            parser::sequence::SequenceElement::Char(lowered.chars().next().unwrap())
+                        } else {
+                            parser::sequence::SequenceElement::Literal(lowered)
+                        }
+                    }
+                    other => other,
+                })
+                .collect();
+            Ast::SequenceWithFlags(new_seq, *flags)
+        }
+        Ast::CaseInsensitive(inner) => {
+            // Already case-insensitive, just lowercase inner
+            Ast::CaseInsensitive(Box::new(lowercase_ast(inner)))
+        }
+        Ast::PatternWithCaptures {
+            elements,
+            total_groups,
+        } => {
+            // Lowercase literals in capture elements
+            let new_elements = elements
+                .iter()
+                .map(|elem| match elem {
+                    CaptureElement::NonCapture(ast) => {
+                        CaptureElement::NonCapture(lowercase_ast(ast))
+                    }
+                    CaptureElement::Capture(ast, group_num) => {
+                        CaptureElement::Capture(lowercase_ast(ast), *group_num)
+                    }
+                })
+                .collect();
+            Ast::PatternWithCaptures {
+                elements: new_elements,
+                total_groups: *total_groups,
+            }
+        }
+        Ast::AlternationWithCaptures {
+            branches,
+            total_groups,
+        } => Ast::AlternationWithCaptures {
+            branches: branches.iter().map(lowercase_ast).collect(),
+            total_groups: *total_groups,
+        },
+        Ast::Capture(inner, group_index) => {
+            // Lowercase the inner AST of the capture group
+            Ast::Capture(Box::new(lowercase_ast(inner)), *group_index)
+        }
+        // For other AST types that don't contain literals, just clone
+        _ => ast.clone(),
     }
 }
 

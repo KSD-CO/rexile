@@ -458,6 +458,37 @@ fn parse_quantifier_with_lazy(s: &str) -> Option<(Quantifier, usize)> {
     let mut chars = s.chars();
     let first = chars.next()?;
 
+    // Handle {n}, {n,}, {n,m} range quantifiers
+    if first == '{' {
+        // Find the closing }
+        if let Some(close_idx) = s.find('}') {
+            let inner = &s[1..close_idx];
+            let bytes_consumed = close_idx + 1;
+
+            // Parse the range quantifier
+            if let Ok(n) = inner.parse::<usize>() {
+                // {n} - exactly n times
+                return Some((Quantifier::Exactly(n), bytes_consumed));
+            } else if inner.contains(',') {
+                let parts: Vec<&str> = inner.split(',').collect();
+                if parts.len() == 2 {
+                    if parts[1].is_empty() {
+                        // {n,} - at least n times
+                        if let Ok(min) = parts[0].parse() {
+                            return Some((Quantifier::AtLeast(min), bytes_consumed));
+                        }
+                    } else {
+                        // {n,m} - between n and m times
+                        if let (Ok(min), Ok(max)) = (parts[0].parse(), parts[1].parse()) {
+                            return Some((Quantifier::Between(min, max), bytes_consumed));
+                        }
+                    }
+                }
+            }
+        }
+        return None;
+    }
+
     let base_quantifier = match first {
         '*' => Quantifier::ZeroOrMore,
         '+' => Quantifier::OneOrMore,
