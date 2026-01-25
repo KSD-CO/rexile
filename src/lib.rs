@@ -183,7 +183,8 @@ impl Pattern {
 
         // Check for anchors
         let has_start_anchor = effective_pattern.starts_with('^');
-        let has_end_anchor = effective_pattern.ends_with('$') && !effective_pattern.ends_with("\\$");
+        let has_end_anchor =
+            effective_pattern.ends_with('$') && !effective_pattern.ends_with("\\$");
 
         // Strip anchors to get inner pattern
         let inner_pattern = {
@@ -306,7 +307,10 @@ impl Pattern {
 
             for offset in 0..=lookback {
                 let start_pos = candidate_pos - offset;
-                if self.matcher.is_match(safe_slice(text, start_pos).unwrap_or("")) {
+                if self
+                    .matcher
+                    .is_match(safe_slice(text, start_pos).unwrap_or(""))
+                {
                     return true;
                 }
             }
@@ -363,7 +367,9 @@ impl Pattern {
                 let start_pos = candidate_pos - offset;
 
                 // Try to find match from this position
-                if let Some((match_start, match_end)) = self.matcher.find(safe_slice(text, start_pos).unwrap_or("")) {
+                if let Some((match_start, match_end)) =
+                    self.matcher.find(safe_slice(text, start_pos).unwrap_or(""))
+                {
                     let abs_start = start_pos + match_start;
                     let abs_end = start_pos + match_end;
 
@@ -509,11 +515,15 @@ impl Pattern {
                     if *start && start_pos != 0 {
                         continue;
                     }
-                    
+
                     if let Some((end_pos, capture_list)) =
-                        Matcher::match_elements_with_backtrack_and_captures(text, start_pos, elements)
+                        Matcher::match_elements_with_backtrack_and_captures(
+                            text, start_pos, elements,
+                        )
                     {
-                        if (end_pos > start_pos || elements.is_empty()) && check_anchor(start_pos, end_pos) {
+                        if (end_pos > start_pos || elements.is_empty())
+                            && check_anchor(start_pos, end_pos)
+                        {
                             // Create Captures with full match and capture groups
                             let mut caps = Captures::new(text, (start_pos, end_pos), *total_groups);
 
@@ -529,8 +539,9 @@ impl Pattern {
                 None
             } else {
                 // Simple pattern without captures - just return full match with anchor check
-                self.find(text)
-                    .map(|(match_start, match_end)| Captures::new(text, (match_start, match_end), 0))
+                self.find(text).map(|(match_start, match_end)| {
+                    Captures::new(text, (match_start, match_end), 0)
+                })
             }
         } else {
             // Simple pattern without explicit captures - just return full match
@@ -658,9 +669,8 @@ impl Pattern {
     }
 }
 
-
 /// A single match in the haystack.
-/// 
+///
 /// This is similar to `regex::Match` and provides access to
 /// the matched text and its position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1793,7 +1803,9 @@ impl Matcher {
                 for element in elements {
                     match element {
                         CompiledCaptureElement::Capture(inner_matcher, group_num) => {
-                            if let Some((rel_start, rel_end)) = inner_matcher.find(safe_slice(text, pos).unwrap_or("")) {
+                            if let Some((rel_start, rel_end)) =
+                                inner_matcher.find(safe_slice(text, pos).unwrap_or(""))
+                            {
                                 if rel_start == 0 {
                                     let abs_start = pos;
                                     let abs_end = pos + rel_end;
@@ -1815,7 +1827,9 @@ impl Matcher {
                             }
                         }
                         CompiledCaptureElement::NonCapture(inner_matcher) => {
-                            if let Some((rel_start, rel_end)) = inner_matcher.find(safe_slice(text, pos).unwrap_or("")) {
+                            if let Some((rel_start, rel_end)) =
+                                inner_matcher.find(safe_slice(text, pos).unwrap_or(""))
+                            {
                                 if rel_start == 0 {
                                     let abs_start = pos;
 
@@ -1837,7 +1851,9 @@ impl Matcher {
             }
             Matcher::Capture(inner_matcher, group_num) => {
                 // This is a single capture - record it and check for nested
-                if let Some((rel_start, rel_end)) = inner_matcher.find(safe_slice(text, start_pos).unwrap_or("")) {
+                if let Some((rel_start, rel_end)) =
+                    inner_matcher.find(safe_slice(text, start_pos).unwrap_or(""))
+                {
                     let abs_start = start_pos + rel_start;
                     let abs_end = start_pos + rel_end;
 
@@ -1852,7 +1868,9 @@ impl Matcher {
             Matcher::AlternationWithCaptures { branches, .. } => {
                 // Try each branch to find which one matched
                 for branch in branches {
-                    if let Some((rel_start, rel_end)) = branch.find(safe_slice(text, start_pos).unwrap_or("")) {
+                    if let Some((rel_start, rel_end)) =
+                        branch.find(safe_slice(text, start_pos).unwrap_or(""))
+                    {
                         if rel_start == 0 {
                             let abs_start = start_pos;
                             // Extract captures from the matched branch
@@ -1884,7 +1902,8 @@ impl Matcher {
         for element in elements {
             match element {
                 CompiledCaptureElement::Capture(m, num) => {
-                    if let Some((rel_start, rel_end)) = m.find(safe_slice(text, pos).unwrap_or("")) {
+                    if let Some((rel_start, rel_end)) = m.find(safe_slice(text, pos).unwrap_or(""))
+                    {
                         if rel_start != 0 {
                             return None; // Must match at current position
                         }
@@ -1922,7 +1941,9 @@ impl Matcher {
                         }
                     } else {
                         // Normal non-capture element
-                        if let Some((rel_start, rel_end)) = m.find(safe_slice(text, pos).unwrap_or("")) {
+                        if let Some((rel_start, rel_end)) =
+                            m.find(safe_slice(text, pos).unwrap_or(""))
+                        {
                             if rel_start != 0 {
                                 return None;
                             }
@@ -1993,7 +2014,9 @@ impl Matcher {
 
             // Match inner pattern as many times as possible (greedy)
             while count < max && pos < text.len() {
-                if let Some((rel_start, rel_end)) = inner_matcher.find(safe_slice(text, pos).unwrap_or("")) {
+                if let Some((rel_start, rel_end)) =
+                    inner_matcher.find(safe_slice(text, pos).unwrap_or(""))
+                {
                     // Must match at current position
                     if rel_start != 0 {
                         break;
@@ -2143,7 +2166,9 @@ impl Matcher {
             // No backtracking needed
             match first_element {
                 CompiledCaptureElement::Capture(m, num) => {
-                    if let Some((rel_start, rel_end)) = m.find(safe_slice(text, start_pos).unwrap_or("")) {
+                    if let Some((rel_start, rel_end)) =
+                        m.find(safe_slice(text, start_pos).unwrap_or(""))
+                    {
                         if rel_start == 0 {
                             let next_pos = start_pos + rel_end;
                             if let Some((final_pos, mut remaining_caps)) =
@@ -2162,7 +2187,9 @@ impl Matcher {
                     None
                 }
                 CompiledCaptureElement::NonCapture(m) => {
-                    if let Some((rel_start, rel_end)) = m.find(safe_slice(text, start_pos).unwrap_or("")) {
+                    if let Some((rel_start, rel_end)) =
+                        m.find(safe_slice(text, start_pos).unwrap_or(""))
+                    {
                         if rel_start == 0 {
                             let next_pos = start_pos + rel_end;
                             if let Some((final_pos, remaining_caps)) =
@@ -2263,7 +2290,9 @@ impl Matcher {
             if let Matcher::AlternationWithCaptures { branches, .. } = first_matcher {
                 // Try each branch - return first one that leads to complete match
                 for branch in branches {
-                    if let Some((rel_start, rel_end)) = branch.find(safe_slice(text, start_pos).unwrap_or("")) {
+                    if let Some((rel_start, rel_end)) =
+                        branch.find(safe_slice(text, start_pos).unwrap_or(""))
+                    {
                         if rel_start == 0 {
                             let next_pos = start_pos + rel_end;
                             // Try to match remaining elements with this branch
@@ -2280,7 +2309,9 @@ impl Matcher {
             }
 
             // Regular case: non-alternation element
-            if let Some((rel_start, rel_end)) = first_matcher.find(safe_slice(text, start_pos).unwrap_or("")) {
+            if let Some((rel_start, rel_end)) =
+                first_matcher.find(safe_slice(text, start_pos).unwrap_or(""))
+            {
                 if rel_start == 0 {
                     let next_pos = start_pos + rel_end;
                     // Match remaining elements
@@ -2697,7 +2728,9 @@ impl Matcher {
                             CompiledCaptureElement::NonCapture(m) => m,
                         };
 
-                        if let Some((rel_start, rel_end)) = matcher.find(safe_slice(text, pos).unwrap_or("")) {
+                        if let Some((rel_start, rel_end)) =
+                            matcher.find(safe_slice(text, pos).unwrap_or(""))
+                        {
                             if rel_start != 0 {
                                 // Element must match at current position
                                 all_matched = false;

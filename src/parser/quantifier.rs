@@ -201,7 +201,7 @@ impl QuantifiedPattern {
             }
             return None;
         }
-        
+
         let chars: Vec<(usize, char)> = text.char_indices().collect();
         for (start_byte, _) in &chars {
             if let Some(len) = self.match_at(&text[*start_byte..]) {

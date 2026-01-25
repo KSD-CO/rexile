@@ -686,7 +686,9 @@ pub fn detect_fast_path(pattern: &str) -> Option<FastPath> {
 
     // Check for literal + whitespace
     if let Some(rest) = normalized.strip_suffix(r"\s+") {
-        if !rest.is_empty() && !rest.contains(['\\', '[', ']', '(', ')', '*', '+', '?', '{', '}', '|', '.']) {
+        if !rest.is_empty()
+            && !rest.contains(['\\', '[', ']', '(', ')', '*', '+', '?', '{', '}', '|', '.'])
+        {
             return Some(FastPath::LiteralPlusWhitespace(rest.to_string()));
         }
     }
@@ -699,7 +701,9 @@ pub fn detect_fast_path(pattern: &str) -> Option<FastPath> {
     // Check for literal + whitespace + quoted string: rule\s+"[^"]+"
     if let Some(mid) = normalized.strip_suffix(r#""[^"]+""#) {
         if let Some(literal) = mid.strip_suffix(r"\s+") {
-            if !literal.is_empty() && !literal.contains(['\\', '[', ']', '(', ')', '*', '+', '?', '{', '}', '|', '.']) {
+            if !literal.is_empty()
+                && !literal.contains(['\\', '[', ']', '(', ')', '*', '+', '?', '{', '}', '|', '.'])
+            {
                 return Some(FastPath::LiteralWhitespaceQuoted(literal.to_string()));
             }
         }
@@ -708,7 +712,9 @@ pub fn detect_fast_path(pattern: &str) -> Option<FastPath> {
     // Check for literal + whitespace + digits: salience\s+\d+
     if let Some(mid) = normalized.strip_suffix(r"\d+") {
         if let Some(literal) = mid.strip_suffix(r"\s+") {
-            if !literal.is_empty() && !literal.contains(['\\', '[', ']', '(', ')', '*', '+', '?', '{', '}', '|', '.']) {
+            if !literal.is_empty()
+                && !literal.contains(['\\', '[', ']', '(', ')', '*', '+', '?', '{', '}', '|', '.'])
+            {
                 return Some(FastPath::LiteralWhitespaceDigits(literal.to_string()));
             }
         }
@@ -717,7 +723,9 @@ pub fn detect_fast_path(pattern: &str) -> Option<FastPath> {
     // Check for literal + whitespace + word: when\s+\w+
     if let Some(mid) = normalized.strip_suffix(r"\w+") {
         if let Some(literal) = mid.strip_suffix(r"\s+") {
-            if !literal.is_empty() && !literal.contains(['\\', '[', ']', '(', ')', '*', '+', '?', '{', '}', '|', '.']) {
+            if !literal.is_empty()
+                && !literal.contains(['\\', '[', ']', '(', ')', '*', '+', '?', '{', '}', '|', '.'])
+            {
                 return Some(FastPath::LiteralWhitespaceWord(literal.to_string()));
             }
         }

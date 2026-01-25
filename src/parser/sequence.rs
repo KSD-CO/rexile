@@ -1007,7 +1007,11 @@ impl Sequence {
                 SequenceElement::QuantifiedCharClass(cc, q) => {
                     // Only use as prefilter if NOT optional (min > 0)
                     let (min, _) = quantifier_bounds(q);
-                    if min > 0 { Some(cc) } else { None }
+                    if min > 0 {
+                        Some(cc)
+                    } else {
+                        None
+                    }
                 }
                 _ => None,
             };

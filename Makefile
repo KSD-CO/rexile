@@ -48,7 +48,7 @@ fmt-check:
 
 clippy:
 	@echo "🔍 Running clippy..."
-	@cargo clippy --all-targets
+	@cargo clippy --all-targets -- -D warnings
 
 test:
 	@echo "🧪 Running tests..."
