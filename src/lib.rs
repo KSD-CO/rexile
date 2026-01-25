@@ -1776,6 +1776,15 @@ impl Matcher {
     ) -> Option<(usize, usize)> {
         let (min, max) = quantifier_bounds(quantifier);
 
+        // Special case: empty text can match if min is 0
+        if text.is_empty() {
+            return if min == 0 {
+                Some((0, 0))
+            } else {
+                None
+            };
+        }
+
         // Try to match at each position in text
         for start_pos in 0..text.len() {
             let mut pos = start_pos;
@@ -1863,35 +1872,63 @@ impl Matcher {
             let remaining_text = &text[start_pos..];
             let remaining_len = remaining_text.len();
 
-            for try_len in (1..=remaining_len).rev() {
+            // Try each possible length from longest to shortest, including 0 for zero-width matches
+            // This is important for quantifiers with min=0 like * and ?
+            for try_len in (0..=remaining_len).rev() {
                 let next_pos = start_pos + try_len;
 
                 // Try to match remaining elements
                 if let Some((final_pos, mut remaining_caps)) =
                     Self::match_elements_with_backtrack_and_captures(text, next_pos, &elements[1..])
                 {
-                    let substring = &text[start_pos..next_pos];
-
-                    // Check if first element matches exactly this substring
-                    match first_element {
-                        CompiledCaptureElement::Capture(m, num) => {
-                            if let Some((rel_start, rel_end)) = m.find(substring) {
-                                if rel_start == 0 && rel_end == substring.len() {
-                                    // Capture matched
-                                    let mut caps = vec![(*num, start_pos, next_pos)];
-                                    caps.append(&mut remaining_caps);
-                                    return Some((final_pos, caps));
+                    // Handle zero-width matches (try_len == 0)
+                    if try_len == 0 {
+                        // For zero-width matches, check if the quantifier allows min=0
+                        match first_element {
+                            CompiledCaptureElement::Capture(m, num) => {
+                                if let Some((rel_start, rel_end)) = m.find("") {
+                                    if rel_start == 0 && rel_end == 0 {
+                                        // Zero-width capture matched
+                                        let mut caps = vec![(*num, start_pos, start_pos)];
+                                        caps.append(&mut remaining_caps);
+                                        return Some((final_pos, caps));
+                                    }
+                                }
+                            }
+                            CompiledCaptureElement::NonCapture(m) => {
+                                if let Some((rel_start, rel_end)) = m.find("") {
+                                    if rel_start == 0 && rel_end == 0 {
+                                        // Zero-width non-capture matched
+                                        return Some((final_pos, remaining_caps));
+                                    }
                                 }
                             }
                         }
-                        CompiledCaptureElement::NonCapture(m) => {
-                            if let Some((rel_start, rel_end)) = m.find(substring) {
-                                if rel_start == 0 && rel_end == substring.len() {
-                                    // Extract any nested captures from this matcher
-                                    let nested_caps = m.extract_nested_captures(text, start_pos);
-                                    let mut all_caps = nested_caps;
-                                    all_caps.extend(remaining_caps);
-                                    return Some((final_pos, all_caps));
+                    } else {
+                        // Non-zero width match
+                        let substring = &text[start_pos..next_pos];
+
+                        // Check if first element matches exactly this substring
+                        match first_element {
+                            CompiledCaptureElement::Capture(m, num) => {
+                                if let Some((rel_start, rel_end)) = m.find(substring) {
+                                    if rel_start == 0 && rel_end == substring.len() {
+                                        // Capture matched
+                                        let mut caps = vec![(*num, start_pos, next_pos)];
+                                        caps.append(&mut remaining_caps);
+                                        return Some((final_pos, caps));
+                                    }
+                                }
+                            }
+                            CompiledCaptureElement::NonCapture(m) => {
+                                if let Some((rel_start, rel_end)) = m.find(substring) {
+                                    if rel_start == 0 && rel_end == substring.len() {
+                                        // Extract any nested captures from this matcher
+                                        let nested_caps = m.extract_nested_captures(text, start_pos);
+                                        let mut all_caps = nested_caps;
+                                        all_caps.extend(remaining_caps);
+                                        return Some((final_pos, all_caps));
+                                    }
                                 }
                             }
                         }
@@ -1981,9 +2018,9 @@ impl Matcher {
             let remaining_text = &text[start_pos..];
             let remaining_len = remaining_text.len();
 
-            // Try each possible length from longest to shortest
-            // Start from full remaining text down to 1 character
-            for try_len in (1..=remaining_len).rev() {
+            // Try each possible length from longest to shortest, including 0 for zero-width matches
+            // This is important for quantifiers with min=0 like * and ?
+            for try_len in (0..=remaining_len).rev() {
                 let next_pos = start_pos + try_len;
 
                 // Try to match remaining elements FIRST
@@ -1995,9 +2032,21 @@ impl Matcher {
 
                     // Check if first element matches exactly this substring
                     // It must match from start (rel_start == 0) and consume the entire substring (rel_end == substring.len())
-                    if let Some((rel_start, rel_end)) = first_matcher.find(substring) {
-                        if rel_start == 0 && rel_end == substring.len() {
-                            return Some(final_pos);
+                    // For zero-width matches (try_len == 0), we need to check if the quantifier allows min=0
+                    if try_len == 0 {
+                        // Zero-width match - only valid for quantifiers with min=0 (*, ?)
+                        // Check by seeing if the matcher can match empty string
+                        if let Some((rel_start, rel_end)) = first_matcher.find("") {
+                            if rel_start == 0 && rel_end == 0 {
+                                return Some(final_pos);
+                            }
+                        }
+                    } else {
+                        // Non-zero match
+                        if let Some((rel_start, rel_end)) = first_matcher.find(substring) {
+                            if rel_start == 0 && rel_end == substring.len() {
+                                return Some(final_pos);
+                            }
                         }
                     }
                 }
@@ -3129,8 +3178,58 @@ fn parse_pattern_with_captures_inner(
                 let inner = &pattern[pos + 3..close_idx]; // Skip "(?:"
                 let (inner_ast, _) = parse_pattern_with_captures_inner(inner, group_counter)?;
 
-                elements.push(CaptureElement::NonCapture(inner_ast));
-                pos = close_idx + 1;
+                // Check for quantifier after the non-capturing group (same as capturing groups)
+                let mut after_group = close_idx + 1;
+                let mut quantifier: Option<parser::quantifier::Quantifier> = None;
+
+                if after_group < pattern.len() {
+                    let remaining = &pattern[after_group..];
+                    let chars: Vec<char> = remaining.chars().take(2).collect();
+                    if !chars.is_empty() {
+                        let first = chars[0];
+                        let has_lazy = chars.len() > 1 && chars[1] == '?';
+
+                        match first {
+                            '*' if has_lazy => {
+                                quantifier = Some(parser::quantifier::Quantifier::ZeroOrMoreLazy);
+                                after_group += 2;
+                            }
+                            '*' => {
+                                quantifier = Some(parser::quantifier::Quantifier::ZeroOrMore);
+                                after_group += 1;
+                            }
+                            '+' if has_lazy => {
+                                quantifier = Some(parser::quantifier::Quantifier::OneOrMoreLazy);
+                                after_group += 2;
+                            }
+                            '+' => {
+                                quantifier = Some(parser::quantifier::Quantifier::OneOrMore);
+                                after_group += 1;
+                            }
+                            '?' if has_lazy => {
+                                quantifier = Some(parser::quantifier::Quantifier::ZeroOrOneLazy);
+                                after_group += 2;
+                            }
+                            '?' => {
+                                quantifier = Some(parser::quantifier::Quantifier::ZeroOrOne);
+                                after_group += 1;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                // Build the non-capture element with optional quantifier
+                if let Some(q) = quantifier {
+                    // Wrap the inner AST with a Quantified matcher
+                    elements.push(CaptureElement::NonCapture(Ast::QuantifiedCapture(
+                        Box::new(inner_ast),
+                        q,
+                    )));
+                } else {
+                    elements.push(CaptureElement::NonCapture(inner_ast));
+                }
+                pos = after_group;
             } else {
                 return Err(PatternError::ParseError(
                     "Unmatched parenthesis".to_string(),

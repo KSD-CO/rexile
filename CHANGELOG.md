@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.7] - 2025-01-25
+
+### Added
+- **Full support for quantified non-capturing groups**: Non-capturing groups can now be quantified
+  - Pattern `a(?:b)*c` now works correctly
+  - Added quantifier detection after `(?:...)` in `parse_pattern_with_captures_inner()`
+  - Wraps quantified non-capturing groups in `Ast::QuantifiedCapture`
+  - Supports all quantifiers: `*`, `+`, `?`, `{m,n}`
+
+### Fixed
+- **Critical: Zero-width matches with quantifiers**: Fixed quantified patterns to match zero occurrences
+  - Pattern `a(b)*c` now correctly matches "ac" (when `(b)*` matches 0 times)
+  - Pattern `a(?:b)*c` now correctly matches "ac" (when `(?:b)*` matches 0 times)
+  - Pattern `a(?:bc)*d` now correctly matches "ad" (when `(?:bc)*` matches 0 times)
+  - Fixed `quantified_find()` to handle empty text when `min=0`
+  - Fixed `match_elements_with_backtrack()` to try zero-width matches by changing loop from `(1..=remaining_len)` to `(0..=remaining_len)`
+  - Fixed `match_elements_with_backtrack_and_captures()` to try zero-width matches with proper capture handling
+  - Special handling for `try_len == 0` case to verify quantifier allows min=0
+
+### Changed
+- Quantified patterns now fully support min=0 semantics for `*` and `?` quantifiers
+- Zero-width matches are now properly detected and handled in backtracking logic
+- All quantified group tests now pass including edge cases with zero occurrences
+
 ## [0.2.6] - 2025-01-25
 
 ### Fixed
