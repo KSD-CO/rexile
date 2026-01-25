@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.8] - 2025-01-25
+
+### Added
+- **Case-insensitive flag `(?i)` support**: Full implementation of case-insensitive matching
+  - Pattern `(?i)hello` now matches "HELLO", "Hello", "hello", etc.
+  - Applied `CaseInsensitive` wrapper when `flags.case_insensitive` is set
+  - Disabled prefilter optimization when flags are set to ensure correct matching
+  - Returns original text positions (not lowercased positions)
+
+### Changed
+- Fast path and prefilter optimizations now disabled when regex flags are present
+- Ensures correct behavior for case-insensitive, multiline, and DOTALL patterns
+
+### Technical
+- `(?s)` DOTALL flag was already working (. matches newlines)
+- `(?m)` multiline flag parsing exists but not yet implemented for matching
+- Flags framework ready for additional flag implementations
+
 ## [0.2.7] - 2025-01-25
 
 ### Added
