@@ -194,15 +194,8 @@ impl QuantifiedPattern {
 
     /// Find first position in text where this pattern matches
     pub fn find(&self, text: &str) -> Option<(usize, usize)> {
-        // Handle empty text first - zero-width quantifiers can match at position 0
-        if text.is_empty() {
-            if let Some(len) = self.match_at(text) {
-                return Some((0, len));
-            }
-            return None;
-        }
-        
         let chars: Vec<(usize, char)> = text.char_indices().collect();
+
         for (start_byte, _) in &chars {
             if let Some(len) = self.match_at(&text[*start_byte..]) {
                 return Some((*start_byte, *start_byte + len));

@@ -388,7 +388,7 @@ impl Pattern {
             }
             _ => {
                 // Complex patterns: use general iterator
-                self.find_iter(text).collect()
+                self.find_iter(text).map(|m| (m.start(), m.end())).collect()
             }
         }
     }
@@ -641,6 +641,62 @@ impl Pattern {
     }
 }
 
+
+/// A single match in the haystack.
+/// 
+/// This is similar to `regex::Match` and provides access to
+/// the matched text and its position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Match<'t> {
+    text: &'t str,
+    start: usize,
+    end: usize,
+}
+
+impl<'t> Match<'t> {
+    /// Create a new Match
+    #[inline]
+    pub fn new(text: &'t str, start: usize, end: usize) -> Self {
+        Self { text, start, end }
+    }
+
+    /// Returns the starting byte offset of the match.
+    #[inline]
+    pub fn start(&self) -> usize {
+        self.start
+    }
+
+    /// Returns the ending byte offset of the match.
+    #[inline]
+    pub fn end(&self) -> usize {
+        self.end
+    }
+
+    /// Returns the matched text.
+    #[inline]
+    pub fn as_str(&self) -> &'t str {
+        &self.text[self.start..self.end]
+    }
+
+    /// Returns the range of byte offsets spanned by this match.
+    #[inline]
+    pub fn range(&self) -> std::ops::Range<usize> {
+        self.start..self.end
+    }
+
+    /// Returns the length of the match in bytes.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.end - self.start
+    }
+
+    /// Returns true if this is an empty match.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.start == self.end
+    }
+}
+
 /// Iterator over pattern matches
 pub struct FindIter<'a> {
     matcher: &'a Matcher,
@@ -650,7 +706,7 @@ pub struct FindIter<'a> {
 }
 
 impl<'a> Iterator for FindIter<'a> {
-    type Item = (usize, usize);
+    type Item = Match<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
         // TRUE LAZY EVALUATION: Find one match at a time
@@ -663,7 +719,7 @@ impl<'a> Iterator for FindIter<'a> {
             if let Some((start, end)) = fast_path.find_at(self.text, self.pos) {
                 // Move position past this match
                 self.pos = end.max(self.pos + 1);
-                return Some((start, end));
+                return Some(Match::new(self.text, start, end));
             } else {
                 // No more matches
                 return None;
@@ -679,7 +735,7 @@ impl<'a> Iterator for FindIter<'a> {
             // Move position past this match to avoid infinite loop
             self.pos = abs_end.max(self.pos + 1);
 
-            Some((abs_start, abs_end))
+            Some(Match::new(self.text, abs_start, abs_end))
         } else {
             None
         }

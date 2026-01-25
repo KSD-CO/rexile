@@ -309,6 +309,7 @@ impl Sequence {
         // Validate elements and compute quantified_bits and optional_bits
         let mut quantified_bits: u32 = 0;
         let mut optional_bits: u32 = 0;
+        let mut has_mid_optional = false; // Track if there are optional elements not at end
         for (i, elem) in elements.iter().enumerate() {
             match elem {
                 SequenceElement::QuantifiedCharClass(_, quantifier) => {
@@ -335,6 +336,15 @@ impl Sequence {
                 }
                 _ => return None, // Not supported
             }
+        }
+
+        // Check for optional elements - NFA doesn't handle them correctly
+        // The NFA model can't properly track "just finished matching element i" state
+        // which is needed to epsilon-transition past optional elements
+        if optional_bits != 0 {
+            // There's at least one optional element
+            // NFA doesn't handle skipping correctly, fall back to backtracking
+            return None;
         }
 
         // Pre-compute byte→element match table
@@ -994,7 +1004,11 @@ impl Sequence {
         // OPTIMIZATION 3: Charclass prefilter - use most selective element
         if let (Some(first), Some(last)) = (self.elements.first(), self.elements.last()) {
             let first_cc = match first {
-                SequenceElement::QuantifiedCharClass(cc, _) => Some(cc),
+                SequenceElement::QuantifiedCharClass(cc, q) => {
+                    // Only use as prefilter if NOT optional (min > 0)
+                    let (min, _) = quantifier_bounds(q);
+                    if min > 0 { Some(cc) } else { None }
+                }
                 _ => None,
             };
             let last_cc = match last {
@@ -1483,7 +1497,8 @@ impl Sequence {
                     }
                     try_pos -= 1;
                 }
-                return None;
+                // Don't return None here - fall through to standard backtracking
+                // This handles the case when max_count = 0 (quantifier matches 0 times)
             }
 
             // Standard greedy backtracking
