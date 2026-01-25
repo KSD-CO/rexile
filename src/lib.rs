@@ -179,7 +179,12 @@ impl Pattern {
         } else {
             parse_pattern_with_flags(effective_pattern, &flags)?
         };
-        let matcher = compile_ast(&ast)?;
+        let mut matcher = compile_ast(&ast)?;
+
+        // Apply flags to matcher
+        if flags.case_insensitive {
+            matcher = Matcher::CaseInsensitive(Box::new(matcher));
+        }
 
         // Try to detect fast path first (JIT-style optimization)
         // Note: fast path doesn't support flags yet, so skip if flags are set
@@ -195,11 +200,13 @@ impl Pattern {
         // Only use prefilter for Prefix literals and patterns without groups
         // Groups can cause incorrect literal extraction that breaks leftmost-first semantics
         // Inner literals require expensive bounded verification
+        // Also disable prefilter when flags are set (case-insensitive, multiline, etc.)
         let has_groups = effective_pattern.contains("(?:")
             || (effective_pattern.contains('(') && !effective_pattern.contains("(?"));
         let prefilter = if !literals.is_empty()
             && literals.kind == optimization::literal::LiteralKind::Prefix
             && !has_groups
+            && !flags.any_set()
         {
             let pf = optimization::prefilter::Prefilter::from_literals(&literals);
             if pf.is_available() {
