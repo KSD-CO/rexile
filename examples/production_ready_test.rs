@@ -146,7 +146,6 @@ fn main() {
     }
 
     println!("\n=== Known Limitations ===");
-    println!("- Range quantifiers {{n}} and {{n,m}} have bugs in find()");
     println!("- Standalone lookbehind patterns not supported (use combined patterns)");
     println!("- Some edge cases with empty strings may not behave as expected");
 }
