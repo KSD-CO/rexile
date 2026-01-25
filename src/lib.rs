@@ -164,25 +164,46 @@ impl Pattern {
                 (Flags::new(), pattern)
             };
 
-        // Auto-detect if pattern has capturing groups
-        // But handle anchored patterns with groups separately: ^(hello), (world)$
-        let has_anchored_group = (effective_pattern.starts_with("^(")
-            || effective_pattern.ends_with(")$"))
-            && effective_pattern.contains('(');
+        // Check for anchors
+        let has_start_anchor = effective_pattern.starts_with('^');
+        let has_end_anchor = effective_pattern.ends_with('$') && !effective_pattern.ends_with("\\$");
+
+        // Strip anchors to get inner pattern
+        let inner_pattern = {
+            let mut p = effective_pattern;
+            if has_start_anchor {
+                p = p.strip_prefix('^').unwrap_or(p);
+            }
+            if has_end_anchor {
+                p = p.strip_suffix('$').unwrap_or(p);
+            }
+            p
+        };
 
         // Check for capture groups, but exclude special patterns like (?:...), (?=...), (?!...), etc.
-        let has_captures = effective_pattern.contains('(')
-            && !effective_pattern.contains("(?:")
-            && !effective_pattern.contains("(?=")
-            && !effective_pattern.contains("(?!")
-            && !effective_pattern.contains("(?<=")
-            && !effective_pattern.contains("(?<!")
-            && !has_anchored_group;
+        let has_captures = inner_pattern.contains('(')
+            && !inner_pattern.contains("(?:")
+            && !inner_pattern.contains("(?=")
+            && !inner_pattern.contains("(?!")
+            && !inner_pattern.contains("(?<=")
+            && !inner_pattern.contains("(?<!");
 
-        let ast = if has_captures {
-            parse_pattern_with_captures_with_flags(effective_pattern, &flags)?
+        // Parse the inner pattern (without anchors)
+        let inner_ast = if has_captures {
+            parse_pattern_with_captures_with_flags(inner_pattern, &flags)?
         } else {
-            parse_pattern_with_flags(effective_pattern, &flags)?
+            parse_pattern_with_flags(inner_pattern, &flags)?
+        };
+
+        // Wrap with anchor constraints if needed
+        let ast = if has_start_anchor || has_end_anchor {
+            Ast::AnchoredPattern {
+                inner: Box::new(inner_ast),
+                start: has_start_anchor,
+                end: has_end_anchor,
+            }
+        } else {
+            inner_ast
         };
         let mut matcher = compile_ast(&ast)?;
 
@@ -449,6 +470,50 @@ impl Pattern {
                 Some(caps)
             } else {
                 None
+            }
+        } else if let Matcher::AnchoredPattern { inner, start, end } = &self.matcher {
+            // Handle anchored patterns with captures
+            // Delegate to inner matcher's captures logic, but with anchor constraints
+            if let Matcher::PatternWithCaptures {
+                elements,
+                total_groups,
+            } = inner.as_ref()
+            {
+                // For anchored captures, we need to respect anchor constraints
+                let check_anchor = |match_start: usize, match_end: usize| -> bool {
+                    let start_ok = !*start || match_start == 0;
+                    let end_ok = !*end || match_end == text.len();
+                    start_ok && end_ok
+                };
+
+                // Try matching with backtracking at any position
+                for start_pos in 0..=text.len() {
+                    // For start anchor, only try position 0
+                    if *start && start_pos != 0 {
+                        continue;
+                    }
+                    
+                    if let Some((end_pos, capture_list)) =
+                        Matcher::match_elements_with_backtrack_and_captures(text, start_pos, elements)
+                    {
+                        if (end_pos > start_pos || elements.is_empty()) && check_anchor(start_pos, end_pos) {
+                            // Create Captures with full match and capture groups
+                            let mut caps = Captures::new(text, (start_pos, end_pos), *total_groups);
+
+                            // Add each capture group
+                            for (group_num, cap_start, cap_end) in capture_list {
+                                caps.set(group_num, cap_start, cap_end);
+                            }
+
+                            return Some(caps);
+                        }
+                    }
+                }
+                None
+            } else {
+                // Simple pattern without captures - just return full match with anchor check
+                self.find(text)
+                    .map(|(match_start, match_end)| Captures::new(text, (match_start, match_end), 0))
             }
         } else {
             // Simple pattern without explicit captures - just return full match
@@ -809,6 +874,11 @@ enum Ast {
     },
     AnchoredGroup {
         group: Group,
+        start: bool,
+        end: bool,
+    },
+    AnchoredPattern {
+        inner: Box<Ast>,
         start: bool,
         end: bool,
     },
@@ -1394,6 +1464,11 @@ enum Matcher {
         start: bool,
         end: bool,
     },
+    AnchoredPattern {
+        inner: Box<Matcher>,
+        start: bool,
+        end: bool,
+    },
     CharClass(CharClass),
     Quantified(QuantifiedPattern),
     Sequence(Sequence),
@@ -1463,6 +1538,36 @@ impl Matcher {
                         // Must match at end
                         if let Some((start_pos, end_pos)) = group.find(text) {
                             end_pos == text.len()
+                        } else {
+                            false
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            Matcher::AnchoredPattern { inner, start, end } => {
+                // Check if inner pattern matches with anchor constraints
+                match (start, end) {
+                    (true, true) => {
+                        // Must match entire text
+                        if let Some((match_start, match_end)) = inner.find(text) {
+                            match_start == 0 && match_end == text.len()
+                        } else {
+                            false
+                        }
+                    }
+                    (true, false) => {
+                        // Must match at start
+                        if let Some((match_start, _)) = inner.find(text) {
+                            match_start == 0
+                        } else {
+                            false
+                        }
+                    }
+                    (false, true) => {
+                        // Must match at end
+                        if let Some((_, match_end)) = inner.find(text) {
+                            match_end == text.len()
                         } else {
                             false
                         }
@@ -2190,6 +2295,41 @@ impl Matcher {
                     _ => unreachable!(),
                 }
             }
+            Matcher::AnchoredPattern { inner, start, end } => {
+                match (start, end) {
+                    (true, true) => {
+                        // Must match entire text: match at position 0 and cover full text
+                        inner.find(text).and_then(|(match_start, match_end)| {
+                            if match_start == 0 && match_end == text.len() {
+                                Some((0, text.len()))
+                            } else {
+                                None
+                            }
+                        })
+                    }
+                    (true, false) => {
+                        // Must match at start
+                        inner.find(text).and_then(|(match_start, match_end)| {
+                            if match_start == 0 {
+                                Some((0, match_end))
+                            } else {
+                                None
+                            }
+                        })
+                    }
+                    (false, true) => {
+                        // Must match at end
+                        inner.find(text).and_then(|(match_start, match_end)| {
+                            if match_end == text.len() {
+                                Some((match_start, match_end))
+                            } else {
+                                None
+                            }
+                        })
+                    }
+                    _ => unreachable!(),
+                }
+            }
             Matcher::CharClass(cc) => {
                 // Find first character matching the class
                 for (idx, ch) in text.char_indices() {
@@ -2391,6 +2531,14 @@ impl Matcher {
             }
             Matcher::AnchoredGroup { .. } => {
                 // Anchored groups can only match once
+                if let Some(m) = self.find(text) {
+                    vec![m]
+                } else {
+                    vec![]
+                }
+            }
+            Matcher::AnchoredPattern { .. } => {
+                // Anchored patterns can only match once
                 if let Some(m) = self.find(text) {
                     vec![m]
                 } else {
@@ -2689,6 +2837,14 @@ fn compile_ast(ast: &Ast) -> Result<Matcher, PatternError> {
             start: *start,
             end: *end,
         }),
+        Ast::AnchoredPattern { inner, start, end } => {
+            let inner_matcher = compile_ast(inner)?;
+            Ok(Matcher::AnchoredPattern {
+                inner: Box::new(inner_matcher),
+                start: *start,
+                end: *end,
+            })
+        }
         Ast::CharClass(cc) => Ok(Matcher::CharClass(cc.clone())),
         Ast::Quantified(qp) => {
             // OPTIMIZATION: Detect \d+ and \w+ patterns for specialized fast path
