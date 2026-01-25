@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5] - 2025-01-25
+
+### Fixed
+- **Critical: Exact match requirement in backtracking**: Fixed backtracking logic to require exact match instead of substring match
+  - Backtracking now checks `rel_end == substring.len()` to ensure quantified element matches EXACTLY the substring
+  - Prevents greedy patterns from over-matching (e.g., `rule\s+` no longer matches entire text)
+  - Pattern `rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))` now correctly matches only the rule name, not the entire text
+
+- **Critical: Nested capture extraction**: Implemented proper extraction of captures from nested matchers
+  - Added `match_elements_with_backtrack_and_captures()` to extract captures with backtracking support
+  - Updated `captures()` method to use backtracking with capture extraction
+  - Added `AlternationWithCaptures` case in `extract_nested_captures()` to extract captures from alternation branches
+  - Pattern `(?:"([^"]+)"|([a-z]+))` now correctly captures matched branch content
+
+- **Critical: is_match with backtracking**: Updated `is_match` implementation to use backtracking logic
+  - `is_match` now calls `match_elements_with_backtrack` for PatternWithCaptures
+  - Ensures consistent behavior between `is_match`, `find`, and `captures` methods
+
+- **Optimization: AlternationWithCaptures not treated as quantified**: Fixed `contains_quantified` to not recurse into alternations
+  - Alternations are fixed-length choices, not variable-length quantified patterns
+  - Prevents unnecessary backtracking for alternation patterns
+  - Improves matching performance for patterns with alternation
+
+### Changed
+- Complex patterns with alternation and captures now work correctly with full GRL support
+- All capture groups properly extracted including nested captures from alternations
+
+### Known Issues Resolved
+- ✅ Backtracking with greedy quantifiers - FIXED
+- ✅ Alternation with captures extraction - FIXED
+- ✅ Complex GRL patterns - NOW WORKING
+
 ## [0.2.4] - 2025-01-24
 
 ### Fixed
