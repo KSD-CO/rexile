@@ -66,8 +66,9 @@ jobs:
     - name: Run examples
       run: |
         echo "::group::Running key examples"
-        cargo run --release --example per_file_grl_benchmark
-        cargo run --release --example memory_comparison
+        cargo run --release --example production_ready_test
+        cargo run --release --example basic_usage
+        cargo run --release --example performance
         echo "::endgroup::"
 
   publish:
