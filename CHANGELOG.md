@@ -1,3 +1,38 @@
+## [0.4.7] - 2025-01-26
+
+### Fixed
+- **Critical: Case-insensitive with uppercase patterns**: Fixed bug where `(?i)GET` failed to match "GET" (only worked with lowercase patterns)
+  - Root cause: CaseInsensitive wrapper only lowercased text, not the pattern itself
+  - Solution: Created `lowercase_ast()` function to recursively lowercase all literals in the AST before compilation
+  - Patterns like `(?i)(GET|POST)` now correctly match "GET", "get", "Post", etc.
+
+- **Critical: Range quantifiers in sequences**: Fixed bug where range quantifiers `{n}`, `{n,}`, `{n,m}` were parsed as literal characters in sequences
+  - Root cause: `parse_quantifier_with_lazy()` only handled `*`, `+`, `?` quantifiers
+  - Solution: Extended parser to recognize and parse range quantifiers
+  - Patterns like `\d{1,3}\.` and `\b\d{4}\b` now work correctly
+
+- **Critical: Position calculation bug**: Fixed incorrect end position returned by `find()` when using word boundaries with quantifiers
+  - Root cause: `find()` incorrectly treated absolute final position as consumed bytes
+  - Solution: Changed position calculation to use final_pos directly instead of adding to start_pos
+  - Patterns like `\b\d{4}\b` now return correct match positions
+
+### Added
+- **Range quantifiers**: Full support for `{n}`, `{n,}`, and `{n,m}` patterns
+  - `\d{4}` matches exactly 4 digits
+  - `\d{1,3}` matches 1 to 3 digits
+  - `\w{2,}` matches 2 or more word characters
+  - Works correctly in sequences with other elements
+
+- **Case-insensitive flag**: Full support for `(?i)` flag
+  - `(?i)test` matches "test", "TEST", "Test", etc.
+  - `(?i)(GET|POST)` matches any case variation
+  - Works with capturing groups and complex patterns
+
+### Testing
+- All 52/52 production-ready tests pass (100% success rate)
+- All 137 unit tests pass (84 unit + 13 group + 10 captures + 8 lookaround + 8 boundaries + 8 doc-tests + 6 word-boundaries)
+- Known limitations updated: range quantifiers bug removed
+
 ## [0.4.0] - 2025-01-25
 
 ### Fixed

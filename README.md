@@ -19,8 +19,10 @@ ReXile is a **lightweight regex alternative** that achieves **exceptional compil
 - ✅ Literal searches with SIMD acceleration
 - ✅ Multi-pattern matching (alternations)
 - ✅ Character classes with negation
-- ✅ Quantifiers (`*`, `+`, `?`)
+- ✅ Quantifiers (`*`, `+`, `?`, `{n}`, `{n,m}`)
+- ✅ **Range quantifiers** (`{n}`, `{n,}`, `{n,m}`) - NEW in v0.4.7
 - ✅ **Non-greedy quantifiers** (`*?`, `+?`, `??`) - NEW in v0.2.1
+- ✅ **Case-insensitive flag** (`(?i)`) - NEW in v0.4.7
 - ✅ **Dot wildcard** (`.`, `.*`, `.+`) with backtracking
 - ✅ **DOTALL mode** (`(?s)`) - Dot matches newlines - NEW in v0.2.1
 - ✅ **Non-capturing groups** (`(?:...)`) with alternations - NEW in v0.2.1
@@ -131,6 +133,19 @@ assert!(quoted.is_match("say \"hello world\""));
 let word = Pattern::new("\\btest\\b").unwrap();
 assert!(word.is_match("this is a test"));
 assert!(!word.is_match("testing"));
+
+// Range quantifiers (NEW in v0.4.7)
+let ip = Pattern::new(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}").unwrap();
+assert!(ip.is_match("192.168.1.1"));       // Matches IP addresses
+
+let year = Pattern::new(r"\b\d{4}\b").unwrap();
+assert_eq!(year.find("Year: 2024!"), Some((6, 10))); // Matches exactly 4 digits
+
+// Case-insensitive matching (NEW in v0.4.7)
+let method = Pattern::new(r"(?i)(GET|POST)").unwrap();
+assert!(method.is_match("GET /api"));      // Matches GET
+assert!(method.is_match("get /api"));      // Also matches lowercase
+assert!(method.is_match("Post /data"));    // Also matches Post
 
 // Anchors
 let exact = Pattern::new("^hello$").unwrap();

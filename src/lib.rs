@@ -72,7 +72,9 @@
 //! - ✅ Literal searches with SIMD acceleration
 //! - ✅ Multi-pattern matching (alternations)
 //! - ✅ Character classes with negation (`[a-z]`, `[^abc]`)
-//! - ✅ Quantifiers (`*`, `+`, `?`)
+//! - ✅ Quantifiers (`*`, `+`, `?`, `{n}`, `{n,m}`)
+//! - ✅ Range quantifiers (`{n}`, `{n,}`, `{n,m}`)
+//! - ✅ Case-insensitive flag (`(?i)`)
 //! - ✅ Escape sequences (`\d`, `\w`, `\s`, etc.)
 //! - ✅ Sequences and groups
 //! - ✅ Word boundaries (`\b`, `\B`)
@@ -3195,7 +3197,11 @@ fn lowercase_ast(ast: &Ast) -> Ast {
                 .collect();
             Ast::Sequence(new_seq)
         }
-        Ast::Anchored { literal, start, end } => Ast::Anchored {
+        Ast::Anchored {
+            literal,
+            start,
+            end,
+        } => Ast::Anchored {
             literal: literal.to_lowercase(),
             start: *start,
             end: *end,
