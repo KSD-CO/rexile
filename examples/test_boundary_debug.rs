@@ -1,6 +1,6 @@
 fn main() {
     let patterns = vec![r"\bhello", r"hello\b", r"\bworld"];
-    
+
     for pattern in patterns {
         println!("\nPattern: {}", pattern);
         match rexile::Pattern::new(pattern) {

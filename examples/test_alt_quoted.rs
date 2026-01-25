@@ -7,9 +7,11 @@ fn main() {
         (r#""([^"]+)""#, "Match quoted"),
         (r#"([a-zA-Z_]\w*)"#, "Match identifier"),
         (r#"(?:"([^"]+)"|([a-zA-Z_]\w*))"#, "Alternation"),
-        (r#"rule (?:"([^"]+)"|([a-zA-Z_]\w*))"#, "rule + alt (fixed space)"),
+        (
+            r#"rule (?:"([^"]+)"|([a-zA-Z_]\w*))"#,
+            "rule + alt (fixed space)",
+        ),
         (r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))"#, "rule\\s+ + alt"),
-
         // Test what it should match
         (r#"rule "CheckAge""#, "Literal match"),
     ];

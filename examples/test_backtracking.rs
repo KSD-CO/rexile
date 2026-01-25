@@ -6,16 +6,13 @@ fn main() {
         ("a.+b", "axxxb"),
         ("a.+b", "axb"),
         ("\\{.+\\}", "{ abc }"),
-
         // With captures - the issue
         ("\\{(.+)\\}", "{ abc }"),
         ("a(.+)b", "axxxb"),
         ("start(.+)end", "start123end"),
-
         // Character class version (should work)
         ("\\{([^}]+)\\}", "{ abc }"),
         ("a([^b]+)b", "axxxb"),
-
         // More complex
         ("\"(.+)\"", "\"hello world\""),
         ("\\[(.+)\\]", "[test]"),

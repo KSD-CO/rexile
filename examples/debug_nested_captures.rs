@@ -24,7 +24,11 @@ fn main() {
             println!("Match: {}", pat.is_match(t2));
             println!("Find: {:?}", pat.find(t2));
             if let Some(caps) = pat.captures(t2) {
-                println!("Captures: group 0={:?}, group 1={:?}\n", caps.get(0), caps.get(1));
+                println!(
+                    "Captures: group 0={:?}, group 1={:?}\n",
+                    caps.get(0),
+                    caps.get(1)
+                );
             } else {
                 println!("No captures\n");
             }
@@ -60,7 +64,11 @@ fn main() {
             println!("Match: {}", pat.is_match(t4));
             println!("Find: {:?}", pat.find(t4));
             if let Some(caps) = pat.captures(t4) {
-                println!("Captures: group 0={:?}, group 1={:?}\n", caps.get(0), caps.get(1));
+                println!(
+                    "Captures: group 0={:?}, group 1={:?}\n",
+                    caps.get(0),
+                    caps.get(1)
+                );
             } else {
                 println!("No captures\n");
             }

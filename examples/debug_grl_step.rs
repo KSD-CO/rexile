@@ -5,20 +5,22 @@ fn main() {
         // Test 1: Just the alternation
         ("(?:\"([^\"]+)\"|([a-z]+))", "\"hello\""),
         ("(?:\"([^\"]+)\"|([a-z]+))", "world"),
-
         // Test 2: rule + whitespace + alternation
         ("rule\\s+(?:\"([^\"]+)\"|([a-z]+))", "rule \"hello\""),
         ("rule\\s+(?:\"([^\"]+)\"|([a-z]+))", "rule world"),
-
         // Test 3: Add optional whitespace
         ("rule\\s+(?:\"([^\"]+)\"|([a-z]+))\\s*", "rule \"hello\" "),
         ("rule\\s+(?:\"([^\"]+)\"|([a-z]+))\\s*", "rule world"),
-
         // Test 4: Add simple capture group
-        ("rule\\s+(?:\"([^\"]+)\"|([a-z]+))\\s*(x)", "rule \"hello\" x"),
-
+        (
+            "rule\\s+(?:\"([^\"]+)\"|([a-z]+))\\s*(x)",
+            "rule \"hello\" x",
+        ),
         // Test 5: Add character class capture
-        ("rule\\s+(?:\"([^\"]+)\"|([a-z]+))\\s*([a-z]*)", "rule \"hello\" attr"),
+        (
+            "rule\\s+(?:\"([^\"]+)\"|([a-z]+))\\s*([a-z]*)",
+            "rule \"hello\" attr",
+        ),
     ];
 
     for (pattern, text) in tests {

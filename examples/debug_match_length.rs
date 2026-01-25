@@ -4,7 +4,7 @@ fn main() {
 
     // Mark positions
     for i in (0..text.len()).step_by(10) {
-        println!("{:3}: {:?}", i, &text[i..i.min(text.len()).min(i+10)]);
+        println!("{:3}: {:?}", i, &text[i..i.min(text.len()).min(i + 10)]);
     }
     println!();
 
@@ -23,14 +23,22 @@ fn main() {
 
                 let quoted = rexile::Pattern::new(r#""([^"]+)""#).unwrap();
                 if let Some((s2, e2)) = quoted.find(&text[5..]) {
-                    println!("  Quoted branch would match: [{}..{}] = {:?}",
-                             s2, e2, &text[5..][s2..e2]);
+                    println!(
+                        "  Quoted branch would match: [{}..{}] = {:?}",
+                        s2,
+                        e2,
+                        &text[5..][s2..e2]
+                    );
                 }
 
                 let ident = rexile::Pattern::new(r"[a-zA-Z_]\w*").unwrap();
                 if let Some((s2, e2)) = ident.find(&text[5..]) {
-                    println!("  Identifier branch would match: [{}..{}] = {:?}",
-                             s2, e2, &text[5..][s2..e2]);
+                    println!(
+                        "  Identifier branch would match: [{}..{}] = {:?}",
+                        s2,
+                        e2,
+                        &text[5..][s2..e2]
+                    );
                 }
             } else {
                 println!("NO MATCH");

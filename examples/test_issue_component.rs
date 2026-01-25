@@ -12,7 +12,11 @@ fn main() {
         Ok(pat) => {
             println!("is_match: {}", pat.is_match(text));
             println!("find: {:?}", pat.find(text));
-            println!("captures: {:?}\n", pat.captures(text).map(|c| (c.get(0), c.get(1), c.get(2), c.get(3))));
+            println!(
+                "captures: {:?}\n",
+                pat.captures(text)
+                    .map(|c| (c.get(0), c.get(1), c.get(2), c.get(3)))
+            );
         }
         Err(e) => println!("Error: {}", e),
     }

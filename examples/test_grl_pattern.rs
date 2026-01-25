@@ -35,7 +35,12 @@ fn main() {
     let text3 = r#""CheckAge""#;
     match rexile::Pattern::new(simple3) {
         Ok(p) => {
-            println!("Pattern '{}': match={}, find={:?}", simple3, p.is_match(text3), p.find(text3));
+            println!(
+                "Pattern '{}': match={}, find={:?}",
+                simple3,
+                p.is_match(text3),
+                p.find(text3)
+            );
         }
         Err(e) => println!("Pattern '{}' error: {}", simple3, e),
     }

@@ -18,12 +18,7 @@ fn main() {
             }
 
             // Try different texts
-            let tests = vec![
-                "hello",
-                " hello",
-                "xhello",
-                "hello world",
-            ];
+            let tests = vec!["hello", " hello", "xhello", "hello world"];
 
             for t in tests {
                 if let Some(m) = p.find(t) {

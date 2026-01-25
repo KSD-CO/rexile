@@ -2,10 +2,30 @@ use rexile::Pattern;
 
 fn main() {
     let tests = vec![
-        (r"[^a]", "bac", Some((0, 1)), "Simple negated - should match 'b'"),
-        (r"[^\s]", " a", Some((1, 2)), "Negated whitespace - should match 'a' at pos 1"),
-        (r"[^\s]", "  a", Some((2, 3)), "Negated whitespace - should match 'a' at pos 2"),
-        (r"[^\s]+", " hello", Some((1, 6)), "Negated whitespace+ - should match 'hello'"),
+        (
+            r"[^a]",
+            "bac",
+            Some((0, 1)),
+            "Simple negated - should match 'b'",
+        ),
+        (
+            r"[^\s]",
+            " a",
+            Some((1, 2)),
+            "Negated whitespace - should match 'a' at pos 1",
+        ),
+        (
+            r"[^\s]",
+            "  a",
+            Some((2, 3)),
+            "Negated whitespace - should match 'a' at pos 2",
+        ),
+        (
+            r"[^\s]+",
+            " hello",
+            Some((1, 6)),
+            "Negated whitespace+ - should match 'hello'",
+        ),
         (r"[^abc]", "abcd", Some((3, 4)), "Should match 'd' at pos 3"),
     ];
 

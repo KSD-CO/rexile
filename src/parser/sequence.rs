@@ -321,8 +321,10 @@ impl Sequence {
 
                     // Elements with quantifiers that can match multiple times can "stay"
                     match quantifier {
-                        Quantifier::OneOrMore | Quantifier::OneOrMoreLazy |
-                        Quantifier::ZeroOrMore | Quantifier::ZeroOrMoreLazy => {
+                        Quantifier::OneOrMore
+                        | Quantifier::OneOrMoreLazy
+                        | Quantifier::ZeroOrMore
+                        | Quantifier::ZeroOrMoreLazy => {
                             quantified_bits |= 1u32 << i; // Can stay
                         }
                         _ => {} // ZeroOrOne, Exactly(1), etc. don't stay
@@ -821,7 +823,7 @@ impl Sequence {
         let byte_elem_mask = &table.byte_elem_mask;
 
         // Start at element 0, then compute initial epsilon closure
-        let mut active: u32 = 1u32;  // Initially at element 0
+        let mut active: u32 = 1u32; // Initially at element 0
         active = self.compute_epsilon_closure(active, optional_bits, table.n);
 
         // Check if we can accept before processing any bytes (e.g., pattern "a*" matching "")
@@ -847,7 +849,7 @@ impl Sequence {
             // Standard NFA transition
             let mut next_active = (active & elem_mask & quantified_bits)  // Stay in quantified element
                 | ((active << 1) & elem_mask)                             // Advance to next element
-                | (elem_mask & 1u32);                                      // Start at element 0 (for ".*" patterns)
+                | (elem_mask & 1u32); // Start at element 0 (for ".*" patterns)
 
             // Compute epsilon closure after transition
             next_active = self.compute_epsilon_closure(next_active, optional_bits, table.n);
@@ -1612,7 +1614,7 @@ impl Sequence {
 
     /// Find all occurrences of the sequence in text
     pub fn find_all(&self, text: &str) -> Vec<(usize, usize)> {
-        let mut results = Vec::new();
+        let mut results: Vec<(usize, usize)> = Vec::new();
 
         // OPTIMIZATION 1: Use literal prefix with memchr
         if let Some((prefix_bytes, skip_count)) = self.extract_literal_prefix() {
@@ -1623,8 +1625,14 @@ impl Sequence {
 
                 for found_pos in finder.find_iter(text.as_bytes()) {
                     let after_prefix = found_pos + prefix_bytes.len();
-                    if let Some(consumed) = self.match_at_skip_from(text, after_prefix, skip_count) {
-                        results.push((found_pos, after_prefix + consumed));
+                    if let Some(consumed) = self.match_at_skip_from(text, after_prefix, skip_count)
+                    {
+                        let match_start = found_pos;
+                        let match_end = after_prefix + consumed;
+                        // Check if this match overlaps with previous
+                        if results.is_empty() || match_start >= results.last().unwrap().1 {
+                            results.push((match_start, match_end));
+                        }
                     }
                 }
                 return results;
@@ -1635,8 +1643,14 @@ impl Sequence {
 
                 for found_pos in memchr_iter(byte, text.as_bytes()) {
                     let after_prefix = found_pos + 1;
-                    if let Some(consumed) = self.match_at_skip_from(text, after_prefix, skip_count) {
-                        results.push((found_pos, after_prefix + consumed));
+                    if let Some(consumed) = self.match_at_skip_from(text, after_prefix, skip_count)
+                    {
+                        let match_start = found_pos;
+                        let match_end = after_prefix + consumed;
+                        // Check if this match overlaps with previous
+                        if results.is_empty() || match_start >= results.last().unwrap().1 {
+                            results.push((match_start, match_end));
+                        }
                     }
                 }
                 return results;

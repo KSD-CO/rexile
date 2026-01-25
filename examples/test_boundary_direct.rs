@@ -45,14 +45,26 @@ fn main() {
 
     // Test boundary + literal
     test_pattern(r"\bhello", "hello world", "\\bhello in 'hello world'");
-    test_pattern(r"\bhello", "xhello world", "\\bhello in 'xhello world' (should NOT match)");
+    test_pattern(
+        r"\bhello",
+        "xhello world",
+        "\\bhello in 'xhello world' (should NOT match)",
+    );
     test_pattern(r"\bhello", " hello world", "\\bhello in ' hello world'");
 
     test_pattern(r"hello\b", "hello world", "hello\\b in 'hello world'");
-    test_pattern(r"hello\b", "hellox world", "hello\\b in 'hellox world' (should NOT match)");
+    test_pattern(
+        r"hello\b",
+        "hellox world",
+        "hello\\b in 'hellox world' (should NOT match)",
+    );
 
     test_pattern(r"\bworld", "hello world", "\\bworld in 'hello world'");
-    test_pattern(r"\bworld", "helloworld", "\\bworld in 'helloworld' (should NOT match)");
+    test_pattern(
+        r"\bworld",
+        "helloworld",
+        "\\bworld in 'helloworld' (should NOT match)",
+    );
 
     // Test quantified + boundary (this works according to tests)
     test_pattern(r"\w+\b", "hello world", "\\w+\\b in 'hello world'");

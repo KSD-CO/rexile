@@ -12,7 +12,11 @@ fn main() {
     test(r"(GET)", "GET /api", "GET in capture group");
     test(r"(GET|POST)", "GET /api", "Alternation in group");
     test(r"(?i)GET", "GET /api", "Case insensitive GET");
-    test(r"(?i)(GET|POST)", "GET /api", "Case insensitive alternation");
+    test(
+        r"(?i)(GET|POST)",
+        "GET /api",
+        "Case insensitive alternation",
+    );
 
     println!("\nTesting Year pattern variations:");
     test(r"\d", "2024", "Single digit");

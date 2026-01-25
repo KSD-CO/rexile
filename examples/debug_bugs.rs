@@ -1,6 +1,6 @@
 fn main() {
     println!("=== Bug 1: Backtracking with capture + literal ===\n");
-    
+
     // Simple case
     test("Simple: \\{a\\}", "{ a }");
     test("Capture: \\{(a)\\}", "{ a }");
@@ -10,21 +10,21 @@ fn main() {
     test("Capture+Dot: \\{(.)\\}", "{ x }");
     test("Dot+: \\{.+\\}", "{ abc }");
     test("Capture+Dot+: \\{(.+)\\}", "{ abc }");
-    
+
     println!("\n=== Bug 2: Alternation patterns ===\n");
-    
+
     // Without following literal
     test("Alt simple: (?:a|b)", "a");
     test("Alt simple: (?:a|b)", "b");
     test("Alt+cap: (?:(a)|(b))", "a");
     test("Alt+cap: (?:(a)|(b))", "b");
-    
+
     // With following literal
     test("Alt+lit: (?:a|b)c", "ac");
     test("Alt+lit: (?:a|b)c", "bc");
     test("Alt+cap+lit: (?:(a)|(b))c", "ac");
     test("Alt+cap+lit: (?:(a)|(b))c", "bc");
-    
+
     // More complex
     test("Quoted alt: (?:\"x\"|y)z", "\"x\"z");
     test("Quoted alt: (?:\"x\"|y)z", "yz");

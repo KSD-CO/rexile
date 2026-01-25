@@ -15,7 +15,12 @@ fn main() {
 
             println!("Attempting to match...");
             if let Some((start, end)) = pattern.find(text) {
-                println!("✓ Match found: ({}, {}) = {:?}", start, end, &text[start..end]);
+                println!(
+                    "✓ Match found: ({}, {}) = {:?}",
+                    start,
+                    end,
+                    &text[start..end]
+                );
             } else {
                 println!("✗ No match");
             }

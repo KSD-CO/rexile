@@ -1,10 +1,10 @@
 fn main() {
     let pattern = "(?i)hello";
     let text = "HELLO";
-    
+
     println!("Pattern: {:?}", pattern);
     println!("Text: {:?}", text);
-    
+
     match rexile::Pattern::new(pattern) {
         Ok(pat) => {
             println!("Pattern compiled successfully");
@@ -17,7 +17,7 @@ fn main() {
         }
         Err(e) => println!("ERROR: {}", e),
     }
-    
+
     // Test lowercase
     println!("\nTest with lowercase:");
     let text2 = "hello";

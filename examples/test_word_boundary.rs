@@ -5,7 +5,7 @@ fn main() {
         (r"\bworld", "hello world", "Word boundary mid"),
         (r"\w+\b", "hello world", "Word + boundary"),
     ];
-    
+
     for (pattern, text, desc) in tests {
         print!("{:<30} => ", desc);
         match rexile::Pattern::new(pattern) {

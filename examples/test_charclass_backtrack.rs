@@ -6,11 +6,9 @@ fn main() {
         ("a([^b]*)b", "axxxb"),
         ("\\{([^}]*)\\}", "{ abc }"),
         ("start([^e]*)end", "start123end"),
-
         // Compare with .+ (should work)
         ("a(.+)b", "axxxb"),
         ("\\{(.+)\\}", "{ abc }"),
-
         // The problematic GRL component
         ("salience([^{]*)\\{", "salience 10 {"),
         ("([^{]*)\\{", "salience 10 {"),

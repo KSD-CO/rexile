@@ -5,12 +5,36 @@ fn main() {
     // Test each component
     test("Component 1: rule\\s+", r"rule\s+", text);
     test("Component 2a: quoted name", r#"rule\s+"([^"]+)""#, text);
-    test("Component 2b: with non-capturing", r#"rule\s+(?:"([^"]+)")"#, text);
-    test("Component 2c: full alternation", r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))"#, text);
-    test("Component 3: with attributes", r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))\s*([^{]*)"#, text);
-    test("Component 4: with open brace", r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))\s*([^{]*)\{"#, text);
-    test("Component 5: with body", r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))\s*([^{]*)\{(.+)"#, text);
-    test("Full pattern", r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))\s*([^{]*)\{(.+)\}"#, text);
+    test(
+        "Component 2b: with non-capturing",
+        r#"rule\s+(?:"([^"]+)")"#,
+        text,
+    );
+    test(
+        "Component 2c: full alternation",
+        r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))"#,
+        text,
+    );
+    test(
+        "Component 3: with attributes",
+        r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))\s*([^{]*)"#,
+        text,
+    );
+    test(
+        "Component 4: with open brace",
+        r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))\s*([^{]*)\{"#,
+        text,
+    );
+    test(
+        "Component 5: with body",
+        r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))\s*([^{]*)\{(.+)"#,
+        text,
+    );
+    test(
+        "Full pattern",
+        r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))\s*([^{]*)\{(.+)\}"#,
+        text,
+    );
 
     println!("\n=== Testing simpler alternation patterns ===\n");
     let text2 = r#""test""#;

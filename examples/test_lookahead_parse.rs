@@ -2,11 +2,7 @@ fn main() {
     println!("Testing lookahead parsing...");
 
     // Test simple patterns first
-    let simple_patterns = vec![
-        "a",
-        "b",
-        "ab",
-    ];
+    let simple_patterns = vec!["a", "b", "ab"];
 
     for pattern in simple_patterns {
         print!("Pattern '{}': ", pattern);

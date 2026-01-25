@@ -5,16 +5,46 @@ fn main() {
     // Build the pattern progressively
     let patterns = vec![
         (r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))"#, "Just rule + name"),
-        (r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))\s*"#, "+ optional whitespace"),
-        (r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))salience"#, "+ literal salience"),
-        (r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*)) salience"#, "+ space + salience"),
-        (r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))\s+salience"#, "+ \\s+ salience"),
-        (r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))\s*salience"#, "+ \\s* salience"),
-        (r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))\s*salience 10"#, "+ ' 10'"),
-        (r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))\s*salience 10 "#, "+ trailing space"),
-        (r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))\s*([a-z ]+)\{"#, "+ charclass + {"),
-        (r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))\s*([^{]+)\{"#, "+ negated charclass + {"),
-       (r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))\s*([^{]*)\{"#, "+ [^{]* + {"),
+        (
+            r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))\s*"#,
+            "+ optional whitespace",
+        ),
+        (
+            r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))salience"#,
+            "+ literal salience",
+        ),
+        (
+            r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*)) salience"#,
+            "+ space + salience",
+        ),
+        (
+            r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))\s+salience"#,
+            "+ \\s+ salience",
+        ),
+        (
+            r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))\s*salience"#,
+            "+ \\s* salience",
+        ),
+        (
+            r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))\s*salience 10"#,
+            "+ ' 10'",
+        ),
+        (
+            r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))\s*salience 10 "#,
+            "+ trailing space",
+        ),
+        (
+            r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))\s*([a-z ]+)\{"#,
+            "+ charclass + {",
+        ),
+        (
+            r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))\s*([^{]+)\{"#,
+            "+ negated charclass + {",
+        ),
+        (
+            r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))\s*([^{]*)\{"#,
+            "+ [^{]* + {",
+        ),
     ];
 
     for (pattern, desc) in patterns {

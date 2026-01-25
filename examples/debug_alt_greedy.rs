@@ -8,10 +8,15 @@ fn main() {
         (r#"([a-zA-Z_]\w*)"#, "Identifier"),
         (r#"(?:"([^"]+)"|([a-zA-Z_]\w*))"#, "Alternation"),
         (r#"rule\s+(?:"([^"]+)"|([a-zA-Z_]\w*))"#, "rule + alt"),
-        (r#"rule (?:"([^"]+)"|([a-zA-Z_]\w*))"#, "rule + alt (fixed space)"),
-
+        (
+            r#"rule (?:"([^"]+)"|([a-zA-Z_]\w*))"#,
+            "rule + alt (fixed space)",
+        ),
         // Test what actually gets matched
-        (r#"(?:"([^"]+)"|([a-zA-Z_]\w*)) salience"#, "alt + ' salience'"),
+        (
+            r#"(?:"([^"]+)"|([a-zA-Z_]\w*)) salience"#,
+            "alt + ' salience'",
+        ),
     ];
 
     for (pattern, desc) in tests {

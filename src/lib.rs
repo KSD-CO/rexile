@@ -1805,11 +1805,7 @@ impl Matcher {
 
         // Special case: empty text can match if min is 0
         if text.is_empty() {
-            return if min == 0 {
-                Some((0, 0))
-            } else {
-                None
-            };
+            return if min == 0 { Some((0, 0)) } else { None };
         }
 
         // Try to match at each position in text
@@ -1852,7 +1848,8 @@ impl Matcher {
                 // Check if this is a simple sequence with quantified elements
                 // But NOT if it's just wrapping an alternation
                 elements.iter().any(|elem| match elem {
-                    CompiledCaptureElement::Capture(m, _) | CompiledCaptureElement::NonCapture(m) => {
+                    CompiledCaptureElement::Capture(m, _)
+                    | CompiledCaptureElement::NonCapture(m) => {
                         // Don't recurse into AlternationWithCaptures - alternations are not quantified
                         match m {
                             Matcher::AlternationWithCaptures { .. } => false,
@@ -1951,7 +1948,8 @@ impl Matcher {
                                 if let Some((rel_start, rel_end)) = m.find(substring) {
                                     if rel_start == 0 && rel_end == substring.len() {
                                         // Extract any nested captures from this matcher
-                                        let nested_caps = m.extract_nested_captures(text, start_pos);
+                                        let nested_caps =
+                                            m.extract_nested_captures(text, start_pos);
                                         let mut all_caps = nested_caps;
                                         all_caps.extend(remaining_caps);
                                         return Some((final_pos, all_caps));
@@ -3140,7 +3138,9 @@ fn parse_pattern_with_captures_inner(
         // For now, we need to represent alternation with captures
         // We'll create a PatternWithCaptures that contains the alternation logic
         // But first check if all branches are simple literals
-        let all_literals = parsed_branches.iter().all(|ast| matches!(ast, Ast::Literal(_)));
+        let all_literals = parsed_branches
+            .iter()
+            .all(|ast| matches!(ast, Ast::Literal(_)));
 
         if all_literals {
             // Simple case: all branches are literals like "a"|"b"

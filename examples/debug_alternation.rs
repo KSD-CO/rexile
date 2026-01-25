@@ -11,7 +11,10 @@ fn main() {
             for test_text in &["a", "b", "c", "ab", "ba", "xa", "bx"] {
                 let is_match = pat.is_match(test_text);
                 let find_result = pat.find(test_text);
-                println!("  '{}': is_match={}, find={:?}", test_text, is_match, find_result);
+                println!(
+                    "  '{}': is_match={}, find={:?}",
+                    test_text, is_match, find_result
+                );
             }
         }
         Err(e) => {
