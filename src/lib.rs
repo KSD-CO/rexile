@@ -394,82 +394,22 @@ impl Pattern {
             total_groups,
         } = &self.matcher
         {
-            // Find first match and extract capture positions
-            for start_pos in 0..text.len() {
-                let mut pos = start_pos;
-                let mut capture_positions: Vec<(usize, usize)> = Vec::new();
-                let mut all_matched = true;
+            // Try matching with backtracking at any position
+            for start_pos in 0..=text.len() {
+                if let Some((end_pos, capture_list)) =
+                    Matcher::match_elements_with_backtrack_and_captures(text, start_pos, elements)
+                {
+                    if end_pos > start_pos || elements.is_empty() {
+                        // Create Captures with full match and capture groups
+                        let mut caps = Captures::new(text, (start_pos, end_pos), *total_groups);
 
-                for element in elements {
-                    match element {
-                        CompiledCaptureElement::Capture(m, num) => {
-                            if let Some((rel_start, rel_end)) = m.find(&text[pos..]) {
-                                if rel_start != 0 {
-                                    all_matched = false;
-                                    break;
-                                }
-
-                                let abs_start = pos;
-                                let abs_end = pos + rel_end;
-
-                                // Record capture position
-                                while capture_positions.len() < *num {
-                                    capture_positions.push((0, 0));
-                                }
-                                capture_positions[*num - 1] = (abs_start, abs_end);
-                                pos = abs_end;
-                            } else {
-                                all_matched = false;
-                                break;
-                            }
+                        // Add each capture group
+                        for (group_num, cap_start, cap_end) in capture_list {
+                            caps.set(group_num, cap_start, cap_end);
                         }
-                        CompiledCaptureElement::NonCapture(m) => {
-                            // Check if this is a Backreference
-                            if let Matcher::Backreference(ref_num) = m {
-                                // Get the captured text for this backreference
-                                if *ref_num > 0 && *ref_num <= capture_positions.len() {
-                                    let (cap_start, cap_end) = capture_positions[*ref_num - 1];
-                                    let captured_text = &text[cap_start..cap_end];
 
-                                    // Check if remaining text starts with the captured text
-                                    if text[pos..].starts_with(captured_text) {
-                                        pos += captured_text.len();
-                                    } else {
-                                        all_matched = false;
-                                        break;
-                                    }
-                                } else {
-                                    // Invalid backreference or not captured yet
-                                    all_matched = false;
-                                    break;
-                                }
-                            } else {
-                                // Normal non-capture element
-                                if let Some((rel_start, rel_end)) = m.find(&text[pos..]) {
-                                    if rel_start != 0 {
-                                        all_matched = false;
-                                        break;
-                                    }
-                                    pos += rel_end;
-                                } else {
-                                    all_matched = false;
-                                    break;
-                                }
-                            }
-                        }
+                        return Some(caps);
                     }
-                }
-
-                if all_matched {
-                    // Create Captures with full match and capture groups
-                    let mut caps = Captures::new(text, (start_pos, pos), *total_groups);
-
-                    // Add each capture group using the set method
-                    for (i, &(start, end)) in capture_positions.iter().enumerate() {
-                        caps.set(i + 1, start, end);
-                    }
-
-                    return Some(caps);
                 }
             }
             None
@@ -1593,20 +1533,17 @@ impl Matcher {
                     return matcher.is_match(text);
                 }
 
-                // Multiple elements: must match sequentially
-                let mut pos = 0;
-                for element in elements {
-                    let matcher = match element {
-                        CompiledCaptureElement::Capture(m, _) => m,
-                        CompiledCaptureElement::NonCapture(m) => m,
-                    };
-                    if let Some((_, end)) = matcher.find(&text[pos..]) {
-                        pos += end;
-                    } else {
-                        return false;
+                // Multiple elements: try matching with backtracking support at any position
+                for start_pos in 0..=text.len() {
+                    if let Some(end_pos) =
+                        Self::match_elements_with_backtrack(text, start_pos, elements)
+                    {
+                        if end_pos > start_pos || elements.is_empty() {
+                            return true;
+                        }
                     }
                 }
-                true
+                false
             }
             Matcher::Backreference(_) => {
                 // Backreferences cannot be matched without context
@@ -1705,6 +1642,20 @@ impl Matcher {
                     // Recursively extract nested captures
                     let nested = inner_matcher.extract_nested_captures(text, abs_start);
                     captures.extend(nested);
+                }
+            }
+            Matcher::AlternationWithCaptures { branches, .. } => {
+                // Try each branch to find which one matched
+                for branch in branches {
+                    if let Some((rel_start, rel_end)) = branch.find(&text[start_pos..]) {
+                        if rel_start == 0 {
+                            let abs_start = start_pos;
+                            // Extract captures from the matched branch
+                            let nested = branch.extract_nested_captures(text, abs_start);
+                            captures.extend(nested);
+                            break; // Only one branch can match
+                        }
+                    }
                 }
             }
             _ => {
@@ -1855,20 +1806,143 @@ impl Matcher {
         None
     }
 
-    /// Check if a matcher contains a quantified pattern
+    /// Check if a matcher contains a quantified pattern that can match variable lengths
+    /// This is used to determine if backtracking is needed
     fn contains_quantified(matcher: &Matcher) -> bool {
         match matcher {
             Matcher::Quantified(_) | Matcher::QuantifiedCapture(_, _) => true,
             Matcher::Capture(inner, _) => Self::contains_quantified(inner),
             Matcher::PatternWithCaptures { elements, .. } => {
-                // If any element is quantified, the whole pattern can match multiple lengths
+                // Check if this is a simple sequence with quantified elements
+                // But NOT if it's just wrapping an alternation
                 elements.iter().any(|elem| match elem {
                     CompiledCaptureElement::Capture(m, _) | CompiledCaptureElement::NonCapture(m) => {
-                        Self::contains_quantified(m)
+                        // Don't recurse into AlternationWithCaptures - alternations are not quantified
+                        match m {
+                            Matcher::AlternationWithCaptures { .. } => false,
+                            _ => Self::contains_quantified(m),
+                        }
                     }
                 })
             }
+            // AlternationWithCaptures itself is NOT a quantified pattern
+            // It's a choice between alternatives, each of which has a fixed match
+            Matcher::AlternationWithCaptures { .. } => false,
             _ => false,
+        }
+    }
+
+    /// Try to match sequence of elements with backtracking support AND extract captures
+    /// Returns (end_pos, capture_positions) if successful
+    fn match_elements_with_backtrack_and_captures(
+        text: &str,
+        start_pos: usize,
+        elements: &[CompiledCaptureElement],
+    ) -> Option<(usize, Vec<(usize, usize, usize)>)> {
+        // Base case: no more elements
+        if elements.is_empty() {
+            return Some((start_pos, Vec::new()));
+        }
+
+        // Get first element
+        let first_element = &elements[0];
+
+        // Check if this element contains a quantified pattern that needs backtracking
+        let needs_backtracking = if elements.len() <= 1 {
+            false
+        } else {
+            match first_element {
+                CompiledCaptureElement::Capture(m, _) | CompiledCaptureElement::NonCapture(m) => {
+                    Self::contains_quantified(m)
+                }
+            }
+        };
+
+        if needs_backtracking {
+            // Backtracking needed
+            let remaining_text = &text[start_pos..];
+            let remaining_len = remaining_text.len();
+
+            for try_len in (1..=remaining_len).rev() {
+                let next_pos = start_pos + try_len;
+
+                // Try to match remaining elements
+                if let Some((final_pos, mut remaining_caps)) =
+                    Self::match_elements_with_backtrack_and_captures(text, next_pos, &elements[1..])
+                {
+                    let substring = &text[start_pos..next_pos];
+
+                    // Check if first element matches exactly this substring
+                    match first_element {
+                        CompiledCaptureElement::Capture(m, num) => {
+                            if let Some((rel_start, rel_end)) = m.find(substring) {
+                                if rel_start == 0 && rel_end == substring.len() {
+                                    // Capture matched
+                                    let mut caps = vec![(*num, start_pos, next_pos)];
+                                    caps.append(&mut remaining_caps);
+                                    return Some((final_pos, caps));
+                                }
+                            }
+                        }
+                        CompiledCaptureElement::NonCapture(m) => {
+                            if let Some((rel_start, rel_end)) = m.find(substring) {
+                                if rel_start == 0 && rel_end == substring.len() {
+                                    // Extract any nested captures from this matcher
+                                    let nested_caps = m.extract_nested_captures(text, start_pos);
+                                    let mut all_caps = nested_caps;
+                                    all_caps.extend(remaining_caps);
+                                    return Some((final_pos, all_caps));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            None
+        } else {
+            // No backtracking needed
+            match first_element {
+                CompiledCaptureElement::Capture(m, num) => {
+                    if let Some((rel_start, rel_end)) = m.find(&text[start_pos..]) {
+                        if rel_start == 0 {
+                            let next_pos = start_pos + rel_end;
+                            if let Some((final_pos, mut remaining_caps)) =
+                                Self::match_elements_with_backtrack_and_captures(
+                                    text,
+                                    next_pos,
+                                    &elements[1..],
+                                )
+                            {
+                                let mut caps = vec![(*num, start_pos, next_pos)];
+                                caps.append(&mut remaining_caps);
+                                return Some((final_pos, caps));
+                            }
+                        }
+                    }
+                    None
+                }
+                CompiledCaptureElement::NonCapture(m) => {
+                    if let Some((rel_start, rel_end)) = m.find(&text[start_pos..]) {
+                        if rel_start == 0 {
+                            let next_pos = start_pos + rel_end;
+                            if let Some((final_pos, mut remaining_caps)) =
+                                Self::match_elements_with_backtrack_and_captures(
+                                    text,
+                                    next_pos,
+                                    &elements[1..],
+                                )
+                            {
+                                // Extract nested captures
+                                let nested_caps = m.extract_nested_captures(text, start_pos);
+                                let mut all_caps = nested_caps;
+                                all_caps.extend(remaining_caps);
+                                return Some((final_pos, all_caps));
+                            }
+                        }
+                    }
+                    None
+                }
+            }
         }
     }
 
@@ -1916,15 +1990,14 @@ impl Matcher {
                 if let Some(final_pos) =
                     Self::match_elements_with_backtrack(text, next_pos, &elements[1..])
                 {
-                    // Remaining elements matched! Now check if first element can match this length
+                    // Remaining elements matched! Now check if first element can match EXACTLY this length
                     let substring = &text[start_pos..next_pos];
 
-                    if first_matcher.is_match(substring) {
-                        // Verify it matches from the start
-                        if let Some((rel_start, _)) = first_matcher.find(substring) {
-                            if rel_start == 0 {
-                                return Some(final_pos);
-                            }
+                    // Check if first element matches exactly this substring
+                    // It must match from start (rel_start == 0) and consume the entire substring (rel_end == substring.len())
+                    if let Some((rel_start, rel_end)) = first_matcher.find(substring) {
+                        if rel_start == 0 && rel_end == substring.len() {
+                            return Some(final_pos);
                         }
                     }
                 }
