@@ -240,7 +240,6 @@ impl NFA {
         let mut match_start: Option<usize> = None;
         let mut match_start_byte: Option<usize> = None;
 
-        let mut byte_pos = 0;
         let mut char_pos = 0;
 
         for (this_byte_pos, ch) in text.char_indices() {
@@ -301,7 +300,6 @@ impl NFA {
             }
 
             char_pos += 1;
-            byte_pos = this_byte_pos + ch.len_utf8();
         }
 
         // Final check for accept state at end of text

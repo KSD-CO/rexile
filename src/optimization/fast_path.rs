@@ -469,7 +469,7 @@ pub fn find_literal_ws_digits_all(text: &str, literal: &str) -> Vec<(usize, usiz
             continue;
         }
 
-        /// Fast path for literal + whitespace + word: when\s+\w+
+        // Fast path for literal + whitespace + word: when\s+\w+
         // Match at least one whitespace
         let rest = &text[after..];
         let bytes = rest.as_bytes();
@@ -570,8 +570,8 @@ pub fn find_word_compare_digit_all(text: &str) -> Vec<(usize, usize)> {
                 }
             }
 
-            let word_end = i;
-            let saved_i = i; // Save position before checking pattern
+            let _word_end = i;
+            let _saved_i = i; // Save position before checking pattern
 
             // Skip optional whitespace
             while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\n') {
@@ -621,8 +621,6 @@ pub fn find_alternation(ac: &AhoCorasick, text: &str) -> Option<(usize, usize)> 
 pub fn find_alternation_all(ac: &AhoCorasick, text: &str) -> Vec<(usize, usize)> {
     ac.find_iter(text).map(|m| (m.start(), m.end())).collect()
 }
-
-/// Detect pattern type and return specialized function
 
 /// Strip simple capture groups for fast path detection
 /// Allows patterns like "when\s+(\w+)" to match as "when\s+\w+"

@@ -110,7 +110,7 @@ impl Group {
         &self,
         text: &str,
         start_pos: usize,
-        base_match_size: usize,
+        _base_match_size: usize,
         quantifier: &Quantifier,
     ) -> Option<usize> {
         let (min, max) = quantifier_bounds(quantifier);

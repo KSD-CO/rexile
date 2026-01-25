@@ -169,7 +169,7 @@ fn has_top_level_alternation(pattern: &str) -> bool {
 pub fn parse_sequence(pattern: &str) -> Result<Sequence, String> {
     let mut elements = Vec::new();
     let mut i = 0;
-    let bytes = pattern.as_bytes();
+    let _bytes = pattern.as_bytes();
 
     while i < pattern.len() {
         let remaining = &pattern[i..];

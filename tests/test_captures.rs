@@ -78,7 +78,6 @@ fn test_nested_capture_groups() {
 }
 
 #[test]
-#[test]
 fn test_backreference() {
     // Match same word twice: (\w+)\s+\1
     let pattern = Pattern::new(r"(\w+)\s+\1").unwrap();

@@ -4,6 +4,24 @@
 //!
 //! ReXile is a lightweight regex alternative optimized for fast compilation while maintaining
 //! competitive matching performance.
+
+#![allow(dead_code)]
+#![allow(clippy::clone_on_copy)]
+#![allow(clippy::match_like_matches_macro)]
+#![allow(clippy::type_complexity)]
+#![allow(clippy::upper_case_acronyms)]
+#![allow(clippy::redundant_closure)]
+#![allow(clippy::len_without_is_empty)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::comparison_chain)]
+#![allow(clippy::manual_range_contains)]
+#![allow(clippy::large_enum_variant)]
+#![allow(clippy::manual_strip)]
+#![allow(clippy::needless_range_loop)]
+#![allow(clippy::string_slice)]
+#![allow(clippy::needless_late_init)]
+#![allow(clippy::manual_is_ascii_check)]
+#![allow(clippy::sliced_string_as_bytes)]
 //!
 //! ## Quick Start
 //!
@@ -148,7 +166,8 @@ pub struct Pattern {
         optimization::literal::LiteralKind,
     )>,
     fast_path: Option<optimization::fast_path::FastPath>, // JIT-style fast path
-    flags: Flags,                                         // Regex flags: (?i), (?m), (?s)
+    #[allow(dead_code)]
+    flags: Flags,                  // Regex flags: (?i), (?m), (?s)
 }
 
 /// Type alias for convenience
@@ -167,6 +186,7 @@ fn safe_slice_range(text: &str, start: usize, end: usize) -> Option<&str> {
 
 /// Get all valid char boundary positions in a string slice from start_pos to end
 #[inline]
+#[allow(dead_code)]
 fn char_boundaries(text: &str, start_pos: usize) -> impl Iterator<Item = usize> + '_ {
     (start_pos..=text.len()).filter(|&i| text.is_char_boundary(i))
 }
@@ -606,7 +626,7 @@ impl Pattern {
         let mut last_end = 0;
 
         for caps in self.captures_iter(text) {
-            let full_match = caps.get(0).unwrap();
+            let _full_match = caps.get(0).unwrap();
             let match_start = caps.pos(0).unwrap().0;
             let match_end = caps.pos(0).unwrap().1;
 
@@ -1574,6 +1594,7 @@ enum Matcher {
     }, // Phase 8.1
     AlternationWithCaptures {
         branches: Vec<Matcher>,
+        #[allow(dead_code)]
         total_groups: usize,
     }, // Alternation where branches may contain captures: (a)|(b) or (?:(a)|(b))
     Backreference(usize),         // Phase 9: Backreference to capture group
@@ -1619,7 +1640,7 @@ impl Matcher {
                     }
                     (false, true) => {
                         // Must match at end
-                        if let Some((start_pos, end_pos)) = group.find(text) {
+                        if let Some((_start_pos, end_pos)) = group.find(text) {
                             end_pos == text.len()
                         } else {
                             false
@@ -1712,7 +1733,7 @@ impl Matcher {
                 lookaround_matcher,
             } => {
                 // Need to find where prefix matches, then check lookaround at that position
-                if let Some((start, end)) = prefix.find(text) {
+                if let Some((_start, end)) = prefix.find(text) {
                     // Check if lookaround succeeds at the end position of the prefix match
                     lookaround.matches_at(text, end, lookaround_matcher)
                 } else {
@@ -1868,7 +1889,7 @@ impl Matcher {
             Matcher::AlternationWithCaptures { branches, .. } => {
                 // Try each branch to find which one matched
                 for branch in branches {
-                    if let Some((rel_start, rel_end)) =
+                    if let Some((rel_start, _rel_end)) =
                         branch.find(safe_slice(text, start_pos).unwrap_or(""))
                     {
                         if rel_start == 0 {
@@ -3385,7 +3406,7 @@ fn parse_pattern_with_captures_inner(
     // FIRST: Check if this pattern contains top-level alternation
     if let Some(branches) = split_by_alternation(pattern) {
         // This is an alternation pattern like (a)|(b) or foo|bar
-        let start_group = *group_counter;
+        let _start_group = *group_counter;
         let mut parsed_branches = Vec::new();
 
         for branch in branches {

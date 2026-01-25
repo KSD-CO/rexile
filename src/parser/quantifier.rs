@@ -360,7 +360,7 @@ fn parse_quantifier(s: &str) -> Result<Quantifier, String> {
         // Handle {n}? and {n,m}? lazy quantifiers
         _ if s.ends_with("?") && s.len() > 1 => {
             // Strip the trailing ? and parse the base quantifier
-            let base = &s[..s.len() - 1];
+            let _base = &s[..s.len() - 1];
             // For now, just parse without lazy support for bounded quantifiers
             // This will fall through to the error case
             Err(format!("Lazy bounded quantifiers not yet supported: {}", s))

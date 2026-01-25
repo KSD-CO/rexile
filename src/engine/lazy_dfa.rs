@@ -172,7 +172,7 @@ impl LazyDFA {
     /// Try to match starting at a specific byte position
     fn try_match_at(&mut self, text: &str, start_byte: usize) -> Option<usize> {
         let text_slice = &text[start_byte..];
-        let current_state: StateId = 0; // Start state
+        let _current_state: StateId = 0; // Start state
         let mut pattern_pos = 0;
         let mut bytes_consumed = 0;
 

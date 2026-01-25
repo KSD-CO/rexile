@@ -2,7 +2,6 @@
 ///
 /// Extracts literal strings from patterns to use as fast prefilters
 /// before running the full regex engine.
-
 /// Represents extracted literals from a pattern
 #[derive(Debug, Clone, PartialEq)]
 pub struct LiteralSet {

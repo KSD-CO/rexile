@@ -309,7 +309,7 @@ impl Sequence {
         // Validate elements and compute quantified_bits and optional_bits
         let mut quantified_bits: u32 = 0;
         let mut optional_bits: u32 = 0;
-        let mut has_mid_optional = false; // Track if there are optional elements not at end
+        let _has_mid_optional = false; // Track if there are optional elements not at end
         for (i, elem) in elements.iter().enumerate() {
             match elem {
                 SequenceElement::QuantifiedCharClass(_, quantifier) => {
@@ -1039,7 +1039,7 @@ impl Sequence {
                             let search_start = suffix_pos.saturating_sub(128);
                             let window = &text[search_start..=suffix_pos.min(text.len() - 1)];
                             let mut try_pos = 0;
-                            let found = false;
+                            let _found = false;
                             while try_pos < window.len() {
                                 if let Some(foffset) = fc.find_first(&window[try_pos..]) {
                                     let abs_start = search_start + try_pos + foffset;
@@ -1133,7 +1133,7 @@ impl Sequence {
     /// Returns (literal_bytes, elements_before, elements_after)
     fn extract_inner_literal(&self) -> Option<(Vec<u8>, usize, usize)> {
         // Look for consecutive Char/Literal elements not at start
-        for (start_idx, window) in self.elements.windows(2).enumerate() {
+        for (start_idx, _window) in self.elements.windows(2).enumerate() {
             if start_idx == 0 {
                 // Skip if at start (that's a prefix, not inner)
                 continue;
