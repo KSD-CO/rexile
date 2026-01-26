@@ -1179,20 +1179,18 @@ impl Sequence {
     ) -> Option<(usize, usize)> {
         let anchor_end = anchor_byte_pos + anchor_len;
 
-        // Match elements AFTER anchor (forward direction)
-        let after_elements = &self.elements[self.elements.len() - after_count..];
-        let mut pos = anchor_end;
-
-        for elem in after_elements {
-            if pos > text.len() {
-                return None;
-            }
-            match elem.match_at(text, pos) {
-                Some(consumed) => pos += consumed,
+        // Match elements AFTER anchor (forward direction) WITH BACKTRACKING
+        // Use backtracking for quantified elements like .* to avoid greedy over-matching
+        let after_start_idx = self.elements.len() - after_count;
+        let match_end = if after_count > 0 {
+            // Use backtracking for forward matching
+            match self.match_elements_backtracking(text, after_start_idx, anchor_end) {
+                Some(end_pos) => end_pos,
                 None => return None,
             }
-        }
-        let match_end = pos;
+        } else {
+            anchor_end
+        };
 
         // Match elements BEFORE anchor (backward direction - OPTIMIZED)
         // For greedy quantifiers, match backwards from anchor
