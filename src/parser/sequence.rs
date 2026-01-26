@@ -1184,10 +1184,7 @@ impl Sequence {
         let after_start_idx = self.elements.len() - after_count;
         let match_end = if after_count > 0 {
             // Use backtracking for forward matching
-            match self.match_elements_backtracking(text, after_start_idx, anchor_end) {
-                Some(end_pos) => end_pos,
-                None => return None,
-            }
+            self.match_elements_backtracking(text, after_start_idx, anchor_end)?
         } else {
             anchor_end
         };
@@ -1200,90 +1197,62 @@ impl Sequence {
             return Some((anchor_byte_pos, match_end));
         }
 
-        // Reverse-engineer: walk backwards through pattern
+        // SIMPLIFIED: Use forward matching with backtracking instead of complex backward logic
+        // Try to find where before_elements match and end exactly at anchor_byte_pos
+        // We search backwards from anchor position
         let text_before = &text[..anchor_byte_pos];
-        let mut match_start = anchor_byte_pos;
 
-        // Process elements in REVERSE order
-        for elem in before_elements.iter().rev() {
-            match elem {
-                SequenceElement::QuantifiedCharClass(cc, q) => {
-                    // Match greedily backwards WITHOUT collecting into Vec
-                    let (min, max) = quantifier_bounds(q);
-                    let mut count = 0;
-                    let mut byte_offset = 0;
-
-                    // Walk backwards char by char
-                    for ch in text_before[..match_start].chars().rev() {
-                        if count >= max {
-                            break;
-                        }
-                        if cc.matches(ch) {
-                            count += 1;
-                            byte_offset += ch.len_utf8();
-                        } else {
-                            break;
-                        }
-                    }
-
-                    if count < min {
-                        return None;
-                    }
-
-                    match_start -= byte_offset;
+        // Calculate minimum bytes needed for before_elements
+        let min_bytes_needed: usize = before_elements
+            .iter()
+            .map(|e| match e {
+                SequenceElement::Char(c) => c.len_utf8(),
+                SequenceElement::CharClass(_) => 1,
+                SequenceElement::Dot => 1,
+                SequenceElement::QuantifiedChar(_, q)
+                | SequenceElement::QuantifiedCharClass(_, q)
+                | SequenceElement::QuantifiedGroup(_, q) => {
+                    let (min, _) = quantifier_bounds(q);
+                    min
                 }
-                SequenceElement::QuantifiedChar(ch, q) => {
-                    let (min, max) = quantifier_bounds(q);
-                    let mut count = 0;
-                    let mut byte_offset = 0;
+                SequenceElement::Boundary(_) => 0,
+                SequenceElement::Literal(s) => s.len(),
+                SequenceElement::Group(_) => 0,
+            })
+            .sum();
 
-                    for c in text_before[..match_start].chars().rev() {
-                        if count >= max {
-                            break;
-                        }
-                        if c == *ch {
-                            count += 1;
-                            byte_offset += c.len_utf8();
-                        } else {
-                            break;
-                        }
-                    }
+        if text_before.len() < min_bytes_needed {
+            return None;
+        }
 
-                    if count < min {
-                        return None;
-                    }
+        // Try matching before_elements forward from different start positions
+        // Start from the earliest possible position
+        let search_start = anchor_byte_pos.saturating_sub(1024.max(min_bytes_needed * 10));
 
-                    match_start -= byte_offset;
-                }
-                SequenceElement::Char(target) => {
-                    // Must match exactly one char before match_start
-                    if match_start == 0 {
-                        return None;
-                    }
+        let mut match_start = None;
+        for try_pos in search_start..=anchor_byte_pos.saturating_sub(min_bytes_needed) {
+            let mut pos = try_pos;
+            let mut matched = true;
 
-                    // Get last char before match_start
-                    if let Some(ch) = text_before[..match_start].chars().next_back() {
-                        if ch != *target {
-                            return None;
-                        }
-                        match_start -= ch.len_utf8();
-                    } else {
-                        return None;
+            // Try to match all before_elements forward from try_pos
+            for elem in before_elements {
+                match elem.match_at(text, pos) {
+                    Some(consumed) => pos += consumed,
+                    None => {
+                        matched = false;
+                        break;
                     }
-                }
-                SequenceElement::Boundary(boundary_type) => {
-                    // Boundary is zero-width, just check if it matches at current position
-                    if !boundary_type.matches_at(text, match_start) {
-                        return None;
-                    }
-                    // Don't move match_start since boundary is zero-width
-                }
-                _ => {
-                    // Other elements not supported in reverse yet
-                    return None;
                 }
             }
+
+            // Check if forward matching lands exactly at anchor_byte_pos
+            if matched && pos == anchor_byte_pos {
+                match_start = Some(try_pos);
+                break; // Found leftmost match
+            }
         }
+
+        let match_start = match_start?; // Failed to find a match before the anchor
 
         Some((match_start, match_end))
     }
