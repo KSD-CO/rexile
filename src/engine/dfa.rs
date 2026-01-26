@@ -231,7 +231,8 @@ impl DFA {
     /// Check if sequence can be compiled to DFA
     fn is_dfa_compilable(seq: &Sequence) -> bool {
         // Prefer Sequence+NFA when all elements are QuantifiedCharClass(OneOrMore/ZeroOrMore) or Char
-        // (the NFA with pre-computed transition table is faster than DFA for these patterns)
+        // The Sequence matcher with backtracking and fast-fail checks is faster for most cases
+        // DFA only wins for patterns with separators like \d+.\d+ (version numbers)
         let nfa_compatible = seq.elements.len() >= 2
             && seq.elements.iter().all(|e| {
                 matches!(

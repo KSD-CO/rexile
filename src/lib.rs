@@ -1601,6 +1601,7 @@ enum Matcher {
     }, // Alternation where branches may contain captures: (a)|(b) or (?:(a)|(b))
     Backreference(usize),         // Phase 9: Backreference to capture group
     DFA(DFA),                     // Phase 9.2: DFA-optimized sequence matcher
+    LazyDFA(engine::lazy_dfa::LazyDFA), // Phase 9.3: Lazy DFA for complex patterns
     CaseInsensitive(Box<Matcher>), // Case-insensitive wrapper for (?i)
 }
 
@@ -1792,6 +1793,11 @@ impl Matcher {
             Matcher::DFA(dfa) => {
                 // DFA-optimized sequence matching
                 dfa.is_match(text)
+            }
+            Matcher::LazyDFA(lazy_dfa) => {
+                // Lazy DFA is mutable, clone for is_match
+                let mut dfa = lazy_dfa.clone();
+                dfa.find(text).is_some()
             }
             Matcher::SequenceWithFlags(seq, flags) => {
                 // Sequence matching with flags (e.g., DOTALL)
@@ -2548,6 +2554,11 @@ impl Matcher {
                 // DFA-optimized find
                 dfa.find(text)
             }
+            Matcher::LazyDFA(lazy_dfa) => {
+                // Lazy DFA requires mutable access, clone it
+                let mut dfa = lazy_dfa.clone();
+                dfa.find(text)
+            }
             Matcher::SequenceWithFlags(seq, flags) => {
                 // Find with flags (e.g., DOTALL mode where . matches newlines)
                 seq.find_with_flags(text, flags)
@@ -2798,6 +2809,25 @@ impl Matcher {
 
                 matches
             }
+            Matcher::LazyDFA(lazy_dfa) => {
+                // Lazy DFA find_all
+                let mut dfa = lazy_dfa.clone();
+                let mut matches = Vec::new();
+                let mut search_start = 0;
+
+                while search_start < text.len() {
+                    if let Some((start, end)) = dfa.find(&text[search_start..]) {
+                        let abs_start = search_start + start;
+                        let abs_end = search_start + end;
+                        matches.push((abs_start, abs_end));
+                        search_start = abs_end.max(abs_start + 1);
+                    } else {
+                        break;
+                    }
+                }
+
+                matches
+            }
             Matcher::SequenceWithFlags(seq, flags) => {
                 // Find all with flags
                 let mut matches = Vec::new();
@@ -2993,6 +3023,12 @@ fn compile_ast(ast: &Ast) -> Result<Matcher, PatternError> {
             Ok(Matcher::Quantified(qp.clone()))
         }
         Ast::Sequence(seq) => {
+            // Lazy DFA is experimental and currently slower - disabled for now
+            // TODO: Optimize LazyDFA implementation
+            // if let Some(lazy_dfa) = engine::lazy_dfa::LazyDFA::try_compile(seq) {
+            //     return Ok(Matcher::LazyDFA(lazy_dfa));
+            // }
+
             // Try to compile to DFA for better performance
             if let Some(dfa) = engine::dfa::DFA::try_compile(seq) {
                 return Ok(Matcher::DFA(dfa));

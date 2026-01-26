@@ -901,6 +901,37 @@ impl Sequence {
 
     /// Find the sequence anywhere in text
     pub fn find(&self, text: &str) -> Option<(usize, usize)> {
+        // FAST PRECHECK: For adjacent non-overlapping quantified charclasses
+        // Check if pattern CAN match before trying expensive backtracking
+        if self.elements.len() == 2 {
+            if let (
+                Some(SequenceElement::QuantifiedCharClass(cc1, _)),
+                Some(SequenceElement::QuantifiedCharClass(cc2, _)),
+            ) = (self.elements.first(), self.elements.get(1))
+            {
+                if !cc1.overlaps_with(cc2) {
+                    // Pattern requires cc1 followed by cc2 with no overlap
+                    // Quick scan to see if this is even possible
+                    let bytes = text.as_bytes();
+                    let mut found_possible = false;
+
+                    for i in 0..bytes.len().saturating_sub(1) {
+                        let ch1 = bytes[i] as char;
+                        let ch2 = bytes[i + 1] as char;
+                        if cc1.matches(ch1) && cc2.matches(ch2) {
+                            found_possible = true;
+                            break;
+                        }
+                    }
+
+                    if !found_possible {
+                        // Pattern is impossible - fail fast
+                        return None;
+                    }
+                }
+            }
+        }
+
         // OPTIMIZATION 1: Extract literal prefix for memchr acceleration
         if let Some((prefix_bytes, skip_count)) = self.extract_literal_prefix() {
             if prefix_bytes.len() >= 3 {
@@ -1001,7 +1032,53 @@ impl Sequence {
             }
         }
 
-        // OPTIMIZATION 3: Charclass prefilter - use most selective element
+        // OPTIMIZATION 3: Reverse scan ONLY for patterns with wildcard + selective last element
+        // For patterns like [a-z]+.+[0-9]+ where wildcard causes expensive backtracking
+        let has_wildcard = self
+            .elements
+            .iter()
+            .any(|e| matches!(e, SequenceElement::QuantifiedChar('.', _)));
+
+        if has_wildcard && self.elements.len() >= 3 {
+            if let Some(SequenceElement::QuantifiedCharClass(last_cc, _)) = self.elements.last() {
+                // Check if last charclass is selective enough (digits, small sets)
+                if last_cc.is_digit_class() || Self::selectivity(last_cc) <= 26 {
+                    // Reverse scan: find last element first
+                    let bytes = text.as_bytes();
+                    let mut pos = 0;
+
+                    while pos < bytes.len() {
+                        // Find next digit/selective char
+                        let found = if last_cc.is_digit_class() {
+                            bytes[pos..].iter().position(|b| b.is_ascii_digit())
+                        } else {
+                            bytes[pos..]
+                                .iter()
+                                .position(|b| last_cc.matches(*b as char))
+                        };
+
+                        if let Some(offset) = found {
+                            let last_pos = pos + offset;
+                            // Try matching from positions before this
+                            let start_search = last_pos.saturating_sub(100);
+                            for try_pos in start_search..last_pos {
+                                if let Some(end_pos) = self.match_at_pos(text, try_pos) {
+                                    if end_pos >= last_pos {
+                                        return Some((try_pos, end_pos));
+                                    }
+                                }
+                            }
+                            pos = last_pos + 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    return None;
+                }
+            }
+        }
+
+        // OPTIMIZATION 4: Charclass prefilter - use most selective element
         if let (Some(first), Some(last)) = (self.elements.first(), self.elements.last()) {
             let first_cc = match first {
                 SequenceElement::QuantifiedCharClass(cc, q) => {
@@ -1083,6 +1160,40 @@ impl Sequence {
             }
         }
 
+        None
+    }
+
+    /// Check if charclass is good candidate for memchr (selective + ASCII)
+    fn is_memchr_candidate(cc: &CharClass) -> bool {
+        if cc.negated {
+            return false;
+        }
+        // Digits [0-9] - perfect for memchr
+        if cc.is_digit_class() {
+            return true;
+        }
+        // Small selective sets (like single chars or small ranges)
+        Self::selectivity(cc) <= 10
+    }
+
+    /// Find first occurrence of charclass in bytes using memchr when possible
+    fn memchr_find_charclass(cc: &CharClass, bytes: &[u8]) -> Option<usize> {
+        if cc.is_digit_class() {
+            // Use memchr for digits
+            for (i, &b) in bytes.iter().enumerate() {
+                if b.is_ascii_digit() {
+                    return Some(i);
+                }
+            }
+            return None;
+        }
+
+        // For small selective sets, scan directly
+        for (i, &b) in bytes.iter().enumerate() {
+            if cc.matches(b as char) {
+                return Some(i);
+            }
+        }
         None
     }
 
@@ -1442,34 +1553,90 @@ impl Sequence {
                 return None;
             }
 
-            // OPTIMIZATION: If next element is a QuantifiedCharClass, find its first match
-            // position from the right instead of trying every position
+            // OPTIMIZATION: If next element is a QuantifiedCharClass, use smarter backtracking
+            // For patterns like .+[0-9]+, instead of trying every position, jump to positions
+            // where the next element could potentially match
             if let Some(next_cc) = self.peek_next_charclass(elem_idx + 1) {
-                // Scan from right to left within the matched region for next element
                 let end = text_pos + max_count;
-                let mut try_pos = end;
-                while try_pos > text_pos + min {
-                    let byte = text.as_bytes()[try_pos - 1];
-                    if !cc.matches(byte as char) {
-                        break;
+                let remaining = &text[text_pos..end];
+
+                // EARLY TERMINATION: If current and next charclass don't overlap,
+                // and we can't find next charclass in the range we'll search, fail fast
+                // NOTE: Only apply this check for patterns that will definitely fail,
+                // not for cases where backtracking might succeed
+                if !cc.overlaps_with(next_cc) && min == max {
+                    // Fixed quantifier (like {5} not {1,10}) and non-overlapping
+                    // Check if next charclass appears in remaining text after our fixed match
+                    let fixed_end = text_pos + max_count;
+                    if fixed_end < text.len() {
+                        let text_after = &text[fixed_end..];
+                        let mut found_next = false;
+                        // Only scan a reasonable window (e.g., 100 chars) to avoid perf hit
+                        let scan_limit = text_after.len().min(100);
+                        for ch in text_after[..scan_limit].chars() {
+                            if next_cc.matches(ch) {
+                                found_next = true;
+                                break;
+                            }
+                        }
+
+                        if !found_next {
+                            // Next element cannot match anywhere in reasonable range
+                            return None;
+                        }
                     }
-                    if next_cc.matches(byte as char) {
-                        // Found a position where next element can start
-                        let consumed = try_pos - 1 - text_pos;
-                        if consumed >= min {
-                            if let Some(final_pos) = self.match_elements_backtracking(
-                                text,
-                                elem_idx + 1,
-                                text_pos + consumed,
-                            ) {
-                                return Some(final_pos);
+                }
+
+                // Use memchr-style search for common cases
+                if !next_cc.negated && next_cc.ranges.is_empty() && next_cc.chars.len() == 1 {
+                    // Single character class like [0] or [a] - use memchr
+                    let target = next_cc.chars[0];
+                    let target_byte = if target.is_ascii() { target as u8 } else { 0 };
+
+                    if target_byte > 0 {
+                        // Use memchr for ASCII single char
+                        let mut search_pos = 0;
+                        while search_pos < remaining.len() {
+                            if let Some(found) =
+                                memchr::memchr(target_byte, &remaining.as_bytes()[search_pos..])
+                            {
+                                let candidate_pos = text_pos + search_pos + found;
+                                let consumed = candidate_pos - text_pos;
+                                if consumed >= min {
+                                    if let Some(final_pos) = self.match_elements_backtracking(
+                                        text,
+                                        elem_idx + 1,
+                                        candidate_pos,
+                                    ) {
+                                        return Some(final_pos);
+                                    }
+                                }
+                                search_pos += found + 1;
+                            } else {
+                                break;
+                            }
+                        }
+                        // If memchr didn't find anything or matches failed, fall through
+                    }
+                } else if !next_cc.negated && next_cc.is_digit_class() {
+                    // Digit class [0-9] - scan for digits efficiently
+                    for (idx, byte) in remaining.as_bytes().iter().enumerate().rev() {
+                        if byte.is_ascii_digit() {
+                            let candidate_pos = text_pos + idx;
+                            let consumed = candidate_pos - text_pos;
+                            if consumed >= min {
+                                if let Some(final_pos) = self.match_elements_backtracking(
+                                    text,
+                                    elem_idx + 1,
+                                    candidate_pos,
+                                ) {
+                                    return Some(final_pos);
+                                }
                             }
                         }
                     }
-                    try_pos -= 1;
+                    // Fall through to standard backtracking if needed
                 }
-                // Don't return None here - fall through to standard backtracking
-                // This handles the case when max_count = 0 (quantifier matches 0 times)
             }
 
             // Standard greedy backtracking

@@ -217,6 +217,14 @@ impl CharClass {
         }
     }
 
+    /// Check if this is a digit-only character class [0-9]
+    pub fn is_digit_class(&self) -> bool {
+        !self.negated
+            && self.chars.is_empty()
+            && self.ranges.len() == 1
+            && self.ranges[0] == ('0', '9')
+    }
+
     /// Check if this character class overlaps with another
     /// (i.e., there exists at least one character matching both)
     pub fn overlaps_with(&self, other: &CharClass) -> bool {

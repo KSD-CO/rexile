@@ -20,12 +20,13 @@ ReXile is a **lightweight regex alternative** that achieves **exceptional compil
 - ✅ Multi-pattern matching (alternations)
 - ✅ Character classes with negation
 - ✅ Quantifiers (`*`, `+`, `?`, `{n}`, `{n,m}`)
-- ✅ **Range quantifiers** (`{n}`, `{n,}`, `{n,m}`) - NEW in v0.4.7
-- ✅ **Non-greedy quantifiers** (`*?`, `+?`, `??`) - NEW in v0.2.1
-- ✅ **Case-insensitive flag** (`(?i)`) - NEW in v0.4.7
+- ✅ **Range quantifiers** (`{n}`, `{n,}`, `{n,m}`)
+- ✅ **Non-greedy quantifiers** (`*?`, `+?`, `??`)
+- ✅ **Case-insensitive flag** (`(?i)`)
 - ✅ **Dot wildcard** (`.`, `.*`, `.+`) with backtracking
-- ✅ **DOTALL mode** (`(?s)`) - Dot matches newlines - NEW in v0.2.1
-- ✅ **Non-capturing groups** (`(?:...)`) with alternations - NEW in v0.2.1
+- ✅ **DOTALL mode** (`(?s)`) - Dot matches newlines
+- ✅ **Non-capturing groups** (`(?:...)`) with alternations
+- ✅ **Hybrid DFA/NFA engine** - Smart pattern routing - NEW in v0.4.9
 - ✅ Escape sequences (`\d`, `\w`, `\s`, etc.)
 - ✅ Sequences and groups
 - ✅ Word boundaries (`\b`, `\B`)

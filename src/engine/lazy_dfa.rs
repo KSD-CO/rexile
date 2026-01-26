@@ -7,32 +7,51 @@ use crate::parser::quantifier::Quantifier;
 use crate::parser::sequence::{Sequence, SequenceElement};
 use std::collections::HashMap;
 
+/// Helper to get quantifier bounds
+fn quantifier_bounds(q: &Quantifier) -> (usize, usize) {
+    match q {
+        Quantifier::ZeroOrMore | Quantifier::ZeroOrMoreLazy => (0, usize::MAX),
+        Quantifier::OneOrMore | Quantifier::OneOrMoreLazy => (1, usize::MAX),
+        Quantifier::ZeroOrOne | Quantifier::ZeroOrOneLazy => (0, 1),
+        Quantifier::Exactly(n) => (*n, *n),
+        Quantifier::AtLeast(n) => (*n, usize::MAX),
+        Quantifier::Between(n, m) => (*n, *m),
+    }
+}
+
 /// Lazy DFA that compiles states on-demand
+#[derive(Clone, Debug)]
 pub struct LazyDFA {
-    /// NFA-like pattern representation
-    pattern: Vec<PatternElement>,
-    /// Cache of compiled DFA states: (state_id, byte) -> next_state_id
-    /// Using u8 instead of char for performance (ASCII-optimized)
-    state_cache: HashMap<(StateId, u8), StateId>,
-    /// State definitions: what NFA positions each DFA state represents
-    states: Vec<DFAState>,
+    /// NFA instructions
+    instructions: Vec<Instruction>,
+    /// Cache of compiled DFA states: (nfa_state_set) -> dfa_state_id
+    /// State set represented as sorted Vec for hashing
+    state_cache: HashMap<Vec<usize>, StateId>,
+    /// Transition cache: (dfa_state, byte) -> dfa_state
+    transition_cache: HashMap<(StateId, u8), StateId>,
     /// Next state ID to allocate
     next_state_id: StateId,
+    /// Accepting DFA states
+    accept_states: HashMap<StateId, bool>,
 }
 
 type StateId = u32;
 
+/// NFA instruction (like Thompson's NFA)
 #[derive(Debug, Clone)]
-struct DFAState {
-    /// NFA positions this DFA state represents (bitset for performance)
-    /// Using u64 bitset for up to 64 NFA positions
-    nfa_positions: u64,
-    /// Is this an accepting state?
-    is_accept: bool,
+enum Instruction {
+    /// Match a character and advance
+    Match(MatchType),
+    /// Split into multiple paths (for alternation or quantifiers)
+    Split { first: usize, second: usize },
+    /// Jump to another instruction
+    Jump(usize),
+    /// Accept state
+    Accept,
 }
 
 #[derive(Debug, Clone)]
-enum PatternElement {
+enum MatchType {
     /// Match a literal character
     Literal(char),
     /// Match word char (\w)
@@ -47,15 +66,32 @@ enum PatternElement {
     Class(CharClass),
 }
 
-impl PatternElement {
+impl MatchType {
+    #[inline]
     fn matches(&self, ch: char) -> bool {
         match self {
-            PatternElement::Literal(c) => ch == *c,
-            PatternElement::Word => ch.is_alphanumeric() || ch == '_',
-            PatternElement::Digit => ch.is_ascii_digit(),
-            PatternElement::Whitespace => ch.is_whitespace(),
-            PatternElement::Any => true,
-            PatternElement::Class(cc) => cc.matches(ch),
+            MatchType::Literal(c) => ch == *c,
+            MatchType::Word => ch.is_alphanumeric() || ch == '_',
+            MatchType::Digit => ch.is_ascii_digit(),
+            MatchType::Whitespace => ch.is_whitespace(),
+            MatchType::Any => ch != '\n',
+            MatchType::Class(cc) => cc.matches(ch),
+        }
+    }
+
+    #[inline]
+    fn matches_byte(&self, byte: u8) -> bool {
+        if !byte.is_ascii() {
+            return false;
+        }
+        let ch = byte as char;
+        match self {
+            MatchType::Literal(c) => ch == *c,
+            MatchType::Word => ch.is_ascii_alphanumeric() || ch == '_',
+            MatchType::Digit => ch.is_ascii_digit(),
+            MatchType::Whitespace => matches!(ch, ' ' | '\t' | '\n' | '\r'),
+            MatchType::Any => ch != '\n',
+            MatchType::Class(cc) => cc.matches(ch),
         }
     }
 }
@@ -63,255 +99,314 @@ impl PatternElement {
 impl LazyDFA {
     /// Try to compile a sequence into a Lazy DFA
     pub fn try_compile(seq: &Sequence) -> Option<Self> {
-        // Convert sequence to flat pattern (expanding quantifiers)
-        let mut pattern = Vec::new();
+        let mut compiler = NFACompiler::new();
 
+        // Compile sequence to NFA instructions
         for elem in &seq.elements {
-            match elem {
-                SequenceElement::Char(ch) => {
-                    pattern.push(PatternElement::Literal(*ch));
-                }
-
-                SequenceElement::CharClass(cc) => {
-                    pattern.push(Self::charclass_to_element(cc));
-                }
-
-                SequenceElement::QuantifiedChar(ch, q) => {
-                    let elem = PatternElement::Literal(*ch);
-                    Self::expand_quantified(&mut pattern, elem, q)?;
-                }
-
-                SequenceElement::QuantifiedCharClass(cc, q) => {
-                    let elem = Self::charclass_to_element(cc);
-                    Self::expand_quantified(&mut pattern, elem, q)?;
-                }
-
-                _ => return None, // Other elements not supported yet
-            }
+            compiler.compile_element(elem)?;
         }
 
-        if pattern.is_empty() {
-            return None;
-        }
-
-        // Create initial DFA state (start state)
-        let start_state = DFAState {
-            nfa_positions: 1u64, // Position 0 (before first element)
-            is_accept: false,
-        };
+        // Add accept instruction
+        compiler.add_accept();
 
         Some(LazyDFA {
-            pattern,
+            instructions: compiler.instructions,
             state_cache: HashMap::new(),
-            states: vec![start_state],
+            transition_cache: HashMap::new(),
             next_state_id: 1,
+            accept_states: HashMap::new(),
         })
-    }
-
-    /// Expand quantified element into pattern representation
-    fn expand_quantified(
-        pattern: &mut Vec<PatternElement>,
-        elem: PatternElement,
-        quantifier: &Quantifier,
-    ) -> Option<()> {
-        match quantifier {
-            Quantifier::ZeroOrMore => {
-                // For *, we use marker in pattern (handled specially in matching)
-                pattern.push(elem);
-                Some(())
-            }
-            Quantifier::OneOrMore => {
-                // For +, we use marker in pattern
-                pattern.push(elem);
-                Some(())
-            }
-            Quantifier::ZeroOrOne => {
-                // For ?, we use marker in pattern
-                pattern.push(elem);
-                Some(())
-            }
-            _ => None, // Other quantifiers not implemented yet
-        }
-    }
-
-    /// Convert CharClass to PatternElement
-    fn charclass_to_element(cc: &CharClass) -> PatternElement {
-        // Check for predefined classes
-        if cc.matches('a') && cc.matches('Z') && cc.matches('0') && cc.matches('_') {
-            return PatternElement::Word;
-        }
-        if cc.matches('0') && cc.matches('9') && !cc.matches('a') {
-            return PatternElement::Digit;
-        }
-        if cc.matches(' ') && cc.matches('\t') && cc.matches('\n') {
-            return PatternElement::Whitespace;
-        }
-
-        PatternElement::Class(cc.clone())
     }
 
     /// Find first match using lazy DFA compilation
     pub fn find(&mut self, text: &str) -> Option<(usize, usize)> {
         let bytes = text.as_bytes();
 
-        // Try starting match at each byte position
-        for start_byte in 0..bytes.len() {
-            // Skip if not at char boundary
-            if !text.is_char_boundary(start_byte) {
+        // Try starting match at each position
+        for start in 0..text.len() {
+            if !text.is_char_boundary(start) {
                 continue;
             }
 
-            if let Some(match_len) = self.try_match_at(text, start_byte) {
-                return Some((start_byte, start_byte + match_len));
+            // Get initial NFA state set
+            let mut nfa_states = vec![0];
+            self.epsilon_closure(&mut nfa_states);
+
+            // Convert to DFA state
+            let mut dfa_state = self.get_or_create_dfa_state(&nfa_states);
+
+            let mut pos = start;
+            let mut last_match = None;
+
+            // Check if initial state is accepting
+            if self.is_accepting_state(dfa_state) {
+                last_match = Some(pos);
+            }
+
+            // Process input
+            while pos < text.len() {
+                let byte = bytes[pos];
+
+                // Try to get cached transition
+                if let Some(&next_state) = self.transition_cache.get(&(dfa_state, byte)) {
+                    dfa_state = next_state;
+                } else {
+                    // Compute new DFA state
+                    let nfa_states = self.get_nfa_states(dfa_state);
+                    let mut next_nfa_states = Vec::new();
+
+                    // Simulate NFA step
+                    for &nfa_state in &nfa_states {
+                        if let Some(Instruction::Match(match_type)) =
+                            self.instructions.get(nfa_state)
+                        {
+                            if match_type.matches_byte(byte) {
+                                next_nfa_states.push(nfa_state + 1);
+                            }
+                        }
+                    }
+
+                    if next_nfa_states.is_empty() {
+                        break;
+                    }
+
+                    self.epsilon_closure(&mut next_nfa_states);
+                    let next_dfa_state = self.get_or_create_dfa_state(&next_nfa_states);
+
+                    // Cache transition
+                    self.transition_cache
+                        .insert((dfa_state, byte), next_dfa_state);
+                    dfa_state = next_dfa_state;
+                }
+
+                pos += 1;
+
+                // Check if current state is accepting
+                if self.is_accepting_state(dfa_state) {
+                    last_match = Some(pos);
+                }
+            }
+
+            // If we found a match from this start position, return it
+            if let Some(end) = last_match {
+                return Some((start, end));
             }
         }
 
         None
     }
 
-    /// Try to match starting at a specific byte position
-    fn try_match_at(&mut self, text: &str, start_byte: usize) -> Option<usize> {
-        let text_slice = &text[start_byte..];
-        let _current_state: StateId = 0; // Start state
-        let mut pattern_pos = 0;
-        let mut bytes_consumed = 0;
+    /// Get or create DFA state for a set of NFA states
+    fn get_or_create_dfa_state(&mut self, nfa_states: &[usize]) -> StateId {
+        let mut sorted_states = nfa_states.to_vec();
+        sorted_states.sort_unstable();
+        sorted_states.dedup();
 
-        for ch in text_slice.chars() {
-            // Check if we can accept here (for greedy matching)
-            if pattern_pos >= self.pattern.len() {
-                return Some(bytes_consumed);
-            }
-
-            let elem = &self.pattern[pattern_pos];
-
-            if elem.matches(ch) {
-                bytes_consumed += ch.len_utf8();
-                pattern_pos += 1;
-            } else {
-                // No match
-                break;
-            }
+        if let Some(&state_id) = self.state_cache.get(&sorted_states) {
+            return state_id;
         }
 
-        // Check if we consumed entire pattern
-        if pattern_pos >= self.pattern.len() {
-            Some(bytes_consumed)
-        } else {
-            None
+        let state_id = self.next_state_id;
+        self.next_state_id += 1;
+
+        // Check if this is an accepting state
+        let is_accept = sorted_states
+            .iter()
+            .any(|&s| matches!(self.instructions.get(s), Some(Instruction::Accept)));
+
+        self.state_cache.insert(sorted_states.clone(), state_id);
+        self.accept_states.insert(state_id, is_accept);
+
+        state_id
+    }
+
+    /// Get NFA states represented by a DFA state
+    fn get_nfa_states(&self, dfa_state: StateId) -> Vec<usize> {
+        for (nfa_states, &state_id) in &self.state_cache {
+            if state_id == dfa_state {
+                return nfa_states.clone();
+            }
         }
+        vec![]
+    }
+
+    /// Compute epsilon closure (follow all epsilon transitions)
+    fn epsilon_closure(&self, states: &mut Vec<usize>) {
+        let mut i = 0;
+        while i < states.len() {
+            let state = states[i];
+            if let Some(instr) = self.instructions.get(state) {
+                match instr {
+                    Instruction::Split { first, second } => {
+                        if !states.contains(first) {
+                            states.push(*first);
+                        }
+                        if !states.contains(second) {
+                            states.push(*second);
+                        }
+                    }
+                    Instruction::Jump(target) => {
+                        if !states.contains(target) {
+                            states.push(*target);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            i += 1;
+        }
+    }
+
+    /// Check if DFA state is accepting
+    fn is_accepting_state(&self, state: StateId) -> bool {
+        self.accept_states.get(&state).copied().unwrap_or(false)
     }
 }
 
-/// Optimized version using direct pattern matching (no actual DFA compilation yet)
-/// This is a stepping stone - simpler and faster than full NFA, but not true lazy DFA
-impl LazyDFA {
-    /// Find with prefilter: use inner literal to guide search
-    pub fn find_with_prefilter(&self, text: &str, literal: &[u8]) -> Option<(usize, usize)> {
-        use memchr::memmem;
-        let finder = memmem::Finder::new(literal);
+/// NFA compiler helper
+struct NFACompiler {
+    instructions: Vec<Instruction>,
+}
 
-        let mut search_pos = 0;
-        while search_pos < text.len() {
-            if let Some(found_pos) = finder.find(&text.as_bytes()[search_pos..]) {
-                let anchor_pos = search_pos + found_pos;
-
-                // Try match at ONLY a few strategic positions before anchor
-                // Most matches are within 5-15 chars before the anchor
-                let max_back = 30;
-                let start = anchor_pos.saturating_sub(max_back);
-                let offsets = [0, 3, 7, 12, 18, 25];
-
-                for &offset in &offsets {
-                    let try_start = anchor_pos.saturating_sub(offset);
-                    if try_start < start {
-                        break;
-                    }
-
-                    if !text.is_char_boundary(try_start) {
-                        continue;
-                    }
-
-                    if let Some(len) = self.match_pattern_at(text, try_start) {
-                        let match_end = try_start + len;
-                        // Verify anchor is within match
-                        if try_start <= anchor_pos && anchor_pos < match_end {
-                            return Some((try_start, match_end));
-                        }
-                    }
-                }
-
-                search_pos = anchor_pos + 1;
-            } else {
-                break;
-            }
+impl NFACompiler {
+    fn new() -> Self {
+        NFACompiler {
+            instructions: Vec::new(),
         }
-
-        None
     }
 
-    /// Simplified find that just does smart sequential matching
-    pub fn find_simple(&self, text: &str) -> Option<(usize, usize)> {
-        // Extract first element to guide search
-        let first_elem = self.pattern.first()?;
+    fn compile_element(&mut self, elem: &SequenceElement) -> Option<()> {
+        match elem {
+            SequenceElement::Char(ch) => {
+                self.instructions
+                    .push(Instruction::Match(MatchType::Literal(*ch)));
+            }
 
-        match first_elem {
-            PatternElement::Literal(ch) => {
-                // Use memchr for literal first char
-                use memchr::memchr;
-                let byte = *ch as u8;
-                let mut search_pos = 0;
+            SequenceElement::Dot => {
+                self.instructions.push(Instruction::Match(MatchType::Any));
+            }
 
-                while search_pos < text.len() {
-                    if let Some(found) = memchr(byte, &text.as_bytes()[search_pos..]) {
-                        let abs_pos = search_pos + found;
-                        if let Some(len) = self.match_pattern_at(text, abs_pos) {
-                            return Some((abs_pos, abs_pos + len));
-                        }
-                        search_pos = abs_pos + 1;
-                    } else {
-                        break;
-                    }
+            SequenceElement::CharClass(cc) => {
+                let match_type = Self::charclass_to_match_type(cc);
+                self.instructions.push(Instruction::Match(match_type));
+            }
+
+            SequenceElement::QuantifiedChar(ch, q) => {
+                self.compile_quantified(MatchType::Literal(*ch), q)?;
+            }
+
+            SequenceElement::QuantifiedCharClass(cc, q) => {
+                let match_type = Self::charclass_to_match_type(cc);
+                self.compile_quantified(match_type, q)?;
+            }
+
+            SequenceElement::Literal(s) => {
+                for ch in s.chars() {
+                    self.instructions
+                        .push(Instruction::Match(MatchType::Literal(ch)));
                 }
-                None
+            }
+
+            _ => return None, // Other elements not supported yet
+        }
+        Some(())
+    }
+
+    fn compile_quantified(&mut self, match_type: MatchType, quantifier: &Quantifier) -> Option<()> {
+        let (min, max) = quantifier_bounds(quantifier);
+
+        match (min, max) {
+            (0, usize::MAX) => {
+                // * quantifier: split(match, skip), match -> jump back
+                let split_pos = self.instructions.len();
+                let match_pos = split_pos + 1;
+                let after_pos = split_pos + 3;
+
+                self.instructions.push(Instruction::Split {
+                    first: match_pos,
+                    second: after_pos,
+                });
+                self.instructions.push(Instruction::Match(match_type));
+                self.instructions.push(Instruction::Jump(split_pos));
+            }
+
+            (1, usize::MAX) => {
+                // + quantifier: match, split(match, skip), match -> jump back
+                let match_pos = self.instructions.len();
+                let split_pos = match_pos + 1;
+
+                self.instructions
+                    .push(Instruction::Match(match_type.clone()));
+                self.instructions.push(Instruction::Split {
+                    first: match_pos,
+                    second: split_pos + 1,
+                });
+            }
+
+            (0, 1) => {
+                // ? quantifier: split(match, skip)
+                let split_pos = self.instructions.len();
+                let match_pos = split_pos + 1;
+                let after_pos = match_pos + 1;
+
+                self.instructions.push(Instruction::Split {
+                    first: match_pos,
+                    second: after_pos,
+                });
+                self.instructions.push(Instruction::Match(match_type));
             }
 
             _ => {
-                // For non-literal first elements, scan positions
-                for (pos, ch) in text.char_indices() {
-                    if first_elem.matches(ch) {
-                        if let Some(len) = self.match_pattern_at(text, pos) {
-                            return Some((pos, pos + len));
-                        }
+                // {n,m} quantifier: repeat min times, then optional max-min times
+                for _ in 0..min {
+                    self.instructions
+                        .push(Instruction::Match(match_type.clone()));
+                }
+
+                if max > min && max != usize::MAX {
+                    for _ in 0..(max - min) {
+                        let split_pos = self.instructions.len();
+                        let match_pos = split_pos + 1;
+                        let after_pos = match_pos + 1;
+
+                        self.instructions.push(Instruction::Split {
+                            first: match_pos,
+                            second: after_pos,
+                        });
+                        self.instructions
+                            .push(Instruction::Match(match_type.clone()));
                     }
                 }
-                None
             }
         }
+
+        Some(())
     }
 
-    /// Match pattern at specific position
-    fn match_pattern_at(&self, text: &str, start_pos: usize) -> Option<usize> {
-        let text_slice = &text[start_pos..];
-        let mut pattern_pos = 0;
-        let mut char_iter = text_slice.chars();
-        let mut bytes_consumed = 0;
+    fn add_accept(&mut self) {
+        self.instructions.push(Instruction::Accept);
+    }
 
-        while pattern_pos < self.pattern.len() {
-            let elem = &self.pattern[pattern_pos];
-
-            if let Some(ch) = char_iter.next() {
-                if elem.matches(ch) {
-                    bytes_consumed += ch.len_utf8();
-                    pattern_pos += 1;
-                } else {
-                    return None;
-                }
-            } else {
-                // Ran out of text
-                return None;
+    fn charclass_to_match_type(cc: &CharClass) -> MatchType {
+        // Check for predefined classes
+        if !cc.negated {
+            if cc.chars.is_empty() && cc.ranges.len() == 1 && cc.ranges[0] == ('0', '9') {
+                return MatchType::Digit;
             }
+
+            // Check for \w pattern
+            if cc.ranges.contains(&('a', 'z'))
+                && cc.ranges.contains(&('A', 'Z'))
+                && cc.ranges.contains(&('0', '9'))
+                && cc.chars.contains(&'_')
+            {
+                return MatchType::Word;
+            }
+        } else if cc.chars.len() == 1 && cc.chars[0] == '\n' && cc.ranges.is_empty() {
+            // Negated [^\n] is dot
+            return MatchType::Any;
         }
 
-        Some(bytes_consumed)
+        MatchType::Class(cc.clone())
     }
 }
