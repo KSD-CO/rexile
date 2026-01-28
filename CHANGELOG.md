@@ -1,3 +1,19 @@
+## [0.4.10] - 2026-01-27
+
+### Added
+- **Full lookaround support**: Complete implementation of lookahead and lookbehind with combined patterns
+  - `foo(?=bar)` - Match 'foo' only if followed by 'bar' (positive lookahead with prefix)
+  - `foo(?!bar)` - Match 'foo' only if NOT followed by 'bar' (negative lookahead with prefix)
+  - `(?<=foo)bar` - Match 'bar' only if preceded by 'foo' (positive lookbehind with suffix)
+  - `(?<!foo)bar` - Match 'bar' only if NOT preceded by 'foo' (negative lookbehind with suffix)
+  - All combinations now work correctly in `is_match()`, `find()`, and `find_all()`
+  - 10 comprehensive integration tests added for combined lookaround patterns
+
+### Changed
+- Enhanced AST structure with `LookbehindWithSuffix` variant for proper lookbehind+suffix handling
+- Improved pattern parser to correctly route combined lookaround patterns
+- All 138 tests passing (84 unit + 13 group + 9 capture + 10 combined lookaround + 8 lookaround + 6 boundary + 8 doc tests)
+
 ## [0.4.7] - 2025-01-26
 
 ### Fixed

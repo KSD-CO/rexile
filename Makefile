@@ -23,9 +23,13 @@ help:
 	@echo "  make memory-bench           - Memory comparison benchmark"
 	@echo ""
 	@echo "Examples:"
-	@echo "  make examples               - Run key examples"
-	@echo "  make basic                  - Basic usage example"
-	@echo "  make log-processing         - Log processing example"
+	@echo "  make examples               - Run all examples"
+	@echo "  make comprehensive          - Run comprehensive demo (all features)"
+	@echo "  make comprehensive-basic    - Basic pattern matching"
+	@echo "  make comprehensive-advanced - Advanced features"
+	@echo "  make comprehensive-benchmark- 36 pattern benchmarks"
+	@echo "  make comprehensive-production- 12 production use cases"
+	@echo "  make perf-compare           - Performance vs regex crate"
 
 # =============================================================================
 # CI CHECKS (matches GitHub Actions)
@@ -74,20 +78,32 @@ bench:
 # EXAMPLES
 # =============================================================================
 
-examples: basic log-processing performance
-	@echo "✅ Key examples completed!"
+examples: comprehensive perf-compare
+	@echo "✅ All examples completed!"
 
-basic:
-	@echo "=== Basic Usage Example ==="
-	@cargo run --example basic_usage
+comprehensive:
+	@echo "=== Comprehensive Examples (All Features) ==="
+	@cargo run --release --example comprehensive all
 
-log-processing:
-	@echo "=== Log Processing Example ==="
-	@cargo run --example log_processing
+comprehensive-basic:
+	@echo "=== Basic Pattern Matching ==="
+	@cargo run --release --example comprehensive basic
 
-performance:
-	@echo "=== Performance Example ==="
-	@cargo run --release --example performance
+comprehensive-advanced:
+	@echo "=== Advanced Features ==="
+	@cargo run --release --example comprehensive advanced
+
+comprehensive-benchmark:
+	@echo "=== Benchmark (36 patterns) ==="
+	@cargo run --release --example comprehensive benchmark
+
+comprehensive-production:
+	@echo "=== Production Use Cases (12 scenarios) ==="
+	@cargo run --release --example comprehensive production
+
+perf-compare:
+	@echo "=== Performance Comparison vs regex crate ==="
+	@cargo run --release --example perf_compare
 
 # =============================================================================
 # DEVELOPMENT

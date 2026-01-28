@@ -116,8 +116,17 @@ impl QuantifiedPattern {
             let mut byte_len = 0;
             let mut match_count = 0;
 
+            // Get quantifier bounds
+            let min = self.quantifier.min_matches();
+            let max = self.quantifier.max_matches();
+
             // OPTIMIZED: Direct byte scanning for ASCII
+            // Stop when we reach max matches to avoid over-matching
             for &byte in bytes {
+                if match_count >= max {
+                    break; // Stop at max to avoid greedy over-matching
+                }
+
                 if self.element.matches_byte(byte) {
                     byte_len += 1;
                     match_count += 1;
@@ -127,14 +136,7 @@ impl QuantifiedPattern {
             }
 
             // Check quantifier constraints
-            let valid = match self.quantifier {
-                Quantifier::ZeroOrMore | Quantifier::ZeroOrMoreLazy => true,
-                Quantifier::OneOrMore | Quantifier::OneOrMoreLazy => match_count >= 1,
-                Quantifier::ZeroOrOne | Quantifier::ZeroOrOneLazy => match_count <= 1,
-                Quantifier::Exactly(n) => match_count == n,
-                Quantifier::AtLeast(n) => match_count >= n,
-                Quantifier::Between(min, max) => match_count >= min && match_count <= max,
-            };
+            let valid = match_count >= min && match_count <= max;
 
             return if valid { Some(byte_len) } else { None };
         }
@@ -143,7 +145,15 @@ impl QuantifiedPattern {
         let mut byte_len = 0;
         let mut match_count = 0;
 
+        // Get quantifier bounds
+        let min = self.quantifier.min_matches();
+        let max = self.quantifier.max_matches();
+
         for ch in text.chars() {
+            if match_count >= max {
+                break; // Stop at max to avoid greedy over-matching
+            }
+
             if self.element.matches(ch) {
                 byte_len += ch.len_utf8();
                 match_count += 1;
@@ -153,14 +163,7 @@ impl QuantifiedPattern {
         }
 
         // Check if quantifier constraints are satisfied
-        let valid = match self.quantifier {
-            Quantifier::ZeroOrMore | Quantifier::ZeroOrMoreLazy => true, // Any count is OK
-            Quantifier::OneOrMore | Quantifier::OneOrMoreLazy => match_count >= 1,
-            Quantifier::ZeroOrOne | Quantifier::ZeroOrOneLazy => match_count <= 1,
-            Quantifier::Exactly(n) => match_count == n,
-            Quantifier::AtLeast(n) => match_count >= n,
-            Quantifier::Between(min, max) => match_count >= min && match_count <= max,
-        };
+        let valid = match_count >= min && match_count <= max;
 
         if valid {
             Some(byte_len)
@@ -172,24 +175,9 @@ impl QuantifiedPattern {
     /// Check if this pattern matches anywhere in text (optimized for speed)
     /// Returns immediately on first match without computing position
     pub fn is_match(&self, text: &str) -> bool {
-        // Fast path: Try match at start first
-        if self.match_at(text).is_some() {
-            return true;
-        }
-
-        // Only scan forward if no match at start
-        let chars: Vec<(usize, char)> = text.char_indices().collect();
-
-        for (start_byte, _) in &chars {
-            if *start_byte == 0 {
-                continue; // Already tried
-            }
-            if self.match_at(&text[*start_byte..]).is_some() {
-                return true; // Early termination!
-            }
-        }
-
-        false
+        // OPTIMIZATION: Use the optimized find() method which has fast paths
+        // This avoids scanning every position character-by-character
+        self.find(text).is_some()
     }
 
     /// Find first position in text where this pattern matches
@@ -202,6 +190,36 @@ impl QuantifiedPattern {
             return None;
         }
 
+        // OPTIMIZATION: Fast path for digit patterns
+        if matches!(&self.element, QuantifiedElement::CharClass(cc) if cc.is_digit_class()) {
+            // Use memchr to find first digit
+            let bytes = text.as_bytes();
+            for (i, &b) in bytes.iter().enumerate() {
+                if b.is_ascii_digit() {
+                    // Found a digit, try to match from here
+                    if let Some(len) = self.match_at(&text[i..]) {
+                        return Some((i, i + len));
+                    }
+                }
+            }
+            return None;
+        }
+
+        // OPTIMIZATION: Fast path for word char patterns
+        if matches!(&self.element, QuantifiedElement::CharClass(cc) if cc.is_word_class()) {
+            // Scan for first word char
+            let bytes = text.as_bytes();
+            for (i, &b) in bytes.iter().enumerate() {
+                if b.is_ascii_alphanumeric() || b == b'_' {
+                    if let Some(len) = self.match_at(&text[i..]) {
+                        return Some((i, i + len));
+                    }
+                }
+            }
+            return None;
+        }
+
+        // Generic path for other patterns
         let chars: Vec<(usize, char)> = text.char_indices().collect();
         for (start_byte, _) in &chars {
             if let Some(len) = self.match_at(&text[*start_byte..]) {

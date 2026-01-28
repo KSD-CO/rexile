@@ -31,7 +31,11 @@ fn main() {
         "2024-01-15 ERROR [main] Connection timeout after 30s retry=3 user=admin@example.com";
     let text_code = "fn calculate_total(items: Vec<Item>) -> Result<f64, Error> { Ok(0.0) }";
     let text_long = &("ab12 ".repeat(200) + "target xyz999 end");
+    let text_repeat = "hello hello world";
+    let text_get_post = "GET /api POST /data";
+    let text_duplicate = "10.10 20.30";
 
+    // Test cases that both rexile and regex support
     let test_cases: Vec<(&str, &str, &str)> = vec![
         ("[a-z]+.+[0-9]+", text_short, "overlap: [a-z]+.+[0-9]+"),
         ("[a-z]+.+[0-9]+", text_long, "overlap: long text"),
@@ -52,6 +56,38 @@ fn main() {
         ("\\w+@\\w+", text_log, "escape: \\w+@\\w+"),
         ("[0-9]+", text_version, "charclass: [0-9]+"),
         ("[a-zA-Z_]+", text_code, "charclass: [a-zA-Z_]+"),
+        // Bounded quantifiers
+        ("\\d{1,3}", text_version, "bounded: \\d{1,3}"),
+        ("\\d{4}", text_log, "bounded: \\d{4} (exact)"),
+        ("\\w{2,}", text_code, "bounded: \\w{2,} (min)"),
+        // Case insensitive
+        ("(?i)error", text_log, "case-insensitive: (?i)error"),
+        (
+            "(?i)(get|post)",
+            text_get_post,
+            "case-insensitive: (?i)(get|post)",
+        ),
+        // Capturing groups
+        ("(\\w+)@(\\w+)", text_log, "capture: (\\w+)@(\\w+)"),
+        (
+            "(\\d+)\\.(\\d+)\\.(\\d+)",
+            text_version,
+            "capture: version pattern",
+        ),
+    ];
+
+    // ReXile-only features (not supported by regex crate)
+    let rexile_only: Vec<(&str, &str, &str)> = vec![
+        // Lookahead patterns
+        ("ERROR(?=\\s)", text_log, "lookahead: ERROR(?=\\s)"),
+        ("30(?=s)", text_log, "lookahead: 30(?=s)"),
+        ("user(?!x)", text_log, "neg-lookahead: user(?!x)"),
+        // Lookbehind patterns
+        ("(?<=user=)admin", text_log, "lookbehind: (?<=user=)admin"),
+        ("(?<!x)user", text_log, "neg-lookbehind: (?<!x)user"),
+        // Backreferences
+        ("(\\w+)\\s+\\1", text_repeat, "backref: (\\w+)\\s+\\1"),
+        ("(\\d+)\\.\\1", text_duplicate, "backref: (\\d+)\\.\\1"),
     ];
 
     let mem_before = get_rss_kb();
@@ -151,4 +187,23 @@ fn main() {
         xcp,
         xcp / rcp
     );
+
+    // Test ReXile-only features
+    println!("\n--- ReXile-Only Features (lookaround, backreferences) ---");
+    println!("{:<35} {:>10} {:>4}", "Pattern", "time", "ok");
+    println!("{}", "-".repeat(52));
+
+    for (pattern, text, name) in &rexile_only {
+        let rp = rexile::Pattern::new(pattern).unwrap();
+        let (rd, rr) = measure_time(|| rp.is_match(text), iterations);
+        let rns = rd.as_nanos() as f64 / iterations as f64;
+        println!(
+            "{:<35} {:>7.1}ns {:>3}",
+            name,
+            rns,
+            if rr { "✓" } else { "✗" }
+        );
+    }
+
+    println!("\nNote: regex crate does not support lookaround or backreferences");
 }

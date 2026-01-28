@@ -1,95 +1,122 @@
-# Rexile Examples
+# ReXile Examples
 
-Essential examples demonstrating rexile's features and use cases.
+Streamlined examples demonstrating ReXile's features and performance.
 
-## Core Examples
+## 📚 Examples
 
-### 1. [basic_usage.rs](basic_usage.rs)
-Quick start guide showing core API:
-- Pattern compilation
-- Basic matching (is_match, find, find_all)
-- Character classes
-- Quantifiers
-- Word boundaries
+### 1. [comprehensive.rs](comprehensive.rs) - **All-in-One Demo** ⭐
+Complete showcase of all ReXile features in a single file with menu-driven demos:
 
-Run: `cargo run --example basic_usage`
+**Available demos:**
+- `basic` - Basic pattern matching (literals, word chars, digits, anchors)
+- `advanced` - Advanced features (captures, lookaround, quantifiers, character classes)
+- `performance` - Performance comparison (uncached, pre-compiled, global cache)
+- `benchmark` - **36 detailed benchmarks** for common patterns
+- `production` - **12 production-ready use cases** (logs, URLs, versions, validation)
+- `all` - Run all demos (default)
 
-### 2. [production_ready_test.rs](production_ready_test.rs)
-Comprehensive feature test validating all supported patterns:
-- ✅ 70+ test cases covering all features
-- Character classes, quantifiers, anchors
-- Lookahead assertions
-- Case-insensitive matching
-- Word boundaries
-- Practical patterns (email, IP, HTTP methods)
+**Run:**
+```bash
+cargo run --example comprehensive           # All demos
+cargo run --example comprehensive basic     # Basic demo only
+cargo run --example comprehensive advanced  # Advanced features
+cargo run --example comprehensive benchmark # 36 pattern benchmarks
+cargo run --example comprehensive production # 12 real-world use cases
+```
 
-Run: `cargo run --example production_ready_test`
+**Features covered:**
+- ✅ **36 benchmark patterns** - comprehensive performance testing
+- ✅ **12 production use cases** - real-world patterns from rust-rule-engine
+- ✅ Literals, word chars, digits, anchors, boundaries
+- ✅ Capture groups with extraction
+- ✅ Lookahead/lookbehind assertions
+- ✅ Quantifiers (greedy, lazy, bounded, min/max)
+- ✅ Character classes (ranges, negation, Unicode)
+- ✅ Alternation (2-4 alternatives)
+- ✅ Rule engine patterns (GRL parser, conditions, variables)
+- ✅ Network patterns (IP, URLs, protocols)
+- ✅ Data extraction (prices, dates, versions)
+- ✅ Security validation (usernames, phones, hashes)
+- ✅ Configuration parsing (key=value, types)
 
-### 3. [log_processing.rs](log_processing.rs)
-Real-world use case: log file parsing and analysis
-- ERROR/WARN level detection
-- IP address extraction
-- Timestamp matching
-- Multi-pattern search
-
-Run: `cargo run --example log_processing`
-
-## Performance Examples
-
-### 4. [performance.rs](performance.rs)
-Performance comparison between rexile and regex crate
-- Compilation speed benchmarks
-- Matching performance tests
+### 2. [perf_compare.rs](perf_compare.rs) - **Performance Benchmarks**
+Detailed performance comparison with regex crate:
+- 22 test cases covering all pattern types
 - Memory usage comparison
+- Compile time benchmarks
+- ReXile-only features (lookaround, backreferences)
 
-Run: `cargo run --release --example performance`
-
-### 5. [perf_compare.rs](perf_compare.rs)
-Side-by-side performance comparison for common patterns
-
-Run: `cargo run --release --example perf_compare`
-
-### 6. [perf_micro.rs](perf_micro.rs)
-Micro-benchmarks for specific pattern types
-
-Run: `cargo run --release --example perf_micro`
-
-## Utilities
-
-### 7. [check_patterns.rs](check_patterns.rs)
-Pattern validation and testing utility
-- Validate pattern syntax
-- Test pattern matching
-- Debug pattern compilation
-
-Run: `cargo run --example check_patterns`
+**Run:**
+```bash
+cargo run --release --example perf_compare
+```
 
 ---
 
-## Quick Start
+## 🚀 Quick Start
 
 ```rust
-use rexile::Pattern;
+use rexile::{ReXile, Pattern};
 
 // Basic matching
-let pattern = Pattern::new(r"\d+").unwrap();
-assert!(pattern.is_match("Order #12345"));
+let pattern = ReXile::new(r"\w+@\w+").unwrap();
+assert!(pattern.is_match("user@domain"));
 
-// Find matches
-if let Some((start, end)) = pattern.find("Item 123") {
-    println!("Found at {}..{}", start, end);
+// Capture groups
+let pattern = Pattern::new(r"(\w+)@(\w+)").unwrap();
+if let Some(caps) = pattern.captures("admin@example") {
+    println!("User: {:?}", caps.get(1));    // Some("admin")
+    println!("Domain: {:?}", caps.get(2));  // Some("example")
 }
 
-// Find all matches
-let matches = pattern.find_all("123 and 456");
-// Returns: [(0, 3), (8, 11)]
+// Find positions
+if let Some((start, end)) = pattern.find("Contact: admin@example") {
+    println!("Found at: {}-{}", start, end);
+}
 ```
 
-## Features Demonstrated
+---
 
-- ⚡ 10-100x faster compilation than regex crate
-- 🎯 Competitive matching performance
-- 📦 Minimal dependencies (memchr + aho-corasick)
-- 🔧 Perfect for parsers, DSLs, rule engines
+## 📊 Performance Highlights
 
-See [README.md](../README.md) for full feature list and documentation.
+From `comprehensive.rs` benchmarks (100k iterations):
+
+| Pattern | Time/iter | Notes |
+|---------|-----------|-------|
+| Literal (`ERROR`) | ~29ns | Fastest with memchr |
+| Word run (`\w+`) | ~22ns | Optimized fast path |
+| Character class (`[a-z]+`) | ~11ns | Bitmap optimization |
+| Email-like (`\w+@\w+`) | ~35ns | Literal prefilter |
+| Quantifier (`\d{2,4}`) | ~52ns | Bounded matching |
+| Alternation (`ERROR\|WARN`) | ~64ns | Multi-pattern |
+
+**Pre-compiled vs uncached: ~116x faster!**
+
+---
+
+## 💡 Tips
+
+1. **Pre-compile patterns** for best performance:
+   ```rust
+   let pattern = ReXile::new(r"\w+@\w+").unwrap();  // Compile once
+   for line in lines {
+       pattern.is_match(line);  // Reuse many times
+   }
+   ```
+
+2. **Use global cache API** for convenience:
+   ```rust
+   rexile::is_match(r"\w+@\w+", text).unwrap();  // Auto-cached
+   ```
+
+3. **Literal patterns are fastest** - memchr optimization kicks in
+4. **Character classes** use bitmap for O(1) lookup
+5. **Anchored patterns** (^, $) are optimized
+
+---
+
+## 🎯 Next Steps
+
+- See [FEATURE_STATUS.md](../FEATURE_STATUS.md) for supported features
+- Check [PERFORMANCE_RESULTS.md](../PERFORMANCE_RESULTS.md) for detailed benchmarks  
+- Read [ROADMAP_FULL_REGEX.md](../ROADMAP_FULL_REGEX.md) for future plans

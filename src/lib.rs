@@ -257,7 +257,22 @@ impl Pattern {
         let fast_path = if flags.any_set() {
             None
         } else {
-            optimization::fast_path::detect_fast_path(effective_pattern)
+            // First check if we can compile a CaptureDFA for patterns with captures
+            if let Matcher::PatternWithCaptures { ref elements, .. } = matcher {
+                // Try to compile DFA
+                if let Some(dfa) = engine::capture_dfa::compile_capture_pattern(elements) {
+                    // Successfully compiled DFA - use it as fast path
+                    Some(optimization::fast_path::FastPath::CaptureDFA(
+                        std::sync::Arc::new(dfa),
+                    ))
+                } else {
+                    // DFA compilation failed - fall back to normal fast path detection
+                    optimization::fast_path::detect_fast_path(effective_pattern)
+                }
+            } else {
+                // Not a capture pattern - use normal fast path detection
+                optimization::fast_path::detect_fast_path(effective_pattern)
+            }
         };
 
         // Extract literals and create prefilter
@@ -999,7 +1014,11 @@ enum Ast {
     CombinedWithLookaround {
         prefix: Box<Ast>,
         lookaround: Lookaround,
-    }, // Phase 7.2: foo(?=bar)
+    }, // Phase 7.2: foo(?=bar) - prefix with lookahead
+    LookbehindWithSuffix {
+        lookbehind: Lookaround,
+        suffix: Box<Ast>,
+    }, // Phase 7.3: (?<=foo)bar - lookbehind with suffix
     PatternWithCaptures {
         elements: Vec<CaptureElement>,
         total_groups: usize,
@@ -1589,7 +1608,12 @@ enum Matcher {
         prefix: Box<Matcher>,
         lookaround: Box<Lookaround>,
         lookaround_matcher: Box<Matcher>,
-    }, // Phase 7.2
+    }, // Phase 7.2: foo(?=bar) - prefix with lookahead
+    LookbehindWithSuffix {
+        lookbehind: Box<Lookaround>,
+        lookbehind_matcher: Box<Matcher>,
+        suffix: Box<Matcher>,
+    }, // Phase 7.3: (?<=foo)bar - lookbehind with suffix
     PatternWithCaptures {
         elements: Vec<CompiledCaptureElement>,
         total_groups: usize,
@@ -1743,46 +1767,23 @@ impl Matcher {
                     false
                 }
             }
-            Matcher::PatternWithCaptures { elements, .. } => {
-                // Check if pattern contains backreferences
-                let has_backreference = elements.iter().any(|elem| match elem {
-                    CompiledCaptureElement::NonCapture(Matcher::Backreference(_)) => true,
-                    _ => false,
-                });
-
-                if has_backreference {
-                    // Need to use capture-aware matching
-                    // Try to match at any position in text
-                    for start_pos in 0..text.len() {
-                        if Self::match_pattern_with_backreferences(text, start_pos, elements)
-                            .is_some()
-                        {
-                            return true;
-                        }
-                    }
-                    return false;
+            Matcher::LookbehindWithSuffix {
+                lookbehind,
+                lookbehind_matcher,
+                suffix,
+            } => {
+                // Match suffix anywhere in text, then check if lookbehind matches at that position
+                // Try to find suffix match
+                if let Some((start, _end)) = suffix.find(text) {
+                    // Check if lookbehind succeeds at the start position of the suffix match
+                    lookbehind.matches_at(text, start, lookbehind_matcher)
+                } else {
+                    false
                 }
-
-                // Special case: single element can match anywhere
-                if elements.len() == 1 {
-                    let matcher = match &elements[0] {
-                        CompiledCaptureElement::Capture(m, _) => m,
-                        CompiledCaptureElement::NonCapture(m) => m,
-                    };
-                    return matcher.is_match(text);
-                }
-
-                // Multiple elements: try matching with backtracking support at any position
-                for start_pos in 0..=text.len() {
-                    if let Some(end_pos) =
-                        Self::match_elements_with_backtrack(text, start_pos, elements)
-                    {
-                        if end_pos > start_pos || elements.is_empty() {
-                            return true;
-                        }
-                    }
-                }
-                false
+            }
+            Matcher::PatternWithCaptures { .. } => {
+                // OPTIMIZATION: Delegate to find() for simplicity
+                self.find(text).is_some()
             }
             Matcher::Backreference(_) => {
                 // Backreferences cannot be matched without context
@@ -2524,6 +2525,32 @@ impl Matcher {
                 }
                 None
             }
+            Matcher::LookbehindWithSuffix {
+                lookbehind,
+                lookbehind_matcher,
+                suffix,
+            } => {
+                // Find first position where suffix matches AND lookbehind succeeds before it
+                let mut search_pos = 0;
+                while search_pos < text.len() {
+                    let remaining = &text[search_pos..];
+                    if let Some((rel_start, rel_end)) = suffix.find(remaining) {
+                        let abs_start = search_pos + rel_start;
+                        let abs_end = search_pos + rel_end;
+
+                        // Check if lookbehind succeeds at the start of the suffix match
+                        if lookbehind.matches_at(text, abs_start, lookbehind_matcher) {
+                            return Some((abs_start, abs_end));
+                        }
+
+                        // Move search position past this match to try next one
+                        search_pos = abs_start + 1;
+                    } else {
+                        break;
+                    }
+                }
+                None
+            }
             Matcher::PatternWithCaptures { elements, .. } => {
                 // Special case: single element can match anywhere
                 if elements.len() == 1 {
@@ -2534,7 +2561,15 @@ impl Matcher {
                     return matcher.find(text);
                 }
 
-                // Multiple elements: try matching with backtracking support
+                // NEW: Try to compile to DFA for efficient single-pass matching
+                // This avoids the position-dependent performance issue with memchr
+                if let Some(dfa) = crate::engine::capture_dfa::compile_capture_pattern(elements) {
+                    // eprintln!("DEBUG: Using DFA for capture pattern");
+                    return dfa.find(text);
+                }
+                // eprintln!("DEBUG: DFA compilation failed, falling back to NFA");
+
+                // Fallback: Linear scan through all positions
                 for start_pos in 0..=text.len() {
                     if let Some(end_pos) =
                         Self::match_elements_with_backtrack(text, start_pos, elements)
@@ -2544,6 +2579,7 @@ impl Matcher {
                         }
                     }
                 }
+
                 None
             }
             Matcher::Backreference(_) => {
@@ -2735,6 +2771,35 @@ impl Matcher {
 
                         // Check if lookaround succeeds at the end of the prefix match
                         if lookaround.matches_at(text, abs_end, lookaround_matcher) {
+                            matches.push((abs_start, abs_end));
+                        }
+
+                        // Move search position past the start of this match
+                        search_pos = abs_start + 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                matches
+            }
+            Matcher::LookbehindWithSuffix {
+                lookbehind,
+                lookbehind_matcher,
+                suffix,
+            } => {
+                // Find all positions where suffix matches AND lookbehind succeeds before it
+                let mut matches = Vec::new();
+                let mut search_pos = 0;
+
+                while search_pos < text.len() {
+                    let remaining = &text[search_pos..];
+                    if let Some((rel_start, rel_end)) = suffix.find(remaining) {
+                        let abs_start = search_pos + rel_start;
+                        let abs_end = search_pos + rel_end;
+
+                        // Check if lookbehind succeeds at the start of the suffix match
+                        if lookbehind.matches_at(text, abs_start, lookbehind_matcher) {
                             matches.push((abs_start, abs_end));
                         }
 
@@ -3069,6 +3134,16 @@ fn compile_ast(ast: &Ast) -> Result<Matcher, PatternError> {
                 lookaround_matcher: Box::new(lookaround_inner),
             })
         }
+        Ast::LookbehindWithSuffix { lookbehind, suffix } => {
+            // Compile both the lookbehind and the suffix
+            let lookbehind_inner = compile_ast(&lookbehind.pattern)?;
+            let suffix_matcher = compile_ast(suffix)?;
+            Ok(Matcher::LookbehindWithSuffix {
+                lookbehind: Box::new(lookbehind.clone()),
+                lookbehind_matcher: Box::new(lookbehind_inner),
+                suffix: Box::new(suffix_matcher),
+            })
+        }
         Ast::PatternWithCaptures {
             elements,
             total_groups,
@@ -3377,15 +3452,32 @@ fn parse_lookaround(pattern: &str, depth: usize) -> Result<Ast, PatternError> {
     };
 
     if let Some(close_idx) = find_matching_paren(pattern, 0) {
-        if close_idx != pattern.len() - 1 {
-            return Err(PatternError::ParseError(
-                "Lookaround must be entire pattern (combined patterns not yet supported)"
-                    .to_string(),
-            ));
-        }
-
         let inner = &pattern[prefix_len..close_idx];
         let inner_ast = parse_pattern_with_depth(inner, depth + 1)?;
+
+        // Check if there's a suffix after the lookaround
+        if close_idx != pattern.len() - 1 {
+            // This is a lookaround with suffix
+            let suffix = &pattern[close_idx + 1..];
+            let suffix_ast = parse_pattern_with_depth(suffix, depth + 1)?;
+
+            // For lookbehind: (?<=foo)bar - match bar only if preceded by foo
+            // For lookahead: (?=foo)bar - doesn't make semantic sense
+            if matches!(
+                lookaround_type,
+                LookaroundType::PositiveLookbehind | LookaroundType::NegativeLookbehind
+            ) {
+                let lookbehind = Lookaround::new(lookaround_type, inner_ast);
+                return Ok(Ast::LookbehindWithSuffix {
+                    lookbehind,
+                    suffix: Box::new(suffix_ast),
+                });
+            } else {
+                return Err(PatternError::ParseError(
+                    "Lookahead cannot have suffix pattern after it".to_string(),
+                ));
+            }
+        }
 
         Ok(Ast::Lookaround(Lookaround::new(lookaround_type, inner_ast)))
     } else {

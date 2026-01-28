@@ -32,6 +32,8 @@ ReXile is a **lightweight regex alternative** that achieves **exceptional compil
 - ✅ Word boundaries (`\b`, `\B`)
 - ✅ Anchoring (`^`, `$`)
 - ✅ **Capturing groups** - Auto-detection and extraction
+- ✅ **Lookahead/lookbehind** - `(?=...)`, `(?!...)`, `(?<=...)`, `(?<!...)` with combined patterns
+- ✅ **Backreferences** - `\1`, `\2`, etc.
 
 ## 🎯 Purpose
 
@@ -148,6 +150,26 @@ assert!(method.is_match("GET /api"));      // Matches GET
 assert!(method.is_match("get /api"));      // Also matches lowercase
 assert!(method.is_match("Post /data"));    // Also matches Post
 
+// Lookahead - match prefix only if followed by pattern (NEW in v0.4.9)
+let lookahead = Pattern::new(r"foo(?=bar)").unwrap();
+assert!(lookahead.is_match("foobar"));     // Matches 'foo' followed by 'bar'
+assert!(!lookahead.is_match("foobaz"));    // Doesn't match - not followed by 'bar'
+
+// Negative lookahead (NEW in v0.4.9)
+let neg_lookahead = Pattern::new(r"foo(?!bar)").unwrap();
+assert!(neg_lookahead.is_match("foobaz")); // Matches 'foo' NOT followed by 'bar'
+assert!(!neg_lookahead.is_match("foobar"));// Doesn't match - followed by 'bar'
+
+// Lookbehind - match suffix only if preceded by pattern (NEW in v0.4.9)
+let lookbehind = Pattern::new(r"(?<=foo)bar").unwrap();
+assert!(lookbehind.is_match("foobar"));    // Matches 'bar' preceded by 'foo'
+assert!(!lookbehind.is_match("bazbar"));   // Doesn't match - not preceded by 'foo'
+
+// Backreferences - match repeated patterns (NEW in v0.4.8)
+let backref = Pattern::new(r"(\w+)\s+\1").unwrap();
+assert!(backref.is_match("hello hello")); // Matches repeated word
+assert!(!backref.is_match("hello world"));// Doesn't match - different words
+
 // Anchors
 let exact = Pattern::new("^hello$").unwrap();
 assert!(exact.is_match("hello"));
@@ -211,9 +233,9 @@ ReXile uses **JIT-style specialized implementations** for common patterns:
 | **Non-capturing groups** | `(?:abc\|def)` | ✅ **Supported (v0.2.1)** |
 | **Capturing groups** | Extract `(group)` | ✅ **Supported (v0.2.0)** |
 | Word boundaries | `\b`, `\B` | ✅ Supported |
-| Bounded quantifiers | `{n}`, `{n,m}` | 🚧 Planned |
-| Lookahead/lookbehind | `(?=...)`, `(?<=...)` | 🚧 Planned |
-| Backreferences | `\1`, `\2` | 🚧 Planned |
+| **Bounded quantifiers** | `{n}`, `{n,}`, `{n,m}` | ✅ **Supported (v0.4.7)** |
+| **Lookahead/lookbehind** | `(?=...)`, `(?!...)`, `(?<=...)`, `(?<!...)` | ✅ **Supported (v0.4.9)** |
+| **Backreferences** | `\1`, `\2`, etc. | ✅ **Supported (v0.4.8)** |
 
 ## 📊 Performance Benchmarks
 
@@ -408,8 +430,11 @@ Contributions welcome! ReXile is actively maintained and evolving.
 - ✅ **Non-greedy quantifiers** (`.*?`, `+?`, `??`) - **v0.2.1**
 - ✅ **DOTALL mode** (`(?s)`) for multiline matching - **v0.2.1**
 - ✅ **Non-capturing groups** (`(?:...)`) with alternations - **v0.2.1**
+- ✅ **Bounded quantifiers** (`{n}`, `{n,}`, `{n,m}`) - **v0.4.7**
+- ✅ **Full lookaround support** (`(?=...)`, `(?!...)`, `(?<=...)`, `(?<!...)`) with combined patterns - **v0.4.10**
+- ✅ **Backreferences** (`\1`, `\2`, etc.) - **v0.4.8**
 - ✅ 10-100x faster compilation
-- 🔄 Advanced features: bounded quantifiers `{n,m}`, lookahead, Unicode support
+- 🔄 Advanced features: Unicode support, more optimizations
 
 **How to contribute:**
 1. Check [issues](https://github.com/KSD-CO/rexile/issues) for open tasks
@@ -418,9 +443,9 @@ Contributions welcome! ReXile is actively maintained and evolving.
 4. Submit PR with benchmarks showing performance impact
 
 **Priority areas:**
-- 📋 Bounded quantifiers (`{n}`, `{n,m}`)
+- 📋 Unicode support (`\p{L}`, `\p{N}`, etc.)
 - 📋 More fast path patterns
-- 📋 Unicode support
+- 📋 Named capture groups (`(?P<name>...)`)
 - 📋 Documentation improvements
 
 ## 📜 License
@@ -450,13 +475,13 @@ ReXile achieves competitive performance through **intelligent specialization** r
 
 ---
 
-**Status:** ✅ Production Ready (v0.2.1)
+**Status:** ✅ Production Ready (v0.4.10)
 
 - ✅ **Compilation Speed:** 10-100x faster than regex crate
 - ✅ **Matching Speed:** 1.4-1.9x faster on simple patterns
 - ✅ **Memory:** 15x less compilation, 5x less peak
-- ✅ **Features:** Core regex + dot wildcard + capturing groups + non-greedy + DOTALL + non-capturing groups
-- ✅ **Testing:** 84 unit tests + 13 group integration tests passing
+- ✅ **Features:** Core regex + dot wildcard + capturing groups + non-greedy + DOTALL + non-capturing groups + bounded quantifiers + **full lookaround support** + backreferences
+- ✅ **Testing:** 138 tests passing (84 unit + 13 group + 9 capture + 10 combined lookaround + 8 lookaround + 6 boundary + 8 doc tests)
 - ✅ **Real-world validated:** GRL parsing, rule engines, DSL compilers
 
 

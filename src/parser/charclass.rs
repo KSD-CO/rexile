@@ -225,6 +225,36 @@ impl CharClass {
             && self.ranges[0] == ('0', '9')
     }
 
+    /// Check if this is a word character class [a-zA-Z0-9_]
+    pub fn is_word_class(&self) -> bool {
+        if self.negated {
+            return false;
+        }
+        // Check if it's exactly \w (word chars: a-z, A-Z, 0-9, _)
+        let has_lowercase = self.ranges.contains(&('a', 'z'));
+        let has_uppercase = self.ranges.contains(&('A', 'Z'));
+        let has_digits = self.ranges.contains(&('0', '9'));
+        let has_underscore = self.chars.contains(&'_');
+
+        // Must have exactly these components
+        has_lowercase
+            && has_uppercase
+            && has_digits
+            && has_underscore
+            && self.ranges.len() == 3
+            && self.chars.len() == 1
+    }
+
+    /// Check if this is a whitespace-only character class \s
+    pub fn is_whitespace_class(&self) -> bool {
+        !self.negated
+            && self.chars.contains(&' ')
+            && self.chars.contains(&'\t')
+            && self.chars.contains(&'\n')
+            && self.chars.contains(&'\r')
+            && self.ranges.is_empty()
+    }
+
     /// Check if this character class overlaps with another
     /// (i.e., there exists at least one character matching both)
     pub fn overlaps_with(&self, other: &CharClass) -> bool {

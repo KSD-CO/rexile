@@ -1043,6 +1043,7 @@ pub enum FastPath {
     WordRun,
     IdentifierRun, // [a-zA-Z_]\w* - identifier pattern
     QuotedString,
+    CaptureDFA(Arc<crate::engine::capture_dfa::CaptureDFA>), // DFA for patterns with captures
 }
 
 impl std::fmt::Debug for FastPath {
@@ -1059,6 +1060,7 @@ impl std::fmt::Debug for FastPath {
             FastPath::WordRun => write!(f, "WordRun"),
             FastPath::IdentifierRun => write!(f, "IdentifierRun"),
             FastPath::QuotedString => write!(f, "QuotedString"),
+            FastPath::CaptureDFA(_) => write!(f, "CaptureDFA"),
         }
     }
 }
@@ -1078,6 +1080,7 @@ impl FastPath {
             FastPath::WordRun => find_word_run(text),
             FastPath::IdentifierRun => find_identifier_run(text),
             FastPath::QuotedString => find_quoted_string(text),
+            FastPath::CaptureDFA(dfa) => dfa.find(text),
         }
     }
 
@@ -1095,6 +1098,22 @@ impl FastPath {
             FastPath::WordRun => find_word_run_all(text),
             FastPath::IdentifierRun => find_identifier_run_all(text),
             FastPath::QuotedString => find_quoted_string_all(text),
+            FastPath::CaptureDFA(dfa) => {
+                // For DFA, iterate using find_at
+                let mut results = Vec::new();
+                let mut pos = 0;
+                while pos < text.len() {
+                    if let Some((start, end)) = dfa.find(&text[pos..]) {
+                        let abs_start = pos + start;
+                        let abs_end = pos + end;
+                        results.push((abs_start, abs_end));
+                        pos = abs_end.max(pos + 1); // Advance past this match
+                    } else {
+                        break;
+                    }
+                }
+                results
+            }
         }
     }
 

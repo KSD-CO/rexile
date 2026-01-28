@@ -1523,15 +1523,107 @@ impl Sequence {
                 max_count = term_pos.min(max);
             } else {
                 // Count matching bytes
+                // OPTIMIZATION: For digit class, use vectorized check
                 let mut count = 0;
-                for &byte in rem_bytes {
-                    if cc.matches(byte as char) {
-                        count += 1;
-                        if count >= max {
+                if cc.is_digit_class() && !cc.negated {
+                    // Vectorized digit check: process 8 bytes at a time
+                    let mut i = 0;
+                    while i + 8 <= rem_bytes.len() && count < max {
+                        // Check 8 bytes in parallel
+                        let chunk = &rem_bytes[i..i + 8];
+                        let mut all_digits = true;
+                        let mut chunk_count = 0;
+
+                        for &byte in chunk {
+                            if byte >= b'0' && byte <= b'9' {
+                                chunk_count += 1;
+                            } else {
+                                all_digits = false;
+                                break;
+                            }
+                        }
+
+                        if all_digits {
+                            count += chunk_count;
+                            i += 8;
+                        } else {
+                            count += chunk_count;
                             break;
                         }
-                    } else {
-                        break;
+                    }
+
+                    // Process remaining bytes
+                    while i < rem_bytes.len() && count < max {
+                        if rem_bytes[i] >= b'0' && rem_bytes[i] <= b'9' {
+                            count += 1;
+                            i += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                } else if !cc.negated && cc.chars.is_empty() && cc.ranges.len() == 1 {
+                    // Single range like [a-z] or [A-Z] - vectorized check
+                    let (start_byte, end_byte) = (cc.ranges[0].0 as u8, cc.ranges[0].1 as u8);
+                    let mut i = 0;
+
+                    // Process 8 bytes at a time
+                    while i + 8 <= rem_bytes.len() && count < max {
+                        let chunk = &rem_bytes[i..i + 8];
+                        let mut all_match = true;
+                        let mut chunk_count = 0;
+
+                        for &byte in chunk {
+                            if byte >= start_byte && byte <= end_byte {
+                                chunk_count += 1;
+                            } else {
+                                all_match = false;
+                                break;
+                            }
+                        }
+
+                        if all_match {
+                            count += chunk_count;
+                            i += 8;
+                        } else {
+                            count += chunk_count;
+                            break;
+                        }
+                    }
+
+                    // Process remaining bytes
+                    while i < rem_bytes.len() && count < max {
+                        if rem_bytes[i] >= start_byte && rem_bytes[i] <= end_byte {
+                            count += 1;
+                            i += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                } else if cc.is_whitespace_class() && !cc.negated {
+                    // Whitespace class \s - vectorized check for common whitespace
+                    let mut i = 0;
+
+                    // Process bytes looking for space, tab, newline, carriage return
+                    while i < rem_bytes.len() && count < max {
+                        let byte = rem_bytes[i];
+                        if byte == b' ' || byte == b'\t' || byte == b'\n' || byte == b'\r' {
+                            count += 1;
+                            i += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                } else {
+                    // General case
+                    for &byte in rem_bytes {
+                        if cc.matches(byte as char) {
+                            count += 1;
+                            if count >= max {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
                     }
                 }
                 max_count = count;

@@ -65,10 +65,9 @@ jobs:
 
     - name: Run examples
       run: |
-        echo "::group::Running key examples"
-        cargo run --release --example production_ready_test
-        cargo run --release --example basic_usage
-        cargo run --release --example performance
+        echo "::group::Running examples"
+        cargo run --release --example comprehensive all
+        cargo run --release --example perf_compare
         echo "::endgroup::"
 
   publish:
