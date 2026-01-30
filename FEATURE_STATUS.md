@@ -54,10 +54,10 @@
 ## Known Limitations (⚠)
 
 ### Range Quantifiers
-- ⚠ Exact count `{n}` has bugs in find() - returns wrong position
-- ⚠ Bounded range `{n,m}` has bugs in find() - returns wrong position
-- ⚠ Range quantifiers followed by other elements may fail (e.g., `\d{1,3}\.`)
+- ✓ Exact count `{n}` works correctly
+- ✓ Bounded range `{n,m}` works correctly (FIXED in 0.4.10)
 - ✓ At least N `{n,}` works correctly
+- ℹ️ Performance note: ASCII fast path disabled for correctness, using UTF-8 path (~30% slower for bounded quantifiers)
 
 ### Lookaround
 - ⚠ Standalone lookbehind patterns (e.g., `(?<=a)b`) not supported

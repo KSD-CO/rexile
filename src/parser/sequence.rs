@@ -1509,7 +1509,10 @@ impl Sequence {
         let rem_bytes = remaining.as_bytes();
 
         // Fast path for ASCII-only remaining text
-        let is_ascii = rem_bytes
+        // TODO: ASCII fast path has a bug with complex range quantifier patterns
+        // Disabling for correctness - will investigate and fix in future release
+        let is_ascii = false;
+        let _is_ascii_detect = rem_bytes
             .iter()
             .take(rem_bytes.len().min(256))
             .all(|&b| b < 128);
@@ -1633,11 +1636,19 @@ impl Sequence {
                 return None;
             }
 
-            // For lazy quantifiers, skip the optimization and just try from min to max
+            // For lazy quantifiers, use byte_positions for consistency
             if is_lazy {
+                // Build byte_positions array
+                let mut byte_positions: Vec<usize> = Vec::with_capacity(max_count + 1);
+                byte_positions.push(0);
+                for i in 1..=max_count {
+                    byte_positions.push(i); // ASCII: each char = 1 byte
+                }
+                
                 for try_count in min..=max_count {
+                    let consumed = byte_positions[try_count];
                     if let Some(final_pos) =
-                        self.match_elements_backtracking(text, elem_idx + 1, text_pos + try_count)
+                        self.match_elements_backtracking(text, elem_idx + 1, text_pos + consumed)
                     {
                         return Some(final_pos);
                     }
@@ -1648,7 +1659,10 @@ impl Sequence {
             // OPTIMIZATION: If next element is a QuantifiedCharClass, use smarter backtracking
             // For patterns like .+[0-9]+, instead of trying every position, jump to positions
             // where the next element could potentially match
-            if let Some(next_cc) = self.peek_next_charclass(elem_idx + 1) {
+            // TEMPORARILY DISABLED: This optimization has bugs with range quantifiers
+            let _enable_optimization = false;
+            if _enable_optimization {
+                if let Some(next_cc) = self.peek_next_charclass(elem_idx + 1) {
                 let end = text_pos + max_count;
                 let remaining = &text[text_pos..end];
 
@@ -1710,31 +1724,24 @@ impl Sequence {
                         }
                         // If memchr didn't find anything or matches failed, fall through
                     }
-                } else if !next_cc.negated && next_cc.is_digit_class() {
-                    // Digit class [0-9] - scan for digits efficiently
-                    for (idx, byte) in remaining.as_bytes().iter().enumerate().rev() {
-                        if byte.is_ascii_digit() {
-                            let candidate_pos = text_pos + idx;
-                            let consumed = candidate_pos - text_pos;
-                            if consumed >= min {
-                                if let Some(final_pos) = self.match_elements_backtracking(
-                                    text,
-                                    elem_idx + 1,
-                                    candidate_pos,
-                                ) {
-                                    return Some(final_pos);
-                                }
-                            }
-                        }
-                    }
-                    // Fall through to standard backtracking if needed
+                }
+                // NOTE: Removed buggy is_digit_class optimization that was causing
+                // range quantifier bugs. Standard greedy backtracking below handles all cases correctly.
                 }
             }
 
-            // Standard greedy backtracking
+            // Standard greedy backtracking - build byte_positions for consistency
+            // Even though ASCII chars are 1 byte each, use array to match UTF-8 path logic
+            let mut byte_positions: Vec<usize> = Vec::with_capacity(max_count + 1);
+            byte_positions.push(0);
+            for i in 1..=max_count {
+                byte_positions.push(i); // ASCII: each char = 1 byte
+            }
+            
             for try_count in (min..=max_count).rev() {
+                let consumed = byte_positions[try_count];
                 if let Some(final_pos) =
-                    self.match_elements_backtracking(text, elem_idx + 1, text_pos + try_count)
+                    self.match_elements_backtracking(text, elem_idx + 1, text_pos + consumed)
                 {
                     return Some(final_pos);
                 }

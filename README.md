@@ -19,14 +19,14 @@ ReXile is a **lightweight regex alternative** that achieves **exceptional compil
 - ✅ Literal searches with SIMD acceleration
 - ✅ Multi-pattern matching (alternations)
 - ✅ Character classes with negation
-- ✅ Quantifiers (`*`, `+`, `?`, `{n}`, `{n,m}`)
-- ✅ **Range quantifiers** (`{n}`, `{n,}`, `{n,m}`)
+- ✅ Quantifiers (`*`, `+`, `?`, `{n}`, `{n,m}`) - **FIXED in v0.5.0**
+- ✅ **Range quantifiers** (`{n}`, `{n,}`, `{n,m}`) - **Bug fixed in v0.5.0!**
 - ✅ **Non-greedy quantifiers** (`*?`, `+?`, `??`)
 - ✅ **Case-insensitive flag** (`(?i)`)
 - ✅ **Dot wildcard** (`.`, `.*`, `.+`) with backtracking
 - ✅ **DOTALL mode** (`(?s)`) - Dot matches newlines
 - ✅ **Non-capturing groups** (`(?:...)`) with alternations
-- ✅ **Hybrid DFA/NFA engine** - Smart pattern routing - NEW in v0.4.9
+- ✅ **Hybrid DFA/NFA engine** - Smart pattern routing
 - ✅ Escape sequences (`\d`, `\w`, `\s`, etc.)
 - ✅ Sequences and groups
 - ✅ Word boundaries (`\b`, `\B`)
@@ -34,6 +34,8 @@ ReXile is a **lightweight regex alternative** that achieves **exceptional compil
 - ✅ **Capturing groups** - Auto-detection and extraction
 - ✅ **Lookahead/lookbehind** - `(?=...)`, `(?!...)`, `(?<=...)`, `(?<!...)` with combined patterns
 - ✅ **Backreferences** - `\1`, `\2`, etc.
+- ✅ **Text replacement** - `replace()`, `replace_all()` with capture support - **NEW in v0.5.0** 🎉
+- ✅ **Text splitting** - `split()` iterator - **NEW in v0.5.0** 🎉
 
 ## 🎯 Purpose
 
@@ -170,6 +172,23 @@ let backref = Pattern::new(r"(\w+)\s+\1").unwrap();
 assert!(backref.is_match("hello hello")); // Matches repeated word
 assert!(!backref.is_match("hello world"));// Doesn't match - different words
 
+// Text replacement (NEW in v0.5.0) 🎉
+let pattern = Pattern::new(r"\d+").unwrap();
+assert_eq!(pattern.replace("Order #123 costs $45", "XXX"), "Order #XXX costs $45");
+assert_eq!(pattern.replace_all("Order #123 costs $45", "XXX"), "Order #XXX costs $XXX");
+
+// Replacement with capture groups (NEW in v0.5.0)
+let swap = Pattern::new(r"(\w+)@(\w+)").unwrap();
+assert_eq!(swap.replace("admin@example.com", "$2:$1"), "example:admin.com");
+
+let fmt = Pattern::new(r"(\w+)=(\d+)").unwrap();
+assert_eq!(fmt.replace_all("a=1 b=2 c=3", "$1:[$2]"), "a:[1] b:[2] c:[3]");
+
+// Text splitting (NEW in v0.5.0)
+let split = Pattern::new(r"\s+").unwrap();
+let parts: Vec<_> = split.split("a  b   c").collect();
+assert_eq!(parts, vec!["a", "b", "c"]);
+
 // Anchors
 let exact = Pattern::new("^hello$").unwrap();
 assert!(exact.is_match("hello"));
@@ -233,9 +252,11 @@ ReXile uses **JIT-style specialized implementations** for common patterns:
 | **Non-capturing groups** | `(?:abc\|def)` | ✅ **Supported (v0.2.1)** |
 | **Capturing groups** | Extract `(group)` | ✅ **Supported (v0.2.0)** |
 | Word boundaries | `\b`, `\B` | ✅ Supported |
-| **Bounded quantifiers** | `{n}`, `{n,}`, `{n,m}` | ✅ **Supported (v0.4.7)** |
+| **Range quantifiers** | `{n}`, `{n,}`, `{n,m}` | ✅ **Supported (v0.4.7) - FIXED in v0.5.0** |
 | **Lookahead/lookbehind** | `(?=...)`, `(?!...)`, `(?<=...)`, `(?<!...)` | ✅ **Supported (v0.4.9)** |
 | **Backreferences** | `\1`, `\2`, etc. | ✅ **Supported (v0.4.8)** |
+| **Text replacement** | `replace()`, `replace_all()` | ✅ **NEW in v0.5.0** 🎉 |
+| **Text splitting** | `split()` | ✅ **NEW in v0.5.0** 🎉 |
 
 ## 📊 Performance Benchmarks
 
