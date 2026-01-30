@@ -1644,7 +1644,7 @@ impl Sequence {
                 for i in 1..=max_count {
                     byte_positions.push(i); // ASCII: each char = 1 byte
                 }
-                
+
                 for try_count in min..=max_count {
                     let consumed = byte_positions[try_count];
                     if let Some(final_pos) =
@@ -1663,70 +1663,70 @@ impl Sequence {
             let _enable_optimization = false;
             if _enable_optimization {
                 if let Some(next_cc) = self.peek_next_charclass(elem_idx + 1) {
-                let end = text_pos + max_count;
-                let remaining = &text[text_pos..end];
+                    let end = text_pos + max_count;
+                    let remaining = &text[text_pos..end];
 
-                // EARLY TERMINATION: If current and next charclass don't overlap,
-                // and we can't find next charclass in the range we'll search, fail fast
-                // NOTE: Only apply this check for patterns that will definitely fail,
-                // not for cases where backtracking might succeed
-                if !cc.overlaps_with(next_cc) && min == max {
-                    // Fixed quantifier (like {5} not {1,10}) and non-overlapping
-                    // Check if next charclass appears in remaining text after our fixed match
-                    let fixed_end = text_pos + max_count;
-                    if fixed_end < text.len() {
-                        let text_after = &text[fixed_end..];
-                        let mut found_next = false;
-                        // Only scan a reasonable window (e.g., 100 chars) to avoid perf hit
-                        let scan_limit = text_after.len().min(100);
-                        for ch in text_after[..scan_limit].chars() {
-                            if next_cc.matches(ch) {
-                                found_next = true;
-                                break;
-                            }
-                        }
-
-                        if !found_next {
-                            // Next element cannot match anywhere in reasonable range
-                            return None;
-                        }
-                    }
-                }
-
-                // Use memchr-style search for common cases
-                if !next_cc.negated && next_cc.ranges.is_empty() && next_cc.chars.len() == 1 {
-                    // Single character class like [0] or [a] - use memchr
-                    let target = next_cc.chars[0];
-                    let target_byte = if target.is_ascii() { target as u8 } else { 0 };
-
-                    if target_byte > 0 {
-                        // Use memchr for ASCII single char
-                        let mut search_pos = 0;
-                        while search_pos < remaining.len() {
-                            if let Some(found) =
-                                memchr::memchr(target_byte, &remaining.as_bytes()[search_pos..])
-                            {
-                                let candidate_pos = text_pos + search_pos + found;
-                                let consumed = candidate_pos - text_pos;
-                                if consumed >= min {
-                                    if let Some(final_pos) = self.match_elements_backtracking(
-                                        text,
-                                        elem_idx + 1,
-                                        candidate_pos,
-                                    ) {
-                                        return Some(final_pos);
-                                    }
+                    // EARLY TERMINATION: If current and next charclass don't overlap,
+                    // and we can't find next charclass in the range we'll search, fail fast
+                    // NOTE: Only apply this check for patterns that will definitely fail,
+                    // not for cases where backtracking might succeed
+                    if !cc.overlaps_with(next_cc) && min == max {
+                        // Fixed quantifier (like {5} not {1,10}) and non-overlapping
+                        // Check if next charclass appears in remaining text after our fixed match
+                        let fixed_end = text_pos + max_count;
+                        if fixed_end < text.len() {
+                            let text_after = &text[fixed_end..];
+                            let mut found_next = false;
+                            // Only scan a reasonable window (e.g., 100 chars) to avoid perf hit
+                            let scan_limit = text_after.len().min(100);
+                            for ch in text_after[..scan_limit].chars() {
+                                if next_cc.matches(ch) {
+                                    found_next = true;
+                                    break;
                                 }
-                                search_pos += found + 1;
-                            } else {
-                                break;
+                            }
+
+                            if !found_next {
+                                // Next element cannot match anywhere in reasonable range
+                                return None;
                             }
                         }
-                        // If memchr didn't find anything or matches failed, fall through
                     }
-                }
-                // NOTE: Removed buggy is_digit_class optimization that was causing
-                // range quantifier bugs. Standard greedy backtracking below handles all cases correctly.
+
+                    // Use memchr-style search for common cases
+                    if !next_cc.negated && next_cc.ranges.is_empty() && next_cc.chars.len() == 1 {
+                        // Single character class like [0] or [a] - use memchr
+                        let target = next_cc.chars[0];
+                        let target_byte = if target.is_ascii() { target as u8 } else { 0 };
+
+                        if target_byte > 0 {
+                            // Use memchr for ASCII single char
+                            let mut search_pos = 0;
+                            while search_pos < remaining.len() {
+                                if let Some(found) =
+                                    memchr::memchr(target_byte, &remaining.as_bytes()[search_pos..])
+                                {
+                                    let candidate_pos = text_pos + search_pos + found;
+                                    let consumed = candidate_pos - text_pos;
+                                    if consumed >= min {
+                                        if let Some(final_pos) = self.match_elements_backtracking(
+                                            text,
+                                            elem_idx + 1,
+                                            candidate_pos,
+                                        ) {
+                                            return Some(final_pos);
+                                        }
+                                    }
+                                    search_pos += found + 1;
+                                } else {
+                                    break;
+                                }
+                            }
+                            // If memchr didn't find anything or matches failed, fall through
+                        }
+                    }
+                    // NOTE: Removed buggy is_digit_class optimization that was causing
+                    // range quantifier bugs. Standard greedy backtracking below handles all cases correctly.
                 }
             }
 
@@ -1737,7 +1737,7 @@ impl Sequence {
             for i in 1..=max_count {
                 byte_positions.push(i); // ASCII: each char = 1 byte
             }
-            
+
             for try_count in (min..=max_count).rev() {
                 let consumed = byte_positions[try_count];
                 if let Some(final_pos) =
