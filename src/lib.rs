@@ -608,6 +608,82 @@ impl Pattern {
         }
     }
 
+    /// Replace the first match with a replacement string
+    ///
+    /// Supports capture group references using $1, $2, etc.
+    ///
+    /// # Example
+    /// ```
+    /// use rexile::Pattern;
+    ///
+    /// let pattern = Pattern::new(r"(\w+)").unwrap();
+    /// let result = pattern.replace("hello world", "goodbye");
+    /// assert_eq!(result, "goodbye world");
+    ///
+    /// // With captures
+    /// let pattern = Pattern::new(r"(\w+)=(\d+)").unwrap();
+    /// let result = pattern.replace("a=1 b=2", "$1:[$2]");
+    /// assert_eq!(result, "a:[1] b=2");
+    /// ```
+    pub fn replace(&self, text: &str, replacement: &str) -> String {
+        // Check if replacement contains capture references like $1, $2
+        let has_captures = replacement.contains('$');
+
+        if !has_captures {
+            // Simple literal replacement (fast path)
+            if let Some((start, end)) = self.find(text) {
+                let mut result = String::new();
+                result.push_str(&text[..start]);
+                result.push_str(replacement);
+                result.push_str(&text[end..]);
+                result
+            } else {
+                // No match, return original text
+                text.to_string()
+            }
+        } else {
+            // Replacement with capture groups
+            if let Some(caps) = self.captures(text) {
+                let match_start = caps.pos(0).unwrap().0;
+                let match_end = caps.pos(0).unwrap().1;
+
+                let mut result = String::new();
+                result.push_str(&text[..match_start]);
+
+                // Process replacement string with $1, $2, etc.
+                let mut chars = replacement.chars().peekable();
+                while let Some(ch) = chars.next() {
+                    if ch == '$' {
+                        // Check if next char is a digit
+                        if let Some(&next_ch) = chars.peek() {
+                            if next_ch.is_ascii_digit() {
+                                chars.next(); // consume the digit
+                                let group_num = next_ch.to_digit(10).unwrap() as usize;
+
+                                // Insert the captured group
+                                if let Some(group_text) = caps.get(group_num) {
+                                    result.push_str(group_text);
+                                }
+                            } else {
+                                result.push('$');
+                            }
+                        } else {
+                            result.push('$');
+                        }
+                    } else {
+                        result.push(ch);
+                    }
+                }
+
+                result.push_str(&text[match_end..]);
+                result
+            } else {
+                // No match, return original text
+                text.to_string()
+            }
+        }
+    }
+
     /// Replace all matches with a replacement string
     ///
     /// Supports capture group references using $1, $2, etc.
