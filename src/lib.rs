@@ -905,20 +905,23 @@ impl<'r, 't> Iterator for CapturesIter<'r, 't> {
         {
             // Find next match starting from current position and extract capture positions
             let remaining = &self.text[self.pos..];
-            
+
             // Iterate over char boundaries, not arbitrary byte positions
             let char_indices: Vec<usize> = remaining.char_indices().map(|(i, _)| i).collect();
             let search_positions: Vec<usize> = if char_indices.is_empty() {
                 vec![0]
             } else {
-                char_indices.into_iter().chain(std::iter::once(remaining.len())).collect()
+                char_indices
+                    .into_iter()
+                    .chain(std::iter::once(remaining.len()))
+                    .collect()
             };
-            
+
             for &start_offset in &search_positions {
                 if start_offset >= remaining.len() {
                     break;
                 }
-                
+
                 let mut pos = start_offset;
                 let mut capture_positions: Vec<(usize, usize)> = Vec::new();
                 let mut all_matched = true;

@@ -454,7 +454,7 @@ impl Sequence {
         }
 
         let element = &self.elements[elem_idx];
-        
+
         // Ensure text_pos is at a char boundary for Unicode safety
         let text_pos = if text_pos < text.len() && !text.is_char_boundary(text_pos) {
             // Find the next char boundary
@@ -466,7 +466,7 @@ impl Sequence {
         } else {
             text_pos
         };
-        
+
         let remaining = if text_pos < text.len() {
             &text[text_pos..]
         } else {
