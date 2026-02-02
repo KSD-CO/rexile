@@ -1,3 +1,18 @@
+## [0.5.1] - 2026-02-02
+
+### Performance Improvements
+- **50%+ faster pattern matching** for complex patterns:
+  - `[a-z]+.+[0-9]+` (overlap patterns): 5.91x → 2.80x slower (52% improvement)
+  - `(\w+)@(\w+)` (capture patterns): 4.98x → 2.46x slower (51% improvement)
+  - `\w+\s+\d+` (adjacent charclass patterns): 6.76x → 3.10x slower (54% improvement)
+
+### Optimizations
+- **Reverse prefilter for 3-element patterns**: Find most selective element (e.g., digits) first, then scan backward
+- **Early termination checks**: Skip positions that can't possibly match before expensive backtracking
+- **Direct match calculation**: For non-overlapping charclass patterns, compute match bounds directly without `match_at_pos()`
+- **`find_no_captures()` method**: Skip capture tracking when captures aren't needed
+- **Improved dot class detection**: `is_dot_class()` method for better wildcard pattern handling
+
 ## [0.4.10] - 2026-01-27
 
 ### Added

@@ -34,8 +34,9 @@ ReXile is a **lightweight regex alternative** that achieves **exceptional compil
 - ✅ **Capturing groups** - Auto-detection and extraction
 - ✅ **Lookahead/lookbehind** - `(?=...)`, `(?!...)`, `(?<=...)`, `(?<!...)` with combined patterns
 - ✅ **Backreferences** - `\1`, `\2`, etc.
-- ✅ **Text replacement** - `replace()`, `replace_all()` with capture support - **NEW in v0.5.0** 🎉
-- ✅ **Text splitting** - `split()` iterator - **NEW in v0.5.0** 🎉
+- ✅ **Text replacement** - `replace()`, `replace_all()` with capture support
+- ✅ **Text splitting** - `split()` iterator
+- ✅ **50%+ faster pattern matching** - Optimized in v0.5.1 🎉
 
 ## 🎯 Purpose
 

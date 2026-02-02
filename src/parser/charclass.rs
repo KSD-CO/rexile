@@ -217,6 +217,11 @@ impl CharClass {
         }
     }
 
+    /// Check if this is a dot wildcard class [^\n] (matches any char except newline)
+    pub fn is_dot_class(&self) -> bool {
+        self.negated && self.chars.len() == 1 && self.chars[0] == '\n' && self.ranges.is_empty()
+    }
+
     /// Check if this is a digit-only character class [0-9]
     pub fn is_digit_class(&self) -> bool {
         !self.negated

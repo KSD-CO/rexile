@@ -1032,48 +1032,58 @@ impl Sequence {
             }
         }
 
-        // OPTIMIZATION 3: Reverse scan ONLY for patterns with wildcard + selective last element
+        // OPTIMIZATION 3: Bidirectional anchored search for wildcard patterns
         // For patterns like [a-z]+.+[0-9]+ where wildcard causes expensive backtracking
-        let has_wildcard = self
-            .elements
-            .iter()
-            .any(|e| matches!(e, SequenceElement::QuantifiedChar('.', _)));
+        // Strategy: Use first element as forward prefilter, then validate full match
+        let has_wildcard = self.elements.iter().any(|e| {
+            matches!(e, SequenceElement::QuantifiedChar('.', _))
+                || matches!(e, SequenceElement::QuantifiedCharClass(cc, _) if cc.is_dot_class())
+        });
 
         if has_wildcard && self.elements.len() >= 3 {
-            if let Some(SequenceElement::QuantifiedCharClass(last_cc, _)) = self.elements.last() {
-                // Check if last charclass is selective enough (digits, small sets)
-                if last_cc.is_digit_class() || Self::selectivity(last_cc) <= 26 {
-                    // Reverse scan: find last element first
-                    let bytes = text.as_bytes();
-                    let mut pos = 0;
-
-                    while pos < bytes.len() {
-                        // Find next digit/selective char
-                        let found = if last_cc.is_digit_class() {
-                            bytes[pos..].iter().position(|b| b.is_ascii_digit())
+            // Check if first element is a selective charclass we can use as prefilter
+            if let Some(SequenceElement::QuantifiedCharClass(first_cc, first_q)) =
+                self.elements.first()
+            {
+                let (first_min, _) = quantifier_bounds(first_q);
+                // Only use as prefilter if first element must match (min > 0)
+                // and is selective enough (letters or similar)
+                if first_min > 0 && Self::selectivity(first_cc) <= 52 {
+                    // Also check if last element is selective (for early termination)
+                    let last_is_selective =
+                        if let Some(SequenceElement::QuantifiedCharClass(last_cc, _)) =
+                            self.elements.last()
+                        {
+                            last_cc.is_digit_class() || Self::selectivity(last_cc) <= 26
                         } else {
-                            bytes[pos..]
-                                .iter()
-                                .position(|b| last_cc.matches(*b as char))
+                            false
                         };
 
-                        if let Some(offset) = found {
-                            let last_pos = pos + offset;
-                            // Try matching from positions before this
-                            let start_search = last_pos.saturating_sub(100);
-                            for try_pos in start_search..last_pos {
-                                if let Some(end_pos) = self.match_at_pos(text, try_pos) {
-                                    if end_pos >= last_pos {
-                                        return Some((try_pos, end_pos));
-                                    }
+                    if last_is_selective {
+                        // Use memchr-style prefilter on first element
+                        let bytes = text.as_bytes();
+                        let mut pos = 0;
+
+                        // Find first char that matches first_cc using vectorized search
+                        while pos < bytes.len() {
+                            // Find next position where first_cc matches
+                            let found = bytes[pos..]
+                                .iter()
+                                .position(|&b| first_cc.matches(b as char));
+
+                            if let Some(offset) = found {
+                                let start_pos = pos + offset;
+                                // Try full match from this position
+                                if let Some(end_pos) = self.match_at_pos(text, start_pos) {
+                                    return Some((start_pos, end_pos));
                                 }
+                                pos = start_pos + 1;
+                            } else {
+                                break;
                             }
-                            pos = last_pos + 1;
-                        } else {
-                            break;
                         }
+                        return None;
                     }
-                    return None;
                 }
             }
         }
@@ -1103,39 +1113,142 @@ impl Sequence {
                 _ => false,
             };
 
-            if use_last {
-                if let Some(lc) = last_cc {
+            // For patterns like \w+\s+\d+, use most selective element as prefilter
+            // For 3 elements: first, middle, last - find most selective, then expand
+            if use_last && self.elements.len() == 3 {
+                if let Some(SequenceElement::QuantifiedCharClass(mid_cc, mid_q)) =
+                    self.elements.get(1)
+                {
                     let fc = first_cc.unwrap();
-                    // Reverse prefilter: find last element, then search backward for first element
+                    let lc = last_cc.unwrap();
+                    let bytes = text.as_bytes();
+                    let (mid_min, _) = quantifier_bounds(mid_q);
+                    let first_min = match first {
+                        SequenceElement::QuantifiedCharClass(_, q) => quantifier_bounds(q).0,
+                        _ => 1,
+                    };
+                    let last_min = match last {
+                        SequenceElement::QuantifiedCharClass(_, q) => quantifier_bounds(q).0,
+                        _ => 1,
+                    };
+
+                    // Strategy: Find digit run first (most selective), then scan backward
+                    // Precompute minimum required position for early termination
+                    let min_pos = first_min + mid_min;
+                    let len = bytes.len();
+
                     let mut pos = 0;
-                    while pos < text.len() {
-                        if let Some(offset) = lc.find_first(&text[pos..]) {
-                            let suffix_pos = pos + offset;
-                            // Find where first element matches, working backwards from suffix
-                            // Only check positions where first element actually matches
-                            let search_start = suffix_pos.saturating_sub(128);
-                            let window = &text[search_start..=suffix_pos.min(text.len() - 1)];
-                            let mut try_pos = 0;
-                            let _found = false;
-                            while try_pos < window.len() {
-                                if let Some(foffset) = fc.find_first(&window[try_pos..]) {
-                                    let abs_start = search_start + try_pos + foffset;
-                                    if let Some(final_pos) = self.match_at_pos(text, abs_start) {
-                                        return Some((abs_start, final_pos));
-                                    }
-                                    try_pos += foffset + 1;
-                                } else {
-                                    break;
+                    while pos < len {
+                        // Skip until we find last element (e.g., digit) - inline
+                        let b = bytes[pos];
+                        if !lc.matches(b as char) {
+                            pos += 1;
+                            continue;
+                        }
+
+                        // Early check: need space for first + middle before
+                        if pos < min_pos {
+                            pos += 1;
+                            continue;
+                        }
+
+                        let last_start = pos;
+
+                        // Find end of last element run
+                        while pos < len && lc.matches(bytes[pos] as char) {
+                            pos += 1;
+                        }
+
+                        let last_end = pos;
+
+                        // EARLY CHECK 1: last element long enough?
+                        if last_end - last_start < last_min {
+                            continue;
+                        }
+
+                        // EARLY CHECK 2: middle element exists before last?
+                        if !mid_cc.matches(bytes[last_start - 1] as char) {
+                            continue;
+                        }
+
+                        // Find start of middle element
+                        let mut mid_start = last_start - 1;
+                        while mid_start > 0 && mid_cc.matches(bytes[mid_start - 1] as char) {
+                            mid_start -= 1;
+                        }
+
+                        // Check middle length
+                        if last_start - mid_start < mid_min {
+                            continue;
+                        }
+
+                        // EARLY CHECK 3: first element exists before middle?
+                        if mid_start == 0 || !fc.matches(bytes[mid_start - 1] as char) {
+                            continue;
+                        }
+
+                        // Find start of first element
+                        let mut first_start = mid_start - 1;
+                        while first_start > 0 && fc.matches(bytes[first_start - 1] as char) {
+                            first_start -= 1;
+                        }
+
+                        // Check first length
+                        if mid_start - first_start < first_min {
+                            continue;
+                        }
+
+                        // Found valid match
+                        return Some((first_start, last_end));
+                    }
+                    return None;
+                }
+            } else if use_last && self.elements.len() >= 2 {
+                // General case for more elements
+                if let Some(SequenceElement::QuantifiedCharClass(mid_cc, mid_q)) =
+                    self.elements.get(1)
+                {
+                    let fc = first_cc.unwrap();
+                    let bytes = text.as_bytes();
+                    let (mid_min, _) = quantifier_bounds(mid_q);
+                    let first_min = match first {
+                        SequenceElement::QuantifiedCharClass(_, q) => quantifier_bounds(q).0,
+                        _ => 1,
+                    };
+
+                    let mut pos = 0;
+                    while pos < bytes.len() {
+                        while pos < bytes.len() && !mid_cc.matches(bytes[pos] as char) {
+                            pos += 1;
+                        }
+                        if pos >= bytes.len() {
+                            break;
+                        }
+                        let mid_start = pos;
+                        while pos < bytes.len() && mid_cc.matches(bytes[pos] as char) {
+                            pos += 1;
+                        }
+                        if pos - mid_start >= mid_min
+                            && mid_start >= first_min
+                            && fc.matches(bytes[mid_start - 1] as char)
+                        {
+                            let mut start_pos = mid_start;
+                            while start_pos > 0 && fc.matches(bytes[start_pos - 1] as char) {
+                                start_pos -= 1;
+                            }
+                            if mid_start - start_pos >= first_min {
+                                if let Some(final_pos) = self.match_at_pos(text, start_pos) {
+                                    return Some((start_pos, final_pos));
                                 }
                             }
-                            pos = suffix_pos + 1;
-                        } else {
-                            break;
                         }
                     }
                     return None;
                 }
-            } else if let Some(fc) = first_cc {
+            }
+
+            // Fallback: use forward prefilter
+            if let Some(fc) = first_cc {
                 // Forward prefilter: find first element, then try full match
                 let mut pos = 0;
                 while pos < text.len() {
@@ -1656,6 +1769,48 @@ impl Sequence {
                 return None;
             }
 
+            // OPTIMIZATION: For dot class (.+) followed by digit class, use memchr
+            // to find digit positions instead of blind backtracking
+            if cc.is_dot_class() {
+                if let Some(next_cc) = self.peek_next_charclass(elem_idx + 1) {
+                    if next_cc.is_digit_class() {
+                        // .+ followed by \d+ - find first digit in range [min, max_count]
+                        let search_start = text_pos + min;
+                        let search_end = (text_pos + max_count).min(text.len());
+
+                        if search_start < text.len() {
+                            let search_range = &text.as_bytes()[search_start..search_end];
+
+                            // Use memchr to find digit positions quickly
+                            // memchr can find any of '0'-'9' using memchr3 for common digits
+                            let mut offset = 0;
+                            while offset < search_range.len() {
+                                // Find next digit using vectorized scan
+                                let next_digit = search_range[offset..]
+                                    .iter()
+                                    .position(|&b| b >= b'0' && b <= b'9');
+
+                                if let Some(found) = next_digit {
+                                    let consumed = min + offset + found;
+                                    if let Some(final_pos) = self.match_elements_backtracking(
+                                        text,
+                                        elem_idx + 1,
+                                        text_pos + consumed,
+                                    ) {
+                                        return Some(final_pos);
+                                    }
+                                    // Try next digit position
+                                    offset += found + 1;
+                                } else {
+                                    break;
+                                }
+                            }
+                            return None;
+                        }
+                    }
+                }
+            }
+
             // OPTIMIZATION: If next element is a QuantifiedCharClass, use smarter backtracking
             // For patterns like .+[0-9]+, instead of trying every position, jump to positions
             // where the next element could potentially match
@@ -1730,18 +1885,11 @@ impl Sequence {
                 }
             }
 
-            // Standard greedy backtracking - build byte_positions for consistency
-            // Even though ASCII chars are 1 byte each, use array to match UTF-8 path logic
-            let mut byte_positions: Vec<usize> = Vec::with_capacity(max_count + 1);
-            byte_positions.push(0);
-            for i in 1..=max_count {
-                byte_positions.push(i); // ASCII: each char = 1 byte
-            }
-
+            // Standard greedy backtracking for ASCII - no Vec allocation needed
+            // since for ASCII, byte position = char count
             for try_count in (min..=max_count).rev() {
-                let consumed = byte_positions[try_count];
                 if let Some(final_pos) =
-                    self.match_elements_backtracking(text, elem_idx + 1, text_pos + consumed)
+                    self.match_elements_backtracking(text, elem_idx + 1, text_pos + try_count)
                 {
                     return Some(final_pos);
                 }

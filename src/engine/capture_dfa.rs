@@ -265,8 +265,113 @@ impl CaptureDFA {
 
     /// Find a match (without extracting captures - faster)
     pub fn find(&self, text: &str) -> Option<(usize, usize)> {
-        self.find_with_captures(text)
-            .map(|(start, end, _)| (start, end))
+        // Use fast path without capture tracking
+        self.find_no_captures(text)
+    }
+
+    /// Find without tracking captures (much faster)
+    fn find_no_captures(&self, text: &str) -> Option<(usize, usize)> {
+        let bytes = text.as_bytes();
+
+        // If we have a literal hint, use it as prefilter
+        if let Some(ref literal) = self.literal_hint {
+            let literal_bytes = literal.as_bytes();
+            let mut pos = 0;
+
+            while pos <= bytes.len() {
+                let first_byte = literal_bytes[0];
+                if let Some(candidate_pos) = memchr::memchr(first_byte, &bytes[pos..]) {
+                    let literal_pos = pos + candidate_pos;
+
+                    // Check if full literal matches
+                    if literal_pos + literal_bytes.len() <= bytes.len() {
+                        let matches = literal_bytes
+                            .iter()
+                            .enumerate()
+                            .all(|(i, &b)| bytes[literal_pos + i] == b);
+
+                        if matches {
+                            // Find word boundary before literal (max 20 chars back)
+                            let lookback = 20.min(literal_pos);
+                            for i in (0..=lookback).rev() {
+                                let start_pos = literal_pos - i;
+                                if start_pos == 0
+                                    || (!bytes[start_pos - 1].is_ascii_alphanumeric()
+                                        && bytes[start_pos - 1] != b'_')
+                                {
+                                    if let Some(end_pos) =
+                                        self.try_match_at_no_captures(bytes, start_pos)
+                                    {
+                                        if end_pos > literal_pos {
+                                            return Some((start_pos, end_pos));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    pos = literal_pos + 1;
+                } else {
+                    break;
+                }
+            }
+            return None;
+        }
+
+        // Fallback: try each position
+        for start_pos in 0..=bytes.len() {
+            if let Some(end_pos) = self.try_match_at_no_captures(bytes, start_pos) {
+                return Some((start_pos, end_pos));
+            }
+        }
+        None
+    }
+
+    /// Fast match at position without capture tracking
+    #[inline]
+    fn try_match_at_no_captures(&self, bytes: &[u8], start_pos: usize) -> Option<usize> {
+        let mut current_state = self.start_state;
+        let mut pos = start_pos;
+        let mut last_accept_pos = None;
+
+        loop {
+            let state = &self.states[current_state];
+
+            if state.is_accepting {
+                last_accept_pos = Some(pos);
+            }
+
+            if pos >= bytes.len() {
+                return last_accept_pos;
+            }
+
+            let byte = bytes[pos];
+
+            // Find matching transition
+            let next_state_opt = if state.transitions.len() == 1 {
+                let (pred, next) = &state.transitions[0];
+                if pred.matches(byte) {
+                    Some(*next)
+                } else {
+                    None
+                }
+            } else {
+                state.transitions.iter().find_map(|(pred, next_state)| {
+                    if pred.matches(byte) {
+                        Some(*next_state)
+                    } else {
+                        None
+                    }
+                })
+            };
+
+            if let Some(next_state) = next_state_opt {
+                current_state = next_state;
+                pos += 1;
+            } else {
+                return last_accept_pos;
+            }
+        }
     }
 
     /// Try to match starting from a specific position
