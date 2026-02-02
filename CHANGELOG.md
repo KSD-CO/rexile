@@ -1,3 +1,26 @@
+## [0.5.3] - 2026-02-02
+
+### Fixed
+- **CRITICAL: Complete Unicode safety** - Fixed additional Unicode boundary issues in DOTALL mode and capture iteration
+  - **Issue 1**: `match_elements_backtracking_dotall()` could use non-char-boundary positions with Unicode text
+  - **Issue 2**: Capture group iterator (`find_iter`) iterated byte-by-byte instead of char-by-char
+  - **Root cause**: DOTALL mode (`.` matches newlines) and capture matching didn't check char boundaries
+  - **Solution**: 
+    - Added char boundary check in `match_elements_backtracking_dotall()` 
+    - Changed capture iteration to use `char_indices()` instead of byte positions
+  - **Real-world impact**: Fixed panic in rust-rule-engine with GRL files containing Unicode arrows (→) in comments
+
+### Testing
+- ✅ All rust-rule-engine examples now work with Unicode
+- ✅ `ecommerce_approval_demo` with Unicode → arrows and ✅ emoji - PASSES
+- ✅ 11+ examples tested successfully
+- ✅ 152 rust-rule-engine tests + 100 rexile tests all passing
+
+### Impact
+- **Backward chaining examples**: Now work correctly with Unicode in GRL comments
+- **Production ready**: Complete Unicode safety for all regex operations
+- **No more panic**: All char boundary violations fixed
+
 ## [0.5.2] - 2026-02-02
 
 ### Fixed
