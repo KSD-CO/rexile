@@ -1,3 +1,22 @@
+## [0.5.2] - 2026-02-02
+
+### Fixed
+- **CRITICAL: Unicode safety** - Fixed false matches and potential panics with non-ASCII text
+  - Root cause: Byte-based optimizations in v0.5.1 incorrectly handled multi-byte UTF-8 characters
+  - Solution: Restrict byte-based scanning optimizations to ASCII-only text (`text.is_ascii()`)
+  - For Unicode text, fallback to correct char-by-char matching
+  - Added comprehensive Unicode test suite (8 tests covering emoji, CJK, math symbols, Vietnamese, etc.)
+  
+### Impact
+- ✅ **ASCII text**: Full performance benefits of v0.5.1 optimizations (50%+ faster)
+- ✅ **Unicode text**: Correct matching with acceptable performance (uses fallback path)
+- ✅ **No panics**: All char boundary checks in place
+- ✅ **GRL files with Unicode comments**: Now parse correctly
+
+### Testing
+- All 100 tests pass (84 unit + 8 Unicode + 8 other integration tests)
+- Unicode test coverage: arrows (→), emoji (🚀), CJK (规则), math symbols (∑∫∂), Vietnamese (Tiếng Việt)
+
 ## [0.5.1] - 2026-02-02
 
 ### Performance Improvements

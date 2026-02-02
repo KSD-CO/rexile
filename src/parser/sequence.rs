@@ -1035,12 +1035,13 @@ impl Sequence {
         // OPTIMIZATION 3: Bidirectional anchored search for wildcard patterns
         // For patterns like [a-z]+.+[0-9]+ where wildcard causes expensive backtracking
         // Strategy: Use first element as forward prefilter, then validate full match
+        // NOTE: Byte-based scanning only works correctly for ASCII text
         let has_wildcard = self.elements.iter().any(|e| {
             matches!(e, SequenceElement::QuantifiedChar('.', _))
                 || matches!(e, SequenceElement::QuantifiedCharClass(cc, _) if cc.is_dot_class())
         });
 
-        if has_wildcard && self.elements.len() >= 3 {
+        if has_wildcard && self.elements.len() >= 3 && text.is_ascii() {
             // Check if first element is a selective charclass we can use as prefilter
             if let Some(SequenceElement::QuantifiedCharClass(first_cc, first_q)) =
                 self.elements.first()
@@ -1115,7 +1116,9 @@ impl Sequence {
 
             // For patterns like \w+\s+\d+, use most selective element as prefilter
             // For 3 elements: first, middle, last - find most selective, then expand
-            if use_last && self.elements.len() == 3 {
+            // NOTE: This optimization only works correctly for ASCII text!
+            // For Unicode text, byte-based scanning can give false matches
+            if use_last && self.elements.len() == 3 && text.is_ascii() {
                 if let Some(SequenceElement::QuantifiedCharClass(mid_cc, mid_q)) =
                     self.elements.get(1)
                 {
@@ -1198,13 +1201,23 @@ impl Sequence {
                             continue;
                         }
 
-                        // Found valid match
+                        // CRITICAL: Char boundary validation for Unicode safety!
+                        // The byte-based scan works for ASCII but may give incorrect positions
+                        // for multi-byte UTF-8 chars. We MUST validate and adjust.
+
+                        // Strategy: If positions aren't on char boundaries, skip this candidate
+                        // and let the fallback matching handle it correctly
+                        if !text.is_char_boundary(first_start) || !text.is_char_boundary(last_end) {
+                            continue;
+                        }
+
+                        // Found valid match with correct char boundaries
                         return Some((first_start, last_end));
                     }
                     return None;
                 }
-            } else if use_last && self.elements.len() >= 2 {
-                // General case for more elements
+            } else if use_last && self.elements.len() >= 2 && text.is_ascii() {
+                // General case for more elements (ASCII-only optimization)
                 if let Some(SequenceElement::QuantifiedCharClass(mid_cc, mid_q)) =
                     self.elements.get(1)
                 {
