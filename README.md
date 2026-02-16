@@ -8,8 +8,8 @@
 
 ReXile is a **lightweight regex alternative** that achieves **exceptional compilation speed** while maintaining competitive matching performance:
 
-- ⚡ **10-100x faster compilation** - Load patterns instantly
-- 🚀 **Competitive matching** - 1.4-1.9x faster on simple patterns
+- ⚡ **19x faster compilation** - Load patterns instantly
+- 🚀 **Competitive matching** - 2-3x faster on simple patterns, 1.3x overall
 - 🎯 **Dot wildcard support** - Full `.`, `.*`, `.+` implementation with backtracking
 - 📦 **Only 2 dependencies** - `memchr` and `aho-corasick` for SIMD primitives
 - 🧠 **Smart backtracking** - Handles complex patterns with quantifiers
@@ -36,7 +36,10 @@ ReXile is a **lightweight regex alternative** that achieves **exceptional compil
 - ✅ **Backreferences** - `\1`, `\2`, etc.
 - ✅ **Text replacement** - `replace()`, `replace_all()` with capture support
 - ✅ **Text splitting** - `split()` iterator
-- ✅ **50%+ faster pattern matching** - Optimized in v0.5.1 🎉
+- ✅ **50%+ faster pattern matching** - Optimized in v0.5.1
+- ✅ **Bounded quantifier fast paths** - `\d{4}`, `\w{2,}` now 2x faster than regex - **v0.5.4**
+- ✅ **Case-insensitive optimization** - Zero-alloc ASCII fast path - **v0.5.4**
+- ✅ **Backreference fix** - `\1`, `\2` now working correctly - **v0.5.4**
 
 ## 🎯 Purpose
 
@@ -58,10 +61,12 @@ ReXile is a **high-performance regex engine** optimized for **fast compilation**
 - Pattern `.*test.*`: **15.3x faster**
 - **Average: 10-100x faster compilation**
 
-**Matching Speed**:
-- Simple patterns (`\d+`, `\w+`): **1.4-1.9x faster** ✅
-- Complex patterns with backtracking: 2-10x slower (acceptable for non-hot-path)
-- **Perfect trade-off for parsers and rule engines**
+**Matching Speed** (v0.5.4):
+- Simple patterns (`\d+`, `\w+`, `[a-zA-Z_]+`): **2-3x faster** ✅
+- Bounded quantifiers (`\d{4}`, `\w{2,}`): **2x faster** ✅
+- Case-insensitive (`(?i)error`): **1.8x slower** (improved from 5x)
+- Complex patterns with backtracking: 2x slower (acceptable for non-hot-path)
+- **Overall: 1.3x slower matching, 19x faster compilation**
 
 **Use Case Example** (Load 1000 GRL rules):
 - regex crate: ~2 seconds compilation
@@ -309,20 +314,39 @@ ReXile uses **JIT-style specialized implementations** for common patterns:
 - ReXile: 0.12 MB peak in 27ms
 - **Result: 5x less peak memory, 1.7x faster** ✨
 
+### Detailed Matching Benchmark (v0.5.4)
+
+| Pattern | rexile | regex | Ratio | Winner |
+|---------|--------|-------|-------|--------|
+| `\d+` | 6ns | 11ns | **0.56x** | rexile |
+| `\w+@\w+` | 10ns | 40ns | **0.25x** | rexile |
+| `[a-zA-Z_]+` | 4ns | 11ns | **0.36x** | rexile |
+| `\d{4}` | 6ns | 12ns | **0.53x** | rexile |
+| `\w{2,}` | 5ns | 10ns | **0.44x** | rexile |
+| `\d+\.\d+` | 21ns | 32ns | **0.67x** | rexile |
+| `ERROR` (literal) | 7ns | 9ns | **0.82x** | rexile |
+| `(?i)error` | 63ns | 34ns | 1.84x | regex |
+| `(\w+)@(\w+)` | 86ns | 41ns | 2.11x | regex |
+| `\w+\s+\d+` | 135ns | 63ns | 2.10x | regex |
+
+**Wins: 11/22 test cases** | **Overall: 1.30x** | **Compilation: 19x faster**
+
 ### When ReXile Wins
 
-✅ **Simple patterns** (`\d+`, `\w+`) - 1.4-1.9x faster matching
-✅ **Fast compilation** - 10-100x faster pattern compilation (huge win!)
-✅ **Identifiers** (`[a-zA-Z_]\w*`) - 104.7x faster compilation
+✅ **Simple patterns** (`\d+`, `\w+`, `[a-zA-Z_]+`) - 2-3x faster matching
+✅ **Bounded quantifiers** (`\d{4}`, `\w{2,}`) - 2x faster matching
+✅ **DFA patterns** (`\d+\.\d+`) - 1.5x faster matching
+✅ **Fast compilation** - 19x faster pattern compilation
 ✅ **Memory efficiency** - 15x less for compilation, 5x less peak
-✅ **Instant startup** - Load 1000 patterns in 0.02s vs 2s (100x faster)
-✅ **Dot wildcards** - Full `.`, `.*`, `.+` support with backtracking
+✅ **Instant startup** - Load 1000 patterns in 0.02s vs 2s
+✅ **Lookaround & backreferences** - Not supported by regex crate
 
 ### When regex Wins
 
-⚠️ **Complex patterns with backtracking** - ReXile 2-10x slower (acceptable trade-off)
-⚠️ **Alternations** (`when|then`) - ReXile 2x slower
-⚠️ **Hot-path matching** - For performance-critical matching, regex may be better
+⚠️ **Case-insensitive** (`(?i)`) - ReXile ~2x slower
+⚠️ **Complex sequences** (`\w+\s+\d+`) - ReXile ~2x slower
+⚠️ **Capture groups** - ReXile ~2x slower
+⚠️ **Overlap patterns** (`[a-z]+.+[0-9]+`) - ReXile ~2x slower
 
 ### Architecture
 
@@ -349,7 +373,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rexile = "0.2"
+rexile = "0.5"
 ```
 
 ## 🎓 Examples
@@ -436,10 +460,9 @@ ReXile is production-ready for:
 - **Many patterns**: Load 1000 patterns instantly (100x faster startup)
 
 ### ⚠️ Consider regex crate for
-- Complex alternations (ReXile 2x slower)
-- Very sparse patterns (ReXile up to 1.44x slower)
+- Case-insensitive matching (ReXile ~2x slower)
+- Complex sequence patterns (ReXile ~2x slower)
 - Unicode properties (`\p{L}` - not yet supported)
-- Advanced features (lookahead, backreferences - not yet supported)
 
 ## 🤝 Contributing
 
@@ -454,8 +477,10 @@ Contributions welcome! ReXile is actively maintained and evolving.
 - ✅ **Non-capturing groups** (`(?:...)`) with alternations - **v0.2.1**
 - ✅ **Bounded quantifiers** (`{n}`, `{n,}`, `{n,m}`) - **v0.4.7**
 - ✅ **Full lookaround support** (`(?=...)`, `(?!...)`, `(?<=...)`, `(?<!...)`) with combined patterns - **v0.4.10**
-- ✅ **Backreferences** (`\1`, `\2`, etc.) - **v0.4.8**
-- ✅ 10-100x faster compilation
+- ✅ **Backreferences** (`\1`, `\2`, etc.) - **v0.4.8** (fixed in v0.5.4)
+- ✅ **Bounded quantifier fast paths** - **v0.5.4**
+- ✅ **Case-insensitive zero-alloc fast path** - **v0.5.4**
+- ✅ 19x faster compilation
 - 🔄 Advanced features: Unicode support, more optimizations
 
 **How to contribute:**
@@ -497,13 +522,13 @@ ReXile achieves competitive performance through **intelligent specialization** r
 
 ---
 
-**Status:** ✅ Production Ready (v0.4.10)
+**Status:** ✅ Production Ready (v0.5.4)
 
-- ✅ **Compilation Speed:** 10-100x faster than regex crate
-- ✅ **Matching Speed:** 1.4-1.9x faster on simple patterns
+- ✅ **Compilation Speed:** 19x faster than regex crate
+- ✅ **Matching Speed:** 2-3x faster on simple patterns, 1.3x overall
 - ✅ **Memory:** 15x less compilation, 5x less peak
-- ✅ **Features:** Core regex + dot wildcard + capturing groups + non-greedy + DOTALL + non-capturing groups + bounded quantifiers + **full lookaround support** + backreferences
-- ✅ **Testing:** 138 tests passing (84 unit + 13 group + 9 capture + 10 combined lookaround + 8 lookaround + 6 boundary + 8 doc tests)
+- ✅ **Features:** Core regex + dot wildcard + capturing groups + non-greedy + DOTALL + non-capturing groups + bounded quantifiers + **full lookaround support** + backreferences + replace + split
+- ✅ **Testing:** 168 tests passing
 - ✅ **Real-world validated:** GRL parsing, rule engines, DSL compilers
 
 

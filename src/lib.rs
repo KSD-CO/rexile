@@ -247,8 +247,8 @@ impl Pattern {
         };
         let mut matcher = compile_ast(&ast)?;
 
-        // Apply flags to matcher
-        if flags.case_insensitive {
+        // Apply flags to matcher (avoid double-wrapping if AST already wrapped)
+        if flags.case_insensitive && !matches!(matcher, Matcher::CaseInsensitive(_)) {
             matcher = Matcher::CaseInsensitive(Box::new(matcher));
         }
 
@@ -1803,13 +1803,15 @@ impl Matcher {
                 cc.find_first(text).is_some()
             }
             Matcher::Quantified(qp) => {
-                // Fast path: for C+ (OneOrMore charclass), just find one matching byte
-                if let crate::parser::quantifier::Quantifier::OneOrMore = &qp.quantifier {
-                    if let crate::parser::quantifier::QuantifiedElement::CharClass(cc) = &qp.element
-                    {
-                        if let Some(bitmap) = cc.get_ascii_bitmap() {
-                            let negated = cc.negated;
-                            for &byte in text.as_bytes() {
+                if let crate::parser::quantifier::QuantifiedElement::CharClass(cc) = &qp.element {
+                    if let Some(bitmap) = cc.get_ascii_bitmap() {
+                        let negated = cc.negated;
+                        let min = qp.quantifier.min_matches();
+                        let bytes = text.as_bytes();
+
+                        if min <= 1 {
+                            // For +, *, ?, {0,N}, {1,N} - just find one matching byte
+                            for &byte in bytes {
                                 if byte < 128 {
                                     let idx = byte as usize;
                                     let bit_set = (bitmap[idx / 64] & (1u64 << (idx % 64))) != 0;
@@ -1817,6 +1819,24 @@ impl Matcher {
                                         return true;
                                     }
                                 }
+                            }
+                            return false;
+                        } else {
+                            // For {N}, {N,}, {N,M} where N >= 2 - find N consecutive matching bytes
+                            let mut run = 0usize;
+                            for &byte in bytes {
+                                if byte < 128 {
+                                    let idx = byte as usize;
+                                    let bit_set = (bitmap[idx / 64] & (1u64 << (idx % 64))) != 0;
+                                    if bit_set != negated {
+                                        run += 1;
+                                        if run >= min {
+                                            return true;
+                                        }
+                                        continue;
+                                    }
+                                }
+                                run = 0;
                             }
                             return false;
                         }
@@ -1906,7 +1926,87 @@ impl Matcher {
                 false
             }
             Matcher::CaseInsensitive(inner) => {
-                // Case-insensitive matching: convert both to lowercase
+                // Fast path: literal case-insensitive search without allocation
+                // Only for ASCII needle + ASCII text (XOR trick only works for A-Z/a-z)
+                if let Matcher::Literal(needle) = inner.as_ref() {
+                    let needle_bytes = needle.as_bytes();
+                    let text_bytes = text.as_bytes();
+                    let needle_is_ascii = needle_bytes.iter().all(|&b| b < 128);
+                    if needle_is_ascii
+                        && !needle_bytes.is_empty()
+                        && needle_bytes.len() <= text_bytes.len()
+                    {
+                        let first_lower = needle_bytes[0];
+                        let first_upper = if first_lower >= b'a' && first_lower <= b'z' {
+                            first_lower - 32
+                        } else {
+                            first_lower
+                        };
+                        for i in 0..=(text_bytes.len() - needle_bytes.len()) {
+                            let b = text_bytes[i];
+                            if b == first_lower || b == first_upper {
+                                let mut matched = true;
+                                for j in 1..needle_bytes.len() {
+                                    let tb = text_bytes[i + j];
+                                    let nb = needle_bytes[j];
+                                    // Skip non-ASCII bytes in text
+                                    if tb >= 128 || nb >= 128 {
+                                        matched = false;
+                                        break;
+                                    }
+                                    if tb != nb && (tb ^ 32) != nb {
+                                        matched = false;
+                                        break;
+                                    }
+                                }
+                                if matched {
+                                    return true;
+                                }
+                            }
+                        }
+                        return false;
+                    }
+                }
+                // Fast path: alternation of literals
+                if let Matcher::MultiLiteral(ac) = inner.as_ref() {
+                    let bytes = text.as_bytes();
+                    let len = bytes.len();
+                    if len <= 256 {
+                        let mut buf = [0u8; 256];
+                        let mut all_ascii = true;
+                        for i in 0..len {
+                            let b = bytes[i];
+                            if b >= 128 {
+                                all_ascii = false;
+                                break;
+                            }
+                            buf[i] = if b >= b'A' && b <= b'Z' { b + 32 } else { b };
+                        }
+                        if all_ascii {
+                            let lower = unsafe { std::str::from_utf8_unchecked(&buf[..len]) };
+                            return ac.is_match(lower);
+                        }
+                    }
+                }
+                // General case: lowercase text then match
+                let bytes = text.as_bytes();
+                let len = bytes.len();
+                if len <= 256 {
+                    let mut buf = [0u8; 256];
+                    let mut all_ascii = true;
+                    for i in 0..len {
+                        let b = bytes[i];
+                        if b >= 128 {
+                            all_ascii = false;
+                            break;
+                        }
+                        buf[i] = if b >= b'A' && b <= b'Z' { b + 32 } else { b };
+                    }
+                    if all_ascii {
+                        let lower = unsafe { std::str::from_utf8_unchecked(&buf[..len]) };
+                        return inner.is_match(lower);
+                    }
+                }
                 let lower_text = text.to_lowercase();
                 inner.is_match(&lower_text)
             }
@@ -2653,13 +2753,32 @@ impl Matcher {
                     return matcher.find(text);
                 }
 
+                // Check if pattern contains backreferences
+                let has_backrefs = elements.iter().any(|elem| {
+                    matches!(
+                        elem,
+                        CompiledCaptureElement::NonCapture(Matcher::Backreference(_))
+                    )
+                });
+
+                if has_backrefs {
+                    // Use backreference-aware matching
+                    for start_pos in 0..=text.len() {
+                        if let Some(end_pos) =
+                            Self::match_pattern_with_backreferences(text, start_pos, elements)
+                        {
+                            if end_pos > start_pos || elements.is_empty() {
+                                return Some((start_pos, end_pos));
+                            }
+                        }
+                    }
+                    return None;
+                }
+
                 // NEW: Try to compile to DFA for efficient single-pass matching
-                // This avoids the position-dependent performance issue with memchr
                 if let Some(dfa) = crate::engine::capture_dfa::compile_capture_pattern(elements) {
-                    // eprintln!("DEBUG: Using DFA for capture pattern");
                     return dfa.find(text);
                 }
-                // eprintln!("DEBUG: DFA compilation failed, falling back to NFA");
 
                 // Fallback: Linear scan through all positions
                 for start_pos in 0..=text.len() {
@@ -2706,9 +2825,24 @@ impl Matcher {
                 best_match
             }
             Matcher::CaseInsensitive(inner) => {
-                // Case-insensitive find: search in lowercased text
-                // But we need to return positions in original text
-                // For simplicity, convert to lowercase and search
+                let bytes = text.as_bytes();
+                let len = bytes.len();
+                if len <= 256 {
+                    let mut buf = [0u8; 256];
+                    let mut all_ascii = true;
+                    for i in 0..len {
+                        let b = bytes[i];
+                        if b >= 128 {
+                            all_ascii = false;
+                            break;
+                        }
+                        buf[i] = if b >= b'A' && b <= b'Z' { b + 32 } else { b };
+                    }
+                    if all_ascii {
+                        let lower = unsafe { std::str::from_utf8_unchecked(&buf[..len]) };
+                        return inner.find(lower);
+                    }
+                }
                 let lower_text = text.to_lowercase();
                 inner.find(&lower_text)
             }
@@ -3034,7 +3168,24 @@ impl Matcher {
                 matches
             }
             Matcher::CaseInsensitive(inner) => {
-                // Case-insensitive find_all
+                let bytes = text.as_bytes();
+                let len = bytes.len();
+                if len <= 256 {
+                    let mut buf = [0u8; 256];
+                    let mut all_ascii = true;
+                    for i in 0..len {
+                        let b = bytes[i];
+                        if b >= 128 {
+                            all_ascii = false;
+                            break;
+                        }
+                        buf[i] = if b >= b'A' && b <= b'Z' { b + 32 } else { b };
+                    }
+                    if all_ascii {
+                        let lower = unsafe { std::str::from_utf8_unchecked(&buf[..len]) };
+                        return inner.find_all(lower);
+                    }
+                }
                 let lower_text = text.to_lowercase();
                 inner.find_all(&lower_text)
             }
@@ -3376,29 +3527,27 @@ fn lowercase_ast(ast: &Ast) -> Ast {
             Ast::Group(new_group)
         }
         Ast::Sequence(seq) => {
-            let mut new_seq = seq.clone();
-            // Lowercase literals in sequence elements
-            new_seq.elements = new_seq
+            // Lowercase literals in sequence elements and rebuild sequence
+            // (must rebuild NFA table with lowered chars)
+            let new_elements: Vec<_> = seq
                 .elements
-                .into_iter()
+                .iter()
                 .map(|elem| match elem {
                     parser::sequence::SequenceElement::Literal(s) => {
                         parser::sequence::SequenceElement::Literal(s.to_lowercase())
                     }
                     parser::sequence::SequenceElement::Char(c) => {
-                        // Lowercase single char
                         let lowered: String = c.to_lowercase().collect();
                         if lowered.len() == 1 {
                             parser::sequence::SequenceElement::Char(lowered.chars().next().unwrap())
                         } else {
-                            // Multi-char lowercase (rare), convert to literal
                             parser::sequence::SequenceElement::Literal(lowered)
                         }
                     }
-                    other => other, // CharClass, Quantified elements, etc. don't need lowercasing
+                    other => other.clone(),
                 })
                 .collect();
-            Ast::Sequence(new_seq)
+            Ast::Sequence(parser::sequence::Sequence::new(new_elements))
         }
         Ast::Anchored {
             literal,

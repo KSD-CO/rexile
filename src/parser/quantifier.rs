@@ -110,62 +110,47 @@ impl QuantifiedPattern {
     /// Returns the number of bytes consumed if matched
     pub fn match_at(&self, text: &str) -> Option<usize> {
         let bytes = text.as_bytes();
-
-        // Fast path: ASCII-only text - use byte scanning (SIMD-friendly)
-        if bytes.iter().all(|&b| b < 128) {
-            let mut byte_len = 0;
-            let mut match_count = 0;
-
-            // Get quantifier bounds
-            let min = self.quantifier.min_matches();
-            let max = self.quantifier.max_matches();
-
-            // OPTIMIZED: Direct byte scanning for ASCII
-            // Stop when we reach max matches to avoid over-matching
-            for &byte in bytes {
-                if match_count >= max {
-                    break; // Stop at max to avoid greedy over-matching
-                }
-
-                if self.element.matches_byte(byte) {
-                    byte_len += 1;
-                    match_count += 1;
-                } else {
-                    break;
-                }
-            }
-
-            // Check quantifier constraints
-            let valid = match_count >= min && match_count <= max;
-
-            return if valid { Some(byte_len) } else { None };
-        }
-
-        // Slow path: UTF-8 text - scan char by char
-        let mut byte_len = 0;
-        let mut match_count = 0;
-
-        // Get quantifier bounds
         let min = self.quantifier.min_matches();
         let max = self.quantifier.max_matches();
 
-        for ch in text.chars() {
-            if match_count >= max {
-                break; // Stop at max to avoid greedy over-matching
-            }
+        // Try byte-level scanning first (works for ASCII chars)
+        // No pre-scan of entire text - just scan until we hit non-ASCII or stop
+        let mut byte_len = 0;
+        let mut match_count = 0;
 
-            if self.element.matches(ch) {
-                byte_len += ch.len_utf8();
+        for &byte in bytes {
+            if match_count >= max {
+                break;
+            }
+            if byte >= 128 {
+                // Hit non-ASCII, fall through to char-based path for remainder
+                let remaining = &text[byte_len..];
+                for ch in remaining.chars() {
+                    if match_count >= max {
+                        break;
+                    }
+                    if self.element.matches(ch) {
+                        byte_len += ch.len_utf8();
+                        match_count += 1;
+                    } else {
+                        break;
+                    }
+                }
+                return if match_count >= min {
+                    Some(byte_len)
+                } else {
+                    None
+                };
+            }
+            if self.element.matches_byte(byte) {
+                byte_len += 1;
                 match_count += 1;
             } else {
-                break; // Stop at first non-match
+                break;
             }
         }
 
-        // Check if quantifier constraints are satisfied
-        let valid = match_count >= min && match_count <= max;
-
-        if valid {
+        if match_count >= min {
             Some(byte_len)
         } else {
             None
