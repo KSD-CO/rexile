@@ -253,8 +253,9 @@ impl Pattern {
         }
 
         // Try to detect fast path first (JIT-style optimization)
-        // Note: fast path doesn't support flags yet, so skip if flags are set
-        let fast_path = if flags.any_set() {
+        // Note: fast path supports case_insensitive flag but not multiline/dot_matches_newline
+        // Skip fast-path only if multiline or dot_matches_newline flags are set
+        let fast_path = if flags.multiline || flags.dot_matches_newline {
             None
         } else {
             // First check if we can compile a CaptureDFA for patterns with captures
@@ -281,13 +282,15 @@ impl Pattern {
         // Only use prefilter for Prefix literals and patterns without groups
         // Groups can cause incorrect literal extraction that breaks leftmost-first semantics
         // Inner literals require expensive bounded verification
-        // Also disable prefilter when flags are set (case-insensitive, multiline, etc.)
+        // Also disable prefilter when multiline or dot_matches_newline flags are set
+        // (case_insensitive is OK for prefilter)
         let has_groups = effective_pattern.contains("(?:")
             || (effective_pattern.contains('(') && !effective_pattern.contains("(?"));
         let prefilter = if !literals.is_empty()
             && literals.kind == optimization::literal::LiteralKind::Prefix
             && !has_groups
-            && !flags.any_set()
+            && !flags.multiline
+            && !flags.dot_matches_newline
         {
             let pf = optimization::prefilter::Prefilter::from_literals(&literals);
             if pf.is_available() {

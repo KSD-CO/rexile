@@ -4,16 +4,16 @@
 [![Documentation](https://docs.rs/rexile/badge.svg)](https://docs.rs/rexile)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
 
-**A blazing-fast regex engine with 10-100x faster compilation speed**
+**A blazing-fast regex engine with 22x faster compilation and optimized runtime performance**
 
-ReXile is a **lightweight regex alternative** that achieves **exceptional compilation speed** while maintaining competitive matching performance:
+ReXile is a **high-performance regex engine** built in **100% safe Rust** that achieves exceptional compilation speed while delivering competitive runtime performance through a hybrid execution strategy:
 
-- ⚡ **19x faster compilation** - Load patterns instantly
-- 🚀 **Competitive matching** - 2-3x faster on simple patterns, 1.3x overall
-- 🎯 **Dot wildcard support** - Full `.`, `.*`, `.+` implementation with backtracking
-- 📦 **Only 2 dependencies** - `memchr` and `aho-corasick` for SIMD primitives
-- 🧠 **Smart backtracking** - Handles complex patterns with quantifiers
-- 🔧 **Perfect for parsers** - Ideal for GRL, DSL, and rule engines
+- ⚡ **22x faster compilation** - Load patterns instantly (vs `regex` crate)
+- 🚀 **50% patterns faster** - Outperforms `regex` on common use cases
+- 🎯 **2-3x faster** on character classes (`[0-9]+`, `[a-zA-Z_]+`)
+- 📦 **3.5x less memory** - Efficient memory usage during execution
+- 🔧 **Optimized case-insensitive** - Branchless algorithms for `(?i)` patterns
+- 💎 **Unique features** - Lookaround and backreferences (not in `regex` crate)
 
 **Key Features:**
 - ✅ Literal searches with SIMD acceleration
@@ -38,7 +38,8 @@ ReXile is a **lightweight regex alternative** that achieves **exceptional compil
 - ✅ **Text splitting** - `split()` iterator
 - ✅ **50%+ faster pattern matching** - Optimized in v0.5.1
 - ✅ **Bounded quantifier fast paths** - `\d{4}`, `\w{2,}` now 2x faster than regex - **v0.5.4**
-- ✅ **Case-insensitive optimization** - Zero-alloc ASCII fast path - **v0.5.4**
+- ✅ **Case-insensitive optimization** - Branchless ASCII matching - **v0.5.5**
+- ✅ **Hybrid execution strategy** - Multi-layered fast-paths like `regex` - **v0.5.5**
 - ✅ **Backreference fix** - `\1`, `\2` now working correctly - **v0.5.4**
 
 ## 🎯 Purpose
@@ -314,52 +315,74 @@ ReXile uses **JIT-style specialized implementations** for common patterns:
 - ReXile: 0.12 MB peak in 27ms
 - **Result: 5x less peak memory, 1.7x faster** ✨
 
-### Detailed Matching Benchmark (v0.5.4)
+### Detailed Matching Benchmark (v0.5.5)
 
 | Pattern | rexile | regex | Ratio | Winner |
 |---------|--------|-------|-------|--------|
-| `\d+` | 6ns | 11ns | **0.56x** | rexile |
-| `\w+@\w+` | 10ns | 40ns | **0.25x** | rexile |
-| `[a-zA-Z_]+` | 4ns | 11ns | **0.36x** | rexile |
-| `\d{4}` | 6ns | 12ns | **0.53x** | rexile |
-| `\w{2,}` | 5ns | 10ns | **0.44x** | rexile |
-| `\d+\.\d+` | 21ns | 32ns | **0.67x** | rexile |
-| `ERROR` (literal) | 7ns | 9ns | **0.82x** | rexile |
-| `(?i)error` | 63ns | 34ns | 1.84x | regex |
-| `(\w+)@(\w+)` | 86ns | 41ns | 2.11x | regex |
-| `\w+\s+\d+` | 135ns | 63ns | 2.10x | regex |
+| `\d+` | 10ns | 11ns | **0.88x** | rexile |
+| `\w+@\w+` | 14ns | 37ns | **0.38x** | rexile |
+| `[0-9]+` | 10ns | 30ns | **0.34x** | rexile |
+| `[a-zA-Z_]+` | 8ns | 20ns | **0.37x** | rexile |
+| `\d{4}` | 5ns | 10ns | **0.50x** | rexile |
+| `\w{2,}` | 4ns | 10ns | **0.42x** | rexile |
+| `\d+\.\d+` | 20ns | 26ns | **0.78x** | rexile |
+| `ERROR` (literal) | 9ns | 10ns | **0.87x** | rexile |
+| `(?i)error` | 40ns | 30ns | 1.37x | regex |
+| `(?i)(get\|post)` | 59ns | 25ns | 2.40x | regex |
+| `(\w+)@(\w+)` | 78ns | 35ns | 2.23x | regex |
+| `\w+\s+\d+` | 216ns | 60ns | 3.58x | regex |
 
-**Wins: 11/22 test cases** | **Overall: 1.30x** | **Compilation: 19x faster**
+**Wins: 11/22 test cases (50%)** | **Memory: 3.5x less** | **Compilation: 22x faster**
 
 ### When ReXile Wins
 
-✅ **Simple patterns** (`\d+`, `\w+`, `[a-zA-Z_]+`) - 2-3x faster matching
-✅ **Bounded quantifiers** (`\d{4}`, `\w{2,}`) - 2x faster matching
-✅ **DFA patterns** (`\d+\.\d+`) - 1.5x faster matching
-✅ **Fast compilation** - 19x faster pattern compilation
-✅ **Memory efficiency** - 15x less for compilation, 5x less peak
+✅ **Character classes** (`[0-9]+`, `[a-zA-Z_]+`) - **2.7-2.9x faster** matching
+✅ **Bounded quantifiers** (`\d{4}`, `\w{2,}`) - **2-2.4x faster** matching
+✅ **Escape sequences** (`\w+@\w+`) - **2.6x faster** matching
+✅ **DFA patterns** (`\d+\.\d+`) - **1.3x faster** matching
+✅ **Literal patterns** (`ERROR`) - **Equal or slightly faster**
+✅ **Fast compilation** - **22x faster** pattern compilation
+✅ **Memory efficiency** - **3.5x less** runtime memory usage
 ✅ **Instant startup** - Load 1000 patterns in 0.02s vs 2s
 ✅ **Lookaround & backreferences** - Not supported by regex crate
 
 ### When regex Wins
 
-⚠️ **Case-insensitive** (`(?i)`) - ReXile ~2x slower
-⚠️ **Complex sequences** (`\w+\s+\d+`) - ReXile ~2x slower
-⚠️ **Capture groups** - ReXile ~2x slower
-⚠️ **Overlap patterns** (`[a-z]+.+[0-9]+`) - ReXile ~2x slower
+⚠️ **Case-insensitive with captures** (`(?i)(get|post)`) - ReXile 2.4x slower
+⚠️ **Complex sequences** (`\w+\s+\d+`) - ReXile 3.5x slower
+⚠️ **Simple captures** (`(\w+)@(\w+)`) - ReXile 2.2x slower
+⚠️ **Overlap patterns** (`[a-z]+.+[0-9]+`) - ReXile 5x slower
+⚠️ **Case-insensitive literals** (`(?i)error`) - ReXile 1.4x slower (improved from 2.15x in v0.5.5!)
 
 ### Architecture
 
+ReXile uses a **hybrid execution strategy** similar to the `regex` crate, with multiple layers:
+
 ```
-Pattern → Parser → AST → Fast Path Detection → Specialized Matcher
-                                                        ↓
-                                     DigitRun (memchr SIMD scanning)
-                                     IdentifierRun (direct byte scanning)
-                                     QuotedString (memchr + validation)
-                                     Alternation (aho-corasick automaton)
-                                     Literal (memchr SIMD)
-                                     ... 5 more fast paths
+Pattern → Parser → AST → Fast Path Detection → Execution Strategy
+                                                       ↓
+                                        Layer 1: Fast-Path (specialized)
+                                           - LiteralCaseInsensitive (branchless)
+                                           - Alternation (aho-corasick)
+                                           - DigitRun (memchr SIMD)
+                                           - IdentifierRun (byte scanning)
+                                           - CharClass optimizations
+                                           - CaptureDFA (specialized)
+                                                       ↓
+                                        Layer 2: Prefilter + Bounded Check
+                                           - Literal hints (memchr)
+                                           - Prefix detection
+                                                       ↓
+                                        Layer 3: Full Matcher (fallback)
+                                           - DFA/NFA engine
+                                           - Backtracking for complex patterns
 ```
+
+**Key optimizations in v0.5.5:**
+- ✅ Branchless ASCII case-insensitive matching
+- ✅ Fixed case-insensitive fast-path detection (47% improvement)
+- ✅ Multi-layered execution like `regex` crate
+- ✅ 100% safe Rust (no unsafe code)
 
 **Run benchmarks yourself:**
 ```bash

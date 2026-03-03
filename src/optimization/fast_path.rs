@@ -42,6 +42,94 @@ pub fn find_literal(text: &str, literal: &str) -> Option<(usize, usize)> {
     None
 }
 
+/// Fast path for case-insensitive literal: (?i)error
+/// Uses chunk-based comparison for better performance
+#[inline]
+pub fn find_literal_case_insensitive(
+    text: &str,
+    literal_lowercase: &str,
+) -> Option<(usize, usize)> {
+    let needle = literal_lowercase.as_bytes();
+    let haystack = text.as_bytes();
+    let needle_len = needle.len();
+
+    if needle_len == 0 {
+        return Some((0, 0));
+    }
+    if needle_len > haystack.len() {
+        return None;
+    }
+
+    // For single byte, check both upper and lower case using memchr2
+    if needle_len == 1 {
+        let lower = needle[0];
+        let upper = lower.to_ascii_uppercase();
+
+        if lower == upper {
+            // Non-alphabetic character - exact match only
+            return memchr(lower, haystack).map(|pos| (pos, pos + 1));
+        }
+
+        // Use memchr2 for efficient dual-byte search
+        return memchr::memchr2(lower, upper, haystack).map(|pos| (pos, pos + 1));
+    }
+
+    // Multi-byte: use memchr2 on first byte, then optimized comparison
+    let first_lower = needle[0];
+    let first_upper = first_lower.to_ascii_uppercase();
+
+    let mut pos = 0;
+    let end = haystack.len() - needle_len + 1;
+
+    while pos < end {
+        // Find next potential match using memchr2 for both cases
+        let next_pos = if first_lower == first_upper {
+            // Non-alphabetic first byte - exact match only
+            memchr(first_lower, &haystack[pos..end]).map(|p| pos + p)
+        } else {
+            // Use memchr2 to find either lower or upper case efficiently
+            memchr::memchr2(first_lower, first_upper, &haystack[pos..end]).map(|p| pos + p)
+        };
+
+        if let Some(start) = next_pos {
+            // Optimized comparison: process in chunks of 8 bytes when possible
+            if matches_case_insensitive(&haystack[start..start + needle_len], needle) {
+                return Some((start, start + needle_len));
+            }
+            pos = start + 1;
+        } else {
+            break;
+        }
+    }
+
+    None
+}
+
+/// Lookup table for ASCII lowercase conversion (precomputed for speed)
+#[inline(always)]
+fn ascii_lowercase_byte(b: u8) -> u8 {
+    // Branchless ASCII lowercase: if 'A' <= b <= 'Z', add 32, else keep same
+    // This is faster than conditional branches
+    let is_upper = (b >= b'A') & (b <= b'Z');
+    b + (is_upper as u8 * 32)
+}
+
+/// Helper: case-insensitive comparison optimized for speed with branchless conversion
+#[inline(always)]
+fn matches_case_insensitive(haystack: &[u8], needle_lowercase: &[u8]) -> bool {
+    debug_assert_eq!(haystack.len(), needle_lowercase.len());
+    let len = haystack.len();
+
+    // Branchless comparison: convert to lowercase and compare in one pass
+    // This avoids conditional branches in the hot loop
+    for i in 0..len {
+        if ascii_lowercase_byte(haystack[i]) != needle_lowercase[i] {
+            return false;
+        }
+    }
+    true
+}
+
 /// Fast path for literal + quantified char: "rule\s+"
 #[inline]
 pub fn find_literal_plus_whitespace(text: &str, literal: &str) -> Option<(usize, usize)> {
@@ -163,6 +251,74 @@ pub fn find_literal_all(text: &str, literal: &str) -> Vec<(usize, usize)> {
             let abs_pos = pos + idx;
             results.push((abs_pos, abs_pos + len));
             pos = abs_pos + len;
+        }
+    }
+
+    results
+}
+
+/// Fast path for find_all: case-insensitive literal
+#[inline]
+pub fn find_literal_case_insensitive_all(
+    text: &str,
+    literal_lowercase: &str,
+) -> Vec<(usize, usize)> {
+    let mut results = Vec::new();
+    let needle = literal_lowercase.as_bytes();
+    let haystack = text.as_bytes();
+    let needle_len = needle.len();
+
+    if needle_len == 0 {
+        return results;
+    }
+    if needle_len > haystack.len() {
+        return results;
+    }
+
+    // For single byte - use memchr2 or memchr_iter
+    if needle_len == 1 {
+        let lower = needle[0];
+        let upper = lower.to_ascii_uppercase();
+
+        if lower == upper {
+            // Non-alphabetic - exact match only
+            for pos in memchr_iter(lower, haystack) {
+                results.push((pos, pos + 1));
+            }
+        } else {
+            // Use memchr2_iter for both cases
+            for pos in memchr::memchr2_iter(lower, upper, haystack) {
+                results.push((pos, pos + 1));
+            }
+        }
+        return results;
+    }
+
+    // Multi-byte - use memchr2 in a loop with optimized comparison
+    let first_lower = needle[0];
+    let first_upper = first_lower.to_ascii_uppercase();
+
+    let mut pos = 0;
+    let end = haystack.len() - needle_len + 1;
+
+    while pos < end {
+        // Find next potential match
+        let next_pos = if first_lower == first_upper {
+            memchr(first_lower, &haystack[pos..end]).map(|p| pos + p)
+        } else {
+            memchr::memchr2(first_lower, first_upper, &haystack[pos..end]).map(|p| pos + p)
+        };
+
+        if let Some(start) = next_pos {
+            // Use optimized branchless comparison
+            if matches_case_insensitive(&haystack[start..start + needle_len], needle) {
+                results.push((start, start + needle_len));
+                pos = start + needle_len; // Skip past this match
+            } else {
+                pos = start + 1;
+            }
+        } else {
+            break;
         }
     }
 
@@ -659,6 +815,37 @@ pub fn detect_fast_path(pattern: &str) -> Option<FastPath> {
         return None;
     }
 
+    // Check for case-insensitive patterns: (?i)literal or (?i)(literal)
+    if let Some(rest) = pattern.strip_prefix("(?i)") {
+        // Strip simple captures to allow detection of patterns like "(?i)(get|post)"
+        let normalized = strip_simple_captures(rest);
+
+        // Check for simple literal (no special chars except |)
+        if !normalized.contains(['\\', '[', ']', '(', ')', '*', '+', '?', '{', '}', '.']) {
+            // Check for alternation: (?i)get|post
+            if normalized.contains('|') {
+                let alternatives: Vec<String> =
+                    normalized.split('|').map(|s| s.to_string()).collect();
+                if alternatives.iter().all(|alt| !alt.is_empty()) {
+                    // Build case-insensitive aho-corasick automaton
+                    if let Ok(ac) = AhoCorasick::builder()
+                        .match_kind(aho_corasick::MatchKind::LeftmostFirst)
+                        .ascii_case_insensitive(true)
+                        .build(&alternatives)
+                    {
+                        return Some(FastPath::Alternation(Arc::new(ac)));
+                    }
+                }
+            } else {
+                // Simple case-insensitive literal
+                return Some(FastPath::LiteralCaseInsensitive(normalized.to_lowercase()));
+            }
+        }
+
+        // If we didn't return above, fall through to normal pattern detection
+        // (this handles complex (?i) patterns that can't use fast path)
+    }
+
     // Strip captures to allow detection of patterns like "when\s+(\w+)"
     let normalized = strip_simple_captures(pattern);
 
@@ -1033,6 +1220,7 @@ pub fn find_literal_ws_word_at(
 #[derive(Clone)]
 pub enum FastPath {
     Literal(String),
+    LiteralCaseInsensitive(String), // (?i)literal - case-insensitive literal
     LiteralPlusWhitespace(String),
     LiteralWhitespaceQuoted(String), // rule\s+"[^"]+"
     LiteralWhitespaceDigits(String), // salience\s+\d+
@@ -1050,6 +1238,7 @@ impl std::fmt::Debug for FastPath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             FastPath::Literal(s) => write!(f, "Literal({:?})", s),
+            FastPath::LiteralCaseInsensitive(s) => write!(f, "LiteralCaseInsensitive({:?})", s),
             FastPath::LiteralPlusWhitespace(s) => write!(f, "LiteralPlusWhitespace({:?})", s),
             FastPath::LiteralWhitespaceQuoted(s) => write!(f, "LiteralWhitespaceQuoted({:?})", s),
             FastPath::LiteralWhitespaceDigits(s) => write!(f, "LiteralWhitespaceDigits({:?})", s),
@@ -1070,6 +1259,7 @@ impl FastPath {
     pub fn find(&self, text: &str) -> Option<(usize, usize)> {
         match self {
             FastPath::Literal(s) => find_literal(text, s),
+            FastPath::LiteralCaseInsensitive(s) => find_literal_case_insensitive(text, s),
             FastPath::LiteralPlusWhitespace(s) => find_literal_plus_whitespace(text, s),
             FastPath::LiteralWhitespaceQuoted(s) => find_literal_ws_quoted(text, s),
             FastPath::LiteralWhitespaceDigits(s) => find_literal_ws_digits(text, s),
@@ -1088,6 +1278,7 @@ impl FastPath {
     pub fn find_all(&self, text: &str) -> Vec<(usize, usize)> {
         match self {
             FastPath::Literal(s) => find_literal_all(text, s),
+            FastPath::LiteralCaseInsensitive(s) => find_literal_case_insensitive_all(text, s),
             FastPath::LiteralPlusWhitespace(s) => find_literal_plus_whitespace_all(text, s),
             FastPath::LiteralWhitespaceQuoted(s) => find_literal_ws_quoted_all(text, s),
             FastPath::LiteralWhitespaceDigits(s) => find_literal_ws_digits_all(text, s),

@@ -1,10 +1,10 @@
 [package]
 name = "rexile"
-version = "0.5.4"
+version = "0.5.5"
 edition = "2021"
 authors = ["Ton That Vu <ttvuhm@gmail.com>"]
 license = "MIT OR Apache-2.0"
-description = "A blazing-fast regex engine with 10-100x faster compilation - now with complete Unicode safety"
+description = "A blazing-fast regex engine with 22x faster compilation and optimized case-insensitive matching"
 repository = "https://github.com/KSD-CO/rexile"
 documentation = "https://docs.rs/rexile"
 homepage = "https://github.com/KSD-CO/rexile"
