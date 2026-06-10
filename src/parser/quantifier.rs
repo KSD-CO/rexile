@@ -151,7 +151,11 @@ impl QuantifiedPattern {
         }
 
         if match_count >= min {
-            Some(byte_len)
+            if self.quantifier.is_lazy() {
+                Some(text.chars().take(min).map(|ch| ch.len_utf8()).sum())
+            } else {
+                Some(byte_len)
+            }
         } else {
             None
         }
@@ -173,6 +177,10 @@ impl QuantifiedPattern {
                 return Some((0, len));
             }
             return None;
+        }
+
+        if self.quantifier.min_matches() == 0 {
+            return self.match_at(text).map(|len| (0, len));
         }
 
         // OPTIMIZATION: Fast path for digit patterns
@@ -218,31 +226,50 @@ impl QuantifiedPattern {
     /// Find all matches in text
     pub fn find_all(&self, text: &str) -> Vec<(usize, usize)> {
         let mut results = Vec::new();
-        let chars: Vec<(usize, char)> = text.char_indices().collect();
+        let mut pos = 0;
+        let mut last_match_was_non_empty = false;
 
-        let mut i = 0;
-        while i < chars.len() {
-            let (start_byte, _) = chars[i];
+        while pos <= text.len() {
+            if let Some(len) = self.match_at(&text[pos..]) {
+                let end = pos + len;
 
-            if let Some(len) = self.match_at(&text[start_byte..]) {
-                if len > 0 {
-                    results.push((start_byte, start_byte + len));
-                    // Skip past the match
-                    let end_byte = start_byte + len;
-                    while i < chars.len() && chars[i].0 < end_byte {
-                        i += 1;
+                if len == 0 && last_match_was_non_empty {
+                    last_match_was_non_empty = false;
+                    if let Some(next_pos) = next_char_boundary(text, pos) {
+                        pos = next_pos;
+                        continue;
                     }
-                } else {
-                    // Zero-length match (e.g., a* matching empty)
-                    i += 1;
+                    break;
                 }
+
+                results.push((pos, end));
+                last_match_was_non_empty = len > 0;
+
+                if len > 0 {
+                    pos = end;
+                } else if let Some(next_pos) = next_char_boundary(text, pos) {
+                    pos = next_pos;
+                } else {
+                    break;
+                }
+            } else if let Some(next_pos) = next_char_boundary(text, pos) {
+                last_match_was_non_empty = false;
+                pos = next_pos;
             } else {
-                i += 1;
+                break;
             }
         }
 
         results
     }
+}
+
+fn next_char_boundary(text: &str, pos: usize) -> Option<usize> {
+    if pos >= text.len() {
+        return None;
+    }
+
+    text[pos..].chars().next().map(|ch| pos + ch.len_utf8())
 }
 
 /// Parse a simple quantified pattern like "a+", "[0-9]*", "\d+", etc.
@@ -284,7 +311,7 @@ pub fn parse_quantified_pattern(pattern: &str) -> Result<QuantifiedPattern, Stri
 
     // Check for character class
     if pattern.starts_with('[') {
-        let close_idx = pattern.find(']').ok_or("Unclosed character class")?;
+        let close_idx = find_class_end(pattern).ok_or("Unclosed character class")?;
         let class_content = &pattern[1..close_idx];
         let char_class = CharClass::parse(class_content)?;
 
@@ -325,6 +352,25 @@ pub fn parse_quantified_pattern(pattern: &str) -> Result<QuantifiedPattern, Stri
     }
 }
 
+fn find_class_end(pattern: &str) -> Option<usize> {
+    let mut escaped = false;
+
+    for (idx, ch) in pattern.char_indices().skip(1) {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+
+        match ch {
+            '\\' => escaped = true,
+            ']' => return Some(idx),
+            _ => {}
+        }
+    }
+
+    None
+}
+
 fn parse_quantifier(s: &str) -> Result<Quantifier, String> {
     match s {
         // Greedy quantifiers
@@ -351,6 +397,9 @@ fn parse_quantifier(s: &str) -> Result<Quantifier, String> {
                         // {n,m}
                         let min = parts[0].parse().map_err(|_| "Invalid min")?;
                         let max = parts[1].parse().map_err(|_| "Invalid max")?;
+                        if min > max {
+                            return Err("Quantifier minimum exceeds maximum".to_string());
+                        }
                         Ok(Quantifier::Between(min, max))
                     }
                 } else {
@@ -387,6 +436,7 @@ mod tests {
             parse_quantifier("{1,5}").unwrap(),
             Quantifier::Between(1, 5)
         );
+        assert!(parse_quantifier("{2,1}").is_err());
     }
 
     #[test]

@@ -821,7 +821,9 @@ pub fn detect_fast_path(pattern: &str) -> Option<FastPath> {
         let normalized = strip_simple_captures(rest);
 
         // Check for simple literal (no special chars except |)
-        if !normalized.contains(['\\', '[', ']', '(', ')', '*', '+', '?', '{', '}', '.']) {
+        if !normalized.contains([
+            '\\', '[', ']', '(', ')', '*', '+', '?', '{', '}', '.', '^', '$',
+        ]) {
             // Check for alternation: (?i)get|post
             if normalized.contains('|') {
                 let alternatives: Vec<String> =

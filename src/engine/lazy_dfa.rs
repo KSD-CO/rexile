@@ -245,10 +245,8 @@ impl LazyDFA {
                             states.push(*second);
                         }
                     }
-                    Instruction::Jump(target) => {
-                        if !states.contains(target) {
-                            states.push(*target);
-                        }
+                    Instruction::Jump(target) if !states.contains(target) => {
+                        states.push(*target);
                     }
                     _ => {}
                 }
