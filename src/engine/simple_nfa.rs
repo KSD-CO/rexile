@@ -305,18 +305,14 @@ impl SimpleNFA {
 
             for &state_id in &current_states {
                 match &self.states[state_id] {
-                    State::Char(expected) => {
-                        if ch == expected {
-                            for &next_id in &self.transitions[state_id] {
-                                next_states.insert(next_id);
-                            }
+                    State::Char(expected) if ch == expected => {
+                        for &next_id in &self.transitions[state_id] {
+                            next_states.insert(next_id);
                         }
                     }
-                    State::CharClass(cc) => {
-                        if cc.matches(*ch) {
-                            for &next_id in &self.transitions[state_id] {
-                                next_states.insert(next_id);
-                            }
+                    State::CharClass(cc) if cc.matches(*ch) => {
+                        for &next_id in &self.transitions[state_id] {
+                            next_states.insert(next_id);
                         }
                     }
                     _ => {}

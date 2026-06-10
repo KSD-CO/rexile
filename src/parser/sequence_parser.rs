@@ -296,7 +296,7 @@ pub fn parse_sequence(pattern: &str) -> Result<Sequence, String> {
 
         // Try character class
         if remaining.starts_with('[') {
-            if let Some(close_idx) = remaining.find(']') {
+            if let Some(close_idx) = find_class_end(remaining) {
                 let class_content = &remaining[1..close_idx];
                 let char_class = CharClass::parse(class_content)?;
                 i += close_idx + 1;
@@ -359,6 +359,25 @@ pub fn parse_sequence(pattern: &str) -> Result<Sequence, String> {
     }
 
     Ok(Sequence::new(elements))
+}
+
+fn find_class_end(pattern: &str) -> Option<usize> {
+    let mut escaped = false;
+
+    for (idx, ch) in pattern.char_indices().skip(1) {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+
+        match ch {
+            '\\' => escaped = true,
+            ']' => return Some(idx),
+            _ => {}
+        }
+    }
+
+    None
 }
 
 /// Find the index of the matching closing paren for an opening paren at position 0

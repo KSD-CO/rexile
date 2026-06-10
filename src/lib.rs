@@ -268,11 +268,21 @@ impl Pattern {
                     ))
                 } else {
                     // DFA compilation failed - fall back to normal fast path detection
-                    optimization::fast_path::detect_fast_path(effective_pattern)
+                    let fast_path_pattern = if flags.case_insensitive {
+                        pattern
+                    } else {
+                        effective_pattern
+                    };
+                    optimization::fast_path::detect_fast_path(fast_path_pattern)
                 }
             } else {
                 // Not a capture pattern - use normal fast path detection
-                optimization::fast_path::detect_fast_path(effective_pattern)
+                let fast_path_pattern = if flags.case_insensitive {
+                    pattern
+                } else {
+                    effective_pattern
+                };
+                optimization::fast_path::detect_fast_path(fast_path_pattern)
             }
         };
 
@@ -449,6 +459,7 @@ impl Pattern {
                 // OPTIMIZED: Use specialized sequence iterator with cached Finder
                 seq.find_all(text)
             }
+            Matcher::Quantified(qp) => qp.find_all(text),
             _ => {
                 // Complex patterns: use general iterator
                 self.find_iter(text).map(|m| (m.start(), m.end())).collect()
@@ -1541,9 +1552,16 @@ fn parse_pattern_with_depth(pattern: &str, depth: usize) -> Result<Ast, PatternE
         match parse_quantified_pattern(pattern) {
             Ok(qp) => return Ok(Ast::Quantified(qp)),
             Err(_) => {
-                // Fall through to other parsers
+                if pattern.contains('{') {
+                    return Err(PatternError::ParseError("Invalid quantifier".to_string()));
+                }
+                // Fall through to other parsers for non-brace suffixes.
             }
         }
+    }
+
+    if pattern.contains('{') {
+        return Err(PatternError::ParseError("Invalid quantifier".to_string()));
     }
 
     // Check for character class [...]
@@ -1556,6 +1574,10 @@ fn parse_pattern_with_depth(pattern: &str, depth: usize) -> Result<Ast, PatternE
             return Ok(Ast::CharClass(char_class));
         }
         // Character class with quantifier is handled above
+    } else if pattern.starts_with('[') {
+        return Err(PatternError::ParseError(
+            "Unclosed character class".to_string(),
+        ));
     }
 
     // Check for single dot wildcard
