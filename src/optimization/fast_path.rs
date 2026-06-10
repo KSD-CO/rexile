@@ -160,6 +160,111 @@ pub fn find_literal_plus_whitespace(text: &str, literal: &str) -> Option<(usize,
     None
 }
 
+#[inline]
+pub fn find_literal_dot_star_literal(
+    text: &str,
+    prefix: &str,
+    suffix: &str,
+    lazy: bool,
+) -> Option<(usize, usize)> {
+    find_literal_dot_star_literal_at(text, prefix, suffix, lazy, 0)
+}
+
+#[inline]
+pub fn find_literal_dot_star_literal_at(
+    text: &str,
+    prefix: &str,
+    suffix: &str,
+    lazy: bool,
+    start_pos: usize,
+) -> Option<(usize, usize)> {
+    if start_pos > text.len() || prefix.is_empty() || suffix.is_empty() {
+        return None;
+    }
+
+    let bytes = text.as_bytes();
+    let prefix_bytes = prefix.as_bytes();
+    let suffix_bytes = suffix.as_bytes();
+    let mut search_pos = start_pos;
+
+    while search_pos <= bytes.len() {
+        let prefix_start = find_bytes_at(bytes, prefix_bytes, search_pos)?;
+        let after_prefix = prefix_start + prefix_bytes.len();
+        let line_end = memchr(b'\n', &bytes[after_prefix..])
+            .map(|pos| after_prefix + pos)
+            .unwrap_or(bytes.len());
+
+        if let Some(suffix_start) = if lazy {
+            find_bytes_at(bytes, suffix_bytes, after_prefix)
+                .filter(|&pos| pos + suffix_bytes.len() <= line_end)
+        } else {
+            rfind_bytes_in_range(bytes, suffix_bytes, after_prefix, line_end)
+        } {
+            return Some((prefix_start, suffix_start + suffix_bytes.len()));
+        }
+
+        search_pos = prefix_start + 1;
+    }
+
+    None
+}
+
+#[inline]
+pub fn find_literal_dot_star_literal_all(
+    text: &str,
+    prefix: &str,
+    suffix: &str,
+    lazy: bool,
+) -> Vec<(usize, usize)> {
+    let mut results = Vec::new();
+    let mut pos = 0;
+
+    while pos <= text.len() {
+        if let Some((start, end)) =
+            find_literal_dot_star_literal_at(text, prefix, suffix, lazy, pos)
+        {
+            results.push((start, end));
+            pos = end.max(pos + 1);
+        } else {
+            break;
+        }
+    }
+
+    results
+}
+
+#[inline]
+fn find_bytes_at(haystack: &[u8], needle: &[u8], start_pos: usize) -> Option<usize> {
+    if needle.len() == 1 {
+        memchr(needle[0], haystack.get(start_pos..)?).map(|pos| start_pos + pos)
+    } else {
+        memmem::find(haystack.get(start_pos..)?, needle).map(|pos| start_pos + pos)
+    }
+}
+
+#[inline]
+fn rfind_bytes_in_range(
+    haystack: &[u8],
+    needle: &[u8],
+    start_pos: usize,
+    end_pos: usize,
+) -> Option<usize> {
+    if start_pos > end_pos || needle.len() > end_pos.saturating_sub(start_pos) {
+        return None;
+    }
+
+    let range = &haystack[start_pos..end_pos];
+    if needle.len() == 1 {
+        memchr_iter(needle[0], range)
+            .next_back()
+            .map(|pos| start_pos + pos)
+    } else {
+        memmem::find_iter(range, needle)
+            .last()
+            .map(|pos| start_pos + pos)
+    }
+}
+
 /// Fast path for \d+ (digit run)
 #[inline]
 pub fn find_digit_run(text: &str) -> Option<(usize, usize)> {
@@ -809,6 +914,36 @@ fn strip_simple_captures(pattern: &str) -> String {
     result
 }
 
+fn detect_literal_dot_star_literal(pattern: &str) -> Option<(String, String, bool)> {
+    let (separator, lazy) = if pattern.contains(".*?") {
+        (".*?", true)
+    } else if pattern.contains(".*") {
+        (".*", false)
+    } else {
+        return None;
+    };
+
+    let mut parts = pattern.split(separator);
+    let prefix = parts.next()?;
+    let suffix = parts.next()?;
+    if parts.next().is_some()
+        || prefix.is_empty()
+        || suffix.is_empty()
+        || !is_plain_literal_fragment(prefix)
+        || !is_plain_literal_fragment(suffix)
+    {
+        return None;
+    }
+
+    Some((prefix.to_string(), suffix.to_string(), lazy))
+}
+
+fn is_plain_literal_fragment(fragment: &str) -> bool {
+    !fragment.contains([
+        '\\', '[', ']', '(', ')', '*', '+', '?', '{', '}', '|', '.', '^', '$',
+    ])
+}
+
 pub fn detect_fast_path(pattern: &str) -> Option<FastPath> {
     // Don't use fast path for anchored patterns - they need special handling
     if pattern.starts_with('^') || pattern.ends_with('$') {
@@ -850,6 +985,14 @@ pub fn detect_fast_path(pattern: &str) -> Option<FastPath> {
 
     // Strip captures to allow detection of patterns like "when\s+(\w+)"
     let normalized = strip_simple_captures(pattern);
+
+    if let Some((prefix, suffix, lazy)) = detect_literal_dot_star_literal(&normalized) {
+        return Some(FastPath::LiteralDotStarLiteral {
+            prefix,
+            suffix,
+            lazy,
+        });
+    }
 
     // Check for simple literal
     if !normalized.contains(['\\', '[', ']', '(', ')', '*', '+', '?', '{', '}', '|', '.']) {
@@ -1227,8 +1370,13 @@ pub enum FastPath {
     LiteralWhitespaceQuoted(String), // rule\s+"[^"]+"
     LiteralWhitespaceDigits(String), // salience\s+\d+
     LiteralWhitespaceWord(String),   // when\s+\w+
-    WordCompareDigit,                // \w+\s*>=\s*\d+
-    Alternation(Arc<AhoCorasick>),   // Pre-built automaton for word1|word2|word3
+    LiteralDotStarLiteral {
+        prefix: String,
+        suffix: String,
+        lazy: bool,
+    },
+    WordCompareDigit,              // \w+\s*>=\s*\d+
+    Alternation(Arc<AhoCorasick>), // Pre-built automaton for word1|word2|word3
     DigitRun,
     WordRun,
     IdentifierRun, // [a-zA-Z_]\w* - identifier pattern
@@ -1245,6 +1393,15 @@ impl std::fmt::Debug for FastPath {
             FastPath::LiteralWhitespaceQuoted(s) => write!(f, "LiteralWhitespaceQuoted({:?})", s),
             FastPath::LiteralWhitespaceDigits(s) => write!(f, "LiteralWhitespaceDigits({:?})", s),
             FastPath::LiteralWhitespaceWord(s) => write!(f, "LiteralWhitespaceWord({:?})", s),
+            FastPath::LiteralDotStarLiteral {
+                prefix,
+                suffix,
+                lazy,
+            } => write!(
+                f,
+                "LiteralDotStarLiteral({:?}, {:?}, lazy={})",
+                prefix, suffix, lazy
+            ),
             FastPath::WordCompareDigit => write!(f, "WordCompareDigit"),
             FastPath::Alternation(_) => write!(f, "Alternation(<AhoCorasick>)"),
             FastPath::DigitRun => write!(f, "DigitRun"),
@@ -1266,6 +1423,11 @@ impl FastPath {
             FastPath::LiteralWhitespaceQuoted(s) => find_literal_ws_quoted(text, s),
             FastPath::LiteralWhitespaceDigits(s) => find_literal_ws_digits(text, s),
             FastPath::LiteralWhitespaceWord(s) => find_literal_ws_word(text, s),
+            FastPath::LiteralDotStarLiteral {
+                prefix,
+                suffix,
+                lazy,
+            } => find_literal_dot_star_literal(text, prefix, suffix, *lazy),
             FastPath::WordCompareDigit => find_word_compare_digit(text),
             FastPath::Alternation(ac) => find_alternation(ac, text),
             FastPath::DigitRun => find_digit_run(text),
@@ -1285,6 +1447,11 @@ impl FastPath {
             FastPath::LiteralWhitespaceQuoted(s) => find_literal_ws_quoted_all(text, s),
             FastPath::LiteralWhitespaceDigits(s) => find_literal_ws_digits_all(text, s),
             FastPath::LiteralWhitespaceWord(s) => find_literal_ws_word_all(text, s),
+            FastPath::LiteralDotStarLiteral {
+                prefix,
+                suffix,
+                lazy,
+            } => find_literal_dot_star_literal_all(text, prefix, suffix, *lazy),
             FastPath::WordCompareDigit => find_word_compare_digit_all(text),
             FastPath::Alternation(ac) => find_alternation_all(ac, text),
             FastPath::DigitRun => find_digit_run_all(text),
@@ -1319,6 +1486,11 @@ impl FastPath {
                 find_literal_plus_whitespace_at(text, s, start_pos)
             }
             FastPath::LiteralWhitespaceWord(s) => find_literal_ws_word_at(text, s, start_pos),
+            FastPath::LiteralDotStarLiteral {
+                prefix,
+                suffix,
+                lazy,
+            } => find_literal_dot_star_literal_at(text, prefix, suffix, *lazy, start_pos),
             FastPath::DigitRun => find_digit_run_at(text, start_pos),
             FastPath::WordRun => find_word_run_at(text, start_pos),
             FastPath::IdentifierRun => find_identifier_run_at(text, start_pos),
