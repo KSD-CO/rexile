@@ -460,6 +460,9 @@ impl Pattern {
                 seq.find_all(text)
             }
             Matcher::Quantified(qp) => qp.find_all(text),
+            Matcher::AnchoredLiteral { .. }
+            | Matcher::AnchoredGroup { .. }
+            | Matcher::AnchoredPattern { .. } => self.matcher.find_all(text),
             _ => {
                 // Complex patterns: use general iterator
                 self.find_iter(text).map(|m| (m.start(), m.end())).collect()
@@ -3330,6 +3333,14 @@ fn compile_ast(ast: &Ast) -> Result<Matcher, PatternError> {
             end: *end,
         }),
         Ast::AnchoredPattern { inner, start, end } => {
+            if let Some(literal) = literal_from_ast(inner) {
+                return Ok(Matcher::AnchoredLiteral {
+                    literal,
+                    start: *start,
+                    end: *end,
+                });
+            }
+
             let inner_matcher = compile_ast(inner)?;
             Ok(Matcher::AnchoredPattern {
                 inner: Box::new(inner_matcher),
@@ -3472,6 +3483,24 @@ fn compile_ast(ast: &Ast) -> Result<Matcher, PatternError> {
             let inner_matcher = compile_ast(&lowercased)?;
             Ok(Matcher::CaseInsensitive(Box::new(inner_matcher)))
         }
+    }
+}
+
+fn literal_from_ast(ast: &Ast) -> Option<String> {
+    match ast {
+        Ast::Literal(lit) => Some(lit.clone()),
+        Ast::Sequence(seq) => {
+            let mut literal = String::new();
+            for element in &seq.elements {
+                match element {
+                    parser::sequence::SequenceElement::Char(ch) => literal.push(*ch),
+                    parser::sequence::SequenceElement::Literal(lit) => literal.push_str(lit),
+                    _ => return None,
+                }
+            }
+            Some(literal)
+        }
+        _ => None,
     }
 }
 

@@ -1775,17 +1775,9 @@ impl Sequence {
                 return None;
             }
 
-            // For lazy quantifiers, use byte_positions for consistency
             if is_lazy {
-                // Build byte_positions array
-                let mut byte_positions: Vec<usize> = Vec::with_capacity(max_count + 1);
-                byte_positions.push(0);
-                for i in 1..=max_count {
-                    byte_positions.push(i); // ASCII: each char = 1 byte
-                }
-
                 for try_count in min..=max_count {
-                    let consumed = byte_positions[try_count];
+                    let consumed = try_count; // ASCII fast path: each matched char is one byte.
                     if let Some(final_pos) =
                         self.match_elements_backtracking(text, elem_idx + 1, text_pos + consumed)
                     {
