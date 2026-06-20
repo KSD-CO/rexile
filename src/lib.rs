@@ -2354,7 +2354,7 @@ impl Matcher {
                 return count < min && Matcher::matches_entire(inner_matcher, "");
             }
 
-            let mut try_piece = |next_pos: usize| {
+            let try_piece = |next_pos: usize| {
                 Matcher::matches_entire(inner_matcher, &text[pos..next_pos])
                     && rec(
                         text,
