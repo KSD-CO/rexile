@@ -2313,6 +2313,130 @@ impl Matcher {
         }
     }
 
+    fn prefers_lazy_backtracking(matcher: &Matcher) -> bool {
+        match matcher {
+            Matcher::Quantified(qp) => qp.quantifier.is_lazy(),
+            Matcher::QuantifiedCapture(_, quantifier) => quantifier.is_lazy(),
+            Matcher::Capture(inner, _) => Self::prefers_lazy_backtracking(inner),
+            Matcher::PatternWithCaptures { elements, .. } => {
+                elements.iter().any(|elem| match elem {
+                    CompiledCaptureElement::Capture(m, _)
+                    | CompiledCaptureElement::NonCapture(m) => Self::prefers_lazy_backtracking(m),
+                })
+            }
+            _ => false,
+        }
+    }
+
+    fn matches_quantified_capture_entire(
+        text: &str,
+        inner_matcher: &Matcher,
+        quantifier: &parser::quantifier::Quantifier,
+    ) -> bool {
+        fn rec(
+            text: &str,
+            pos: usize,
+            count: usize,
+            min: usize,
+            max: usize,
+            inner_matcher: &Matcher,
+            prefers_lazy: bool,
+        ) -> bool {
+            if pos == text.len() && count >= min {
+                return true;
+            }
+
+            if count == max {
+                return false;
+            }
+
+            if pos == text.len() {
+                return count < min && Matcher::matches_entire(inner_matcher, "");
+            }
+
+            let mut try_piece = |next_pos: usize| {
+                Matcher::matches_entire(inner_matcher, &text[pos..next_pos])
+                    && rec(
+                        text,
+                        next_pos,
+                        count + 1,
+                        min,
+                        max,
+                        inner_matcher,
+                        prefers_lazy,
+                    )
+            };
+
+            if prefers_lazy {
+                for next_pos in text
+                    .char_indices()
+                    .map(|(idx, _)| idx)
+                    .filter(|&idx| idx > pos)
+                    .chain(std::iter::once(text.len()))
+                {
+                    if try_piece(next_pos) {
+                        return true;
+                    }
+                }
+            } else {
+                let boundaries: Vec<usize> = text
+                    .char_indices()
+                    .map(|(idx, _)| idx)
+                    .filter(|&idx| idx > pos)
+                    .chain(std::iter::once(text.len()))
+                    .collect();
+                for next_pos in boundaries.into_iter().rev() {
+                    if try_piece(next_pos) {
+                        return true;
+                    }
+                }
+            }
+
+            false
+        }
+
+        let (min, max) = quantifier_bounds(quantifier);
+        rec(text, 0, 0, min, max, inner_matcher, quantifier.is_lazy())
+    }
+
+    fn matches_entire(matcher: &Matcher, text: &str) -> bool {
+        match matcher {
+            Matcher::Quantified(qp) => {
+                let mut count = 0;
+                let max = qp.quantifier.max_matches();
+
+                for ch in text.chars() {
+                    if count >= max || !qp.element.matches(ch) {
+                        return false;
+                    }
+                    count += 1;
+                }
+
+                count >= qp.quantifier.min_matches()
+            }
+            Matcher::QuantifiedCapture(inner_matcher, quantifier) => {
+                Self::matches_quantified_capture_entire(text, inner_matcher, quantifier)
+            }
+            Matcher::Sequence(seq) => seq.match_at(text).is_some_and(|len| len == text.len()),
+            Matcher::Group(group) => group.match_at(text, 0).is_some_and(|len| len == text.len()),
+            Matcher::Capture(inner, _) => Self::matches_entire(inner, text),
+            Matcher::PatternWithCaptures { elements, .. } => {
+                if let [element] = elements.as_slice() {
+                    match element {
+                        CompiledCaptureElement::Capture(m, _)
+                        | CompiledCaptureElement::NonCapture(m) => Self::matches_entire(m, text),
+                    }
+                } else {
+                    Self::match_elements_with_backtrack(text, 0, elements)
+                        .is_some_and(|end_pos| end_pos == text.len())
+                }
+            }
+            _ => matcher
+                .find(text)
+                .is_some_and(|(rel_start, rel_end)| rel_start == 0 && rel_end == text.len()),
+        }
+    }
+
     /// Try to match sequence of elements with backtracking support AND extract captures
     /// Returns (end_pos, capture_positions) if successful
     fn match_elements_with_backtrack_and_captures(
@@ -2343,71 +2467,73 @@ impl Matcher {
             // Backtracking needed
             let remaining_text = safe_slice(text, start_pos).unwrap_or("");
             let remaining_len = remaining_text.len();
+            let prefers_lazy = match first_element {
+                CompiledCaptureElement::Capture(m, _) | CompiledCaptureElement::NonCapture(m) => {
+                    Self::prefers_lazy_backtracking(m)
+                }
+            };
 
-            // Try each possible length from longest to shortest, including 0 for zero-width matches
-            // This is important for quantifiers with min=0 like * and ?
-            for try_len in (0..=remaining_len).rev() {
+            let try_match = |try_len: usize| {
                 let next_pos = start_pos + try_len;
 
-                // Try to match remaining elements
                 if let Some((final_pos, mut remaining_caps)) =
                     Self::match_elements_with_backtrack_and_captures(text, next_pos, &elements[1..])
                 {
-                    // Handle zero-width matches (try_len == 0)
                     if try_len == 0 {
-                        // For zero-width matches, check if the quantifier allows min=0
                         match first_element {
                             CompiledCaptureElement::Capture(m, num) => {
-                                if let Some((rel_start, rel_end)) = m.find("") {
-                                    if rel_start == 0 && rel_end == 0 {
-                                        // Zero-width capture matched
-                                        let mut caps = vec![(*num, start_pos, start_pos)];
-                                        caps.append(&mut remaining_caps);
-                                        return Some((final_pos, caps));
-                                    }
+                                if Self::matches_entire(m, "") {
+                                    let mut caps = vec![(*num, start_pos, start_pos)];
+                                    caps.append(&mut remaining_caps);
+                                    return Some((final_pos, caps));
                                 }
                             }
                             CompiledCaptureElement::NonCapture(m) => {
-                                if let Some((rel_start, rel_end)) = m.find("") {
-                                    if rel_start == 0 && rel_end == 0 {
-                                        // Zero-width non-capture matched
-                                        return Some((final_pos, remaining_caps));
-                                    }
+                                if Self::matches_entire(m, "") {
+                                    return Some((final_pos, remaining_caps));
                                 }
                             }
                         }
                     } else {
-                        // Non-zero width match
                         let substring = safe_slice_range(text, start_pos, next_pos).unwrap_or("");
 
-                        // Check if first element matches exactly this substring
                         match first_element {
                             CompiledCaptureElement::Capture(m, num) => {
-                                if let Some((rel_start, rel_end)) = m.find(substring) {
-                                    if rel_start == 0 && rel_end == substring.len() {
-                                        // Capture matched
-                                        let mut caps = vec![(*num, start_pos, next_pos)];
-                                        caps.append(&mut remaining_caps);
-                                        return Some((final_pos, caps));
-                                    }
+                                if Self::matches_entire(m, substring) {
+                                    let mut caps = vec![(*num, start_pos, next_pos)];
+                                    caps.append(&mut remaining_caps);
+                                    return Some((final_pos, caps));
                                 }
                             }
                             CompiledCaptureElement::NonCapture(m) => {
-                                if let Some((rel_start, rel_end)) = m.find(substring) {
-                                    if rel_start == 0 && rel_end == substring.len() {
-                                        // Extract any nested captures from this matcher
-                                        let nested_caps =
-                                            m.extract_nested_captures(text, start_pos);
-                                        let mut all_caps = nested_caps;
-                                        all_caps.extend(remaining_caps);
-                                        return Some((final_pos, all_caps));
-                                    }
+                                if Self::matches_entire(m, substring) {
+                                    let nested_caps = m.extract_nested_captures(text, start_pos);
+                                    let mut all_caps = nested_caps;
+                                    all_caps.extend(remaining_caps);
+                                    return Some((final_pos, all_caps));
                                 }
                             }
                         }
                     }
                 }
+
+                None
+            };
+
+            if prefers_lazy {
+                for try_len in 0..=remaining_len {
+                    if let Some(result) = try_match(try_len) {
+                        return Some(result);
+                    }
+                }
+            } else {
+                for try_len in (0..=remaining_len).rev() {
+                    if let Some(result) = try_match(try_len) {
+                        return Some(result);
+                    }
+                }
             }
+
             None
         } else {
             // No backtracking needed
@@ -2489,42 +2615,41 @@ impl Matcher {
         };
 
         if needs_backtracking {
-            // Quantified element followed by more elements - need backtracking
-            // Strategy: Try matching with progressively shorter lengths from remaining text
-
+            // Quantified element followed by more elements - need backtracking.
             let remaining_text = safe_slice(text, start_pos).unwrap_or("");
             let remaining_len = remaining_text.len();
+            let prefers_lazy = Self::prefers_lazy_backtracking(first_matcher);
 
-            // Try each possible length from longest to shortest, including 0 for zero-width matches
-            // This is important for quantifiers with min=0 like * and ?
-            for try_len in (0..=remaining_len).rev() {
+            let try_match = |try_len: usize| {
                 let next_pos = start_pos + try_len;
 
-                // Try to match remaining elements FIRST
                 if let Some(final_pos) =
                     Self::match_elements_with_backtrack(text, next_pos, &elements[1..])
                 {
-                    // Remaining elements matched! Now check if first element can match EXACTLY this length
                     let substring = safe_slice_range(text, start_pos, next_pos).unwrap_or("");
 
-                    // Check if first element matches exactly this substring
-                    // It must match from start (rel_start == 0) and consume the entire substring (rel_end == substring.len())
-                    // For zero-width matches (try_len == 0), we need to check if the quantifier allows min=0
                     if try_len == 0 {
-                        // Zero-width match - only valid for quantifiers with min=0 (*, ?)
-                        // Check by seeing if the matcher can match empty string
-                        if let Some((rel_start, rel_end)) = first_matcher.find("") {
-                            if rel_start == 0 && rel_end == 0 {
-                                return Some(final_pos);
-                            }
+                        if Self::matches_entire(first_matcher, "") {
+                            return Some(final_pos);
                         }
-                    } else {
-                        // Non-zero match
-                        if let Some((rel_start, rel_end)) = first_matcher.find(substring) {
-                            if rel_start == 0 && rel_end == substring.len() {
-                                return Some(final_pos);
-                            }
-                        }
+                    } else if Self::matches_entire(first_matcher, substring) {
+                        return Some(final_pos);
+                    }
+                }
+
+                None
+            };
+
+            if prefers_lazy {
+                for try_len in 0..=remaining_len {
+                    if let Some(result) = try_match(try_len) {
+                        return Some(result);
+                    }
+                }
+            } else {
+                for try_len in (0..=remaining_len).rev() {
+                    if let Some(result) = try_match(try_len) {
+                        return Some(result);
                     }
                 }
             }
