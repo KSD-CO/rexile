@@ -133,6 +133,18 @@ fn test_lazy_capture_with_suffix() {
 }
 
 #[test]
+fn test_lazy_unicode_capture_with_suffix() {
+    let pattern = Pattern::new(r"when\s+(.+?)\s+then").unwrap();
+
+    let caps = pattern
+        .captures("rule { when café.price >= 10 then approve(); }")
+        .expect("Expected captures");
+
+    assert_eq!(&caps[0], "when café.price >= 10 then");
+    assert_eq!(&caps[1], "café.price >= 10");
+}
+
+#[test]
 fn test_optional_lazy_capture_in_function_call() {
     let pattern = Pattern::new(r"(\w+)\s*\(\s*(.+?)?\s*\)").unwrap();
 

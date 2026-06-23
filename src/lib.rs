@@ -2399,6 +2399,20 @@ impl Matcher {
         rec(text, 0, 0, min, max, inner_matcher, quantifier.is_lazy())
     }
 
+    fn backtracking_lengths(text: &str, prefers_lazy: bool) -> Vec<usize> {
+        let mut lengths: Vec<usize> = text
+            .char_indices()
+            .map(|(idx, _)| idx)
+            .chain(std::iter::once(text.len()))
+            .collect();
+
+        if !prefers_lazy {
+            lengths.reverse();
+        }
+
+        lengths
+    }
+
     fn matches_entire(matcher: &Matcher, text: &str) -> bool {
         match matcher {
             Matcher::Quantified(qp) => {
@@ -2466,7 +2480,6 @@ impl Matcher {
         if needs_backtracking {
             // Backtracking needed
             let remaining_text = safe_slice(text, start_pos).unwrap_or("");
-            let remaining_len = remaining_text.len();
             let prefers_lazy = match first_element {
                 CompiledCaptureElement::Capture(m, _) | CompiledCaptureElement::NonCapture(m) => {
                     Self::prefers_lazy_backtracking(m)
@@ -2520,17 +2533,9 @@ impl Matcher {
                 None
             };
 
-            if prefers_lazy {
-                for try_len in 0..=remaining_len {
-                    if let Some(result) = try_match(try_len) {
-                        return Some(result);
-                    }
-                }
-            } else {
-                for try_len in (0..=remaining_len).rev() {
-                    if let Some(result) = try_match(try_len) {
-                        return Some(result);
-                    }
+            for try_len in Self::backtracking_lengths(remaining_text, prefers_lazy) {
+                if let Some(result) = try_match(try_len) {
+                    return Some(result);
                 }
             }
 
@@ -2617,7 +2622,6 @@ impl Matcher {
         if needs_backtracking {
             // Quantified element followed by more elements - need backtracking.
             let remaining_text = safe_slice(text, start_pos).unwrap_or("");
-            let remaining_len = remaining_text.len();
             let prefers_lazy = Self::prefers_lazy_backtracking(first_matcher);
 
             let try_match = |try_len: usize| {
@@ -2640,17 +2644,9 @@ impl Matcher {
                 None
             };
 
-            if prefers_lazy {
-                for try_len in 0..=remaining_len {
-                    if let Some(result) = try_match(try_len) {
-                        return Some(result);
-                    }
-                }
-            } else {
-                for try_len in (0..=remaining_len).rev() {
-                    if let Some(result) = try_match(try_len) {
-                        return Some(result);
-                    }
+            for try_len in Self::backtracking_lengths(remaining_text, prefers_lazy) {
+                if let Some(result) = try_match(try_len) {
+                    return Some(result);
                 }
             }
 
