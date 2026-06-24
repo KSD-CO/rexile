@@ -1481,6 +1481,10 @@ impl Sequence {
 
         let mut match_start = None;
         for try_pos in search_start..=anchor_byte_pos.saturating_sub(min_bytes_needed) {
+            if !text.is_char_boundary(try_pos) {
+                continue;
+            }
+
             let mut pos = try_pos;
             let mut matched = true;
 
