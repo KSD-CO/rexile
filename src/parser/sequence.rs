@@ -356,13 +356,10 @@ impl Sequence {
             for (i, elem) in elements.iter().enumerate() {
                 match elem {
                     SequenceElement::QuantifiedCharClass(cc, _) => {
-                        if let Some(bm) = cc.get_ascii_bitmap() {
-                            let hit = (bm[word_idx] & bit) != 0;
-                            if hit != cc.negated {
-                                byte_elem_mask[b as usize] |= 1u32 << i;
-                            }
-                        } else {
-                            return None;
+                        let bm = cc.get_ascii_bitmap()?;
+                        let hit = (bm[word_idx] & bit) != 0;
+                        if hit != cc.negated {
+                            byte_elem_mask[b as usize] |= 1u32 << i;
                         }
                     }
                     SequenceElement::Char(ch) => {
@@ -394,7 +391,7 @@ impl Sequence {
     /// Check if the sequence matches at a specific position in text
     /// Returns bytes consumed if match, None otherwise
     /// This preserves the full text context for boundary checks
-    fn match_at_pos(&self, text: &str, pos: usize) -> Option<usize> {
+    pub(crate) fn match_at_pos(&self, text: &str, pos: usize) -> Option<usize> {
         self.match_elements_backtracking(text, 0, pos)
     }
 
@@ -437,7 +434,7 @@ impl Sequence {
     }
 
     /// Match at position with DOTALL flag (. matches newlines)
-    fn match_at_with_dotall(&self, text: &str, start_pos: usize) -> Option<usize> {
+    pub(crate) fn match_at_with_dotall(&self, text: &str, start_pos: usize) -> Option<usize> {
         self.match_elements_backtracking_dotall(text, 0, start_pos)
     }
 
@@ -1024,21 +1021,14 @@ impl Sequence {
                     // Rare char (like @, #, :, !, etc.) - memchr is effective
                     let mut pos = 0;
                     while pos < text.len() {
-                        if let Some(found) = memchr::memchr(byte, &text.as_bytes()[pos..]) {
-                            let anchor_pos = pos + found;
-                            if let Some((match_start, match_end)) = self.match_around_anchor(
-                                text,
-                                anchor_pos,
-                                1,
-                                before_count,
-                                after_count,
-                            ) {
-                                return Some((match_start, match_end));
-                            }
-                            pos = anchor_pos + 1;
-                        } else {
-                            return None;
+                        let found = memchr::memchr(byte, &text.as_bytes()[pos..])?;
+                        let anchor_pos = pos + found;
+                        if let Some((match_start, match_end)) =
+                            self.match_around_anchor(text, anchor_pos, 1, before_count, after_count)
+                        {
+                            return Some((match_start, match_end));
                         }
+                        pos = anchor_pos + 1;
                     }
                     return None;
                 }

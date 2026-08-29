@@ -264,6 +264,74 @@ fn cached_api_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
+fn prefix_churn_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("prefilter_prefix_churn");
+    configure_group(&mut group);
+    let no_match_rexile = Pattern::new(r"abc\d+").unwrap();
+    let no_match_regex = Regex::new(r"abc\d+").unwrap();
+
+    for (name, repeats) in [("512b", 128usize), ("2k", 512), ("8k", 2_048)] {
+        let text = "abcX".repeat(repeats);
+
+        group.bench_with_input(
+            BenchmarkId::new("is_match_no_match/rexile", name),
+            &text,
+            |b, text| b.iter(|| black_box(no_match_rexile.is_match(black_box(text)))),
+        );
+        group.bench_with_input(
+            BenchmarkId::new("is_match_no_match/regex", name),
+            &text,
+            |b, text| b.iter(|| black_box(no_match_regex.is_match(black_box(text)))),
+        );
+        group.bench_with_input(
+            BenchmarkId::new("find_no_match/rexile", name),
+            &text,
+            |b, text| b.iter(|| black_box(no_match_rexile.find(black_box(text)))),
+        );
+        group.bench_with_input(
+            BenchmarkId::new("find_no_match/regex", name),
+            &text,
+            |b, text| {
+                b.iter(|| {
+                    black_box(
+                        no_match_regex
+                            .find(black_box(text))
+                            .map(|matched| (matched.start(), matched.end())),
+                    )
+                })
+            },
+        );
+    }
+
+    let tail_text = format!("{}abc123", "abcX".repeat(2_048));
+    let tail_rexile = Pattern::new(r"abc\d+").unwrap();
+    let tail_regex = Regex::new(r"abc\d+").unwrap();
+    group.bench_function("find_tail_match/rexile", |b| {
+        b.iter(|| black_box(tail_rexile.find(black_box(&tail_text))))
+    });
+    group.bench_function("find_tail_match/regex", |b| {
+        b.iter(|| {
+            black_box(
+                tail_regex
+                    .find(black_box(&tail_text))
+                    .map(|matched| (matched.start(), matched.end())),
+            )
+        })
+    });
+
+    let case_insensitive_text = "AbCX".repeat(2_048);
+    let case_insensitive_rexile = Pattern::new(r"(?i)abc\d+").unwrap();
+    let case_insensitive_regex = Regex::new(r"(?i)abc\d+").unwrap();
+    group.bench_function("case_insensitive_no_match/rexile", |b| {
+        b.iter(|| black_box(case_insensitive_rexile.is_match(black_box(&case_insensitive_text))))
+    });
+    group.bench_function("case_insensitive_no_match/regex", |b| {
+        b.iter(|| black_box(case_insensitive_regex.is_match(black_box(&case_insensitive_text))))
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     compilation_benchmark,
@@ -272,6 +340,7 @@ criterion_group!(
     find_all_benchmark,
     replacement_and_split_benchmark,
     cached_api_benchmark,
+    prefix_churn_benchmark,
 );
 
 criterion_main!(benches);

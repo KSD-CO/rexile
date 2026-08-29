@@ -144,6 +144,7 @@ mod parser; // Pattern parsing: escape, charclass, quantifier, etc.
 // External dependencies
 use aho_corasick::AhoCorasick;
 use memchr::memmem;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
@@ -163,13 +164,20 @@ pub use optimization::{literal, prefilter};
 #[derive(Debug, Clone)]
 pub struct Pattern {
     matcher: Matcher,
-    prefilter: Option<(
-        optimization::prefilter::Prefilter,
-        optimization::literal::LiteralKind,
-    )>,
+    prefilter: Option<PrefilterPlan>,
     fast_path: Option<optimization::fast_path::FastPath>, // JIT-style fast path
     #[allow(dead_code)]
     flags: Flags,                  // Regex flags: (?i), (?m), (?s)
+}
+
+/// A sound literal-prefix prefilter for a compiled pattern.
+///
+/// Candidate literals are derived from the parsed AST. Every candidate is
+/// verified by matching at that exact byte position before it is returned.
+#[derive(Debug, Clone)]
+struct PrefilterPlan {
+    prefilter: optimization::prefilter::Prefilter,
+    ascii_case_insensitive: bool,
 }
 
 /// Type alias for convenience
@@ -286,31 +294,7 @@ impl Pattern {
             }
         };
 
-        // Extract literals and create prefilter
-        let literals = optimization::literal::extract_from_pattern(effective_pattern);
-
-        // Only use prefilter for Prefix literals and patterns without groups
-        // Groups can cause incorrect literal extraction that breaks leftmost-first semantics
-        // Inner literals require expensive bounded verification
-        // Also disable prefilter when multiline or dot_matches_newline flags are set
-        // (case_insensitive is OK for prefilter)
-        let has_groups = effective_pattern.contains("(?:")
-            || (effective_pattern.contains('(') && !effective_pattern.contains("(?"));
-        let prefilter = if !literals.is_empty()
-            && literals.kind == optimization::literal::LiteralKind::Prefix
-            && !has_groups
-            && !flags.multiline
-            && !flags.dot_matches_newline
-        {
-            let pf = optimization::prefilter::Prefilter::from_literals(&literals);
-            if pf.is_available() {
-                Some((pf, literals.kind))
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+        let prefilter = PrefilterPlan::from_ast(&ast);
 
         Ok(Pattern {
             matcher,
@@ -327,42 +311,28 @@ impl Pattern {
         }
 
         // Use prefilter if available for faster scanning
-        if let Some((ref prefilter, literal_kind)) = self.prefilter {
-            return self.is_match_with_prefilter(text, prefilter, literal_kind);
+        if let Some(ref prefilter) = self.prefilter {
+            return self.is_match_with_prefilter(text, prefilter);
         }
 
         // No prefilter: use matcher's is_match directly
         self.matcher.is_match(text)
     }
 
-    /// Match with prefilter using bounded verification strategy
-    fn is_match_with_prefilter(
-        &self,
-        text: &str,
-        prefilter: &prefilter::Prefilter,
-        literal_kind: literal::LiteralKind,
-    ) -> bool {
-        let bytes = text.as_bytes();
-
-        // Determine lookback window based on literal kind
-        let max_lookback = match literal_kind {
-            literal::LiteralKind::Prefix => 10, // Prefix: small window (e.g., https?)
-            literal::LiteralKind::Inner => 30,  // Inner: medium window (e.g., \w+@)
-            literal::LiteralKind::Suffix => 50, // Suffix: larger window
-            literal::LiteralKind::None => return self.matcher.is_match(text),
+    /// Match with a sound prefix prefilter and exact candidate verification.
+    fn is_match_with_prefilter(&self, text: &str, prefilter: &PrefilterPlan) -> bool {
+        let candidate_text = match prefilter.candidate_text(text) {
+            Some(candidate_text) => candidate_text,
+            None => return self.matcher.is_match(text),
         };
 
-        for candidate_pos in prefilter.candidates(bytes) {
-            let lookback = candidate_pos.min(max_lookback);
-
-            for offset in 0..=lookback {
-                let start_pos = candidate_pos - offset;
-                if self
-                    .matcher
-                    .is_match(safe_slice(text, start_pos).unwrap_or(""))
-                {
-                    return true;
-                }
+        for candidate_pos in prefilter.prefilter.candidates(candidate_text.as_bytes()) {
+            if self
+                .matcher
+                .match_at(candidate_text.as_ref(), candidate_pos)
+                .is_some()
+            {
+                return true;
             }
         }
 
@@ -376,63 +346,31 @@ impl Pattern {
         }
 
         // Use prefilter if available for faster scanning
-        if let Some((ref prefilter, literal_kind)) = self.prefilter {
-            return self.find_with_prefilter(text, prefilter, literal_kind);
+        if let Some(ref prefilter) = self.prefilter {
+            return self.find_with_prefilter(text, prefilter);
         }
 
         // No prefilter: use matcher's find directly
         self.matcher.find(text)
     }
 
-    /// Find with prefilter using bounded verification strategy
-    fn find_with_prefilter(
-        &self,
-        text: &str,
-        prefilter: &prefilter::Prefilter,
-        literal_kind: literal::LiteralKind,
-    ) -> Option<(usize, usize)> {
-        let bytes = text.as_bytes();
-        let mut earliest_match: Option<(usize, usize)> = None;
-
-        // Determine lookback window based on literal kind
-        let max_lookback = match literal_kind {
-            literal::LiteralKind::Prefix => 10,
-            literal::LiteralKind::Inner => 30,
-            literal::LiteralKind::Suffix => 50,
-            literal::LiteralKind::None => return self.matcher.find(text),
+    /// Find with a sound prefix prefilter and exact candidate verification.
+    fn find_with_prefilter(&self, text: &str, prefilter: &PrefilterPlan) -> Option<(usize, usize)> {
+        let candidate_text = match prefilter.candidate_text(text) {
+            Some(candidate_text) => candidate_text,
+            None => return self.matcher.find(text),
         };
 
-        // For each candidate position found by prefilter
-        for candidate_pos in prefilter.candidates(bytes) {
-            // If we already found a match before this candidate, return it
-            if let Some((start, _)) = earliest_match {
-                if start < candidate_pos {
-                    return earliest_match;
-                }
-            }
-
-            let lookback = candidate_pos.min(max_lookback);
-
-            for offset in 0..=lookback {
-                let start_pos = candidate_pos - offset;
-
-                // Try to find match from this position
-                if let Some((match_start, match_end)) =
-                    self.matcher.find(safe_slice(text, start_pos).unwrap_or(""))
-                {
-                    let abs_start = start_pos + match_start;
-                    let abs_end = start_pos + match_end;
-
-                    // Update earliest match if this is earlier
-                    if earliest_match.is_none() || abs_start < earliest_match.unwrap().0 {
-                        earliest_match = Some((abs_start, abs_end));
-                    }
-                    break;
-                }
+        for candidate_pos in prefilter.prefilter.candidates(candidate_text.as_bytes()) {
+            if let Some(end) = self
+                .matcher
+                .match_at(candidate_text.as_ref(), candidate_pos)
+            {
+                return Some((candidate_pos, end));
             }
         }
 
-        earliest_match
+        None
     }
 
     pub fn find_all(&self, text: &str) -> Vec<(usize, usize)> {
@@ -1140,6 +1078,248 @@ enum Ast {
     CaseInsensitive(Box<Ast>), // Wrap AST with case-insensitive matching
 }
 
+impl PrefilterPlan {
+    fn from_ast(ast: &Ast) -> Option<Self> {
+        let mut analysis = prefix_analysis(ast)?;
+        analysis.literals.sort();
+        analysis.literals.dedup();
+
+        if analysis.literals.is_empty() || analysis.literals.iter().any(|literal| literal.len() < 3)
+        {
+            return None;
+        }
+
+        if analysis.ascii_case_insensitive {
+            if analysis.literals.iter().any(|literal| !literal.is_ascii()) {
+                return None;
+            }
+            for literal in &mut analysis.literals {
+                literal.make_ascii_lowercase();
+            }
+        }
+
+        let literals = literal::LiteralSet {
+            literals: analysis
+                .literals
+                .into_iter()
+                .map(|text| literal::Literal {
+                    text,
+                    is_exact: false,
+                })
+                .collect(),
+            kind: literal::LiteralKind::Prefix,
+        };
+        let prefilter = prefilter::Prefilter::from_literals(&literals);
+
+        prefilter.is_available().then_some(PrefilterPlan {
+            prefilter,
+            ascii_case_insensitive: analysis.ascii_case_insensitive,
+        })
+    }
+
+    fn candidate_text<'a>(&self, text: &'a str) -> Option<Cow<'a, str>> {
+        if self.ascii_case_insensitive {
+            ascii_lowercase(text).map(Cow::Owned)
+        } else {
+            Some(Cow::Borrowed(text))
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PrefixAnalysis {
+    literals: Vec<String>,
+    ascii_case_insensitive: bool,
+}
+
+impl PrefixAnalysis {
+    fn literal(literal: String) -> Option<Self> {
+        (!literal.is_empty()).then_some(PrefixAnalysis {
+            literals: vec![literal],
+            ascii_case_insensitive: false,
+        })
+    }
+}
+
+fn prefix_analysis(ast: &Ast) -> Option<PrefixAnalysis> {
+    match ast {
+        Ast::Literal(literal) => PrefixAnalysis::literal(literal.clone()),
+        Ast::Alternation(branches) => {
+            let analyses = branches
+                .iter()
+                .cloned()
+                .map(PrefixAnalysis::literal)
+                .collect::<Option<Vec<_>>>()?;
+            merge_prefix_analyses(analyses)
+        }
+        Ast::Anchored { literal, start, .. } => {
+            if *start {
+                None
+            } else {
+                PrefixAnalysis::literal(literal.clone())
+            }
+        }
+        Ast::AnchoredGroup { group, start, .. } => {
+            if *start {
+                None
+            } else {
+                prefix_analysis_group(group)
+            }
+        }
+        Ast::AnchoredPattern { inner, start, .. } => {
+            if *start {
+                None
+            } else {
+                prefix_analysis(inner)
+            }
+        }
+        Ast::Quantified(pattern) => {
+            if pattern.quantifier.min_matches() == 0 {
+                return None;
+            }
+
+            match pattern.element {
+                parser::quantifier::QuantifiedElement::Char(ch) => {
+                    PrefixAnalysis::literal(ch.to_string())
+                }
+                parser::quantifier::QuantifiedElement::CharClass(_) => None,
+            }
+        }
+        Ast::Sequence(sequence) | Ast::SequenceWithFlags(sequence, _) => {
+            prefix_analysis_sequence(&sequence.elements)
+        }
+        Ast::Group(group) => prefix_analysis_group(group),
+        Ast::Capture(inner, _) => prefix_analysis(inner),
+        Ast::QuantifiedCapture(inner, quantifier) => (quantifier.min_matches() > 0)
+            .then(|| prefix_analysis(inner))
+            .flatten(),
+        Ast::CombinedWithLookaround { prefix, .. } => prefix_analysis(prefix),
+        Ast::LookbehindWithSuffix { suffix, .. } => prefix_analysis(suffix),
+        Ast::PatternWithCaptures { elements, .. } => prefix_analysis_capture_elements(elements),
+        Ast::AlternationWithCaptures { branches, .. } => {
+            let analyses = branches
+                .iter()
+                .map(prefix_analysis)
+                .collect::<Option<Vec<_>>>()?;
+            merge_prefix_analyses(analyses)
+        }
+        Ast::CaseInsensitive(inner) => {
+            let mut analysis = prefix_analysis(inner)?;
+            if analysis.ascii_case_insensitive {
+                return None;
+            }
+            analysis.ascii_case_insensitive = true;
+            Some(analysis)
+        }
+        Ast::Dot | Ast::DotAll | Ast::CharClass(_) | Ast::Boundary(_) | Ast::Lookaround(_) => None,
+        Ast::Backreference(_) => None,
+    }
+}
+
+fn prefix_analysis_sequence(
+    elements: &[parser::sequence::SequenceElement],
+) -> Option<PrefixAnalysis> {
+    let mut literal = String::new();
+
+    for element in elements {
+        match element {
+            parser::sequence::SequenceElement::Char(ch) => literal.push(*ch),
+            parser::sequence::SequenceElement::Literal(value) => literal.push_str(value),
+            parser::sequence::SequenceElement::Boundary(_) => continue,
+            parser::sequence::SequenceElement::QuantifiedChar(ch, quantifier)
+                if quantifier.min_matches() > 0 =>
+            {
+                literal.push(*ch);
+                break;
+            }
+            parser::sequence::SequenceElement::Group(group) if literal.is_empty() => {
+                return prefix_analysis_group(group);
+            }
+            parser::sequence::SequenceElement::QuantifiedGroup(group, quantifier)
+                if literal.is_empty() && quantifier.min_matches() > 0 =>
+            {
+                return prefix_analysis_group(group);
+            }
+            _ => break,
+        }
+    }
+
+    PrefixAnalysis::literal(literal)
+}
+
+fn prefix_analysis_group(group: &Group) -> Option<PrefixAnalysis> {
+    if group
+        .quantifier
+        .as_ref()
+        .is_some_and(|quantifier| quantifier.min_matches() == 0)
+    {
+        return None;
+    }
+
+    match &group.content {
+        parser::group::GroupContent::Single(literal) => PrefixAnalysis::literal(literal.clone()),
+        parser::group::GroupContent::Alternation(branches) => {
+            let analyses = branches
+                .iter()
+                .cloned()
+                .map(PrefixAnalysis::literal)
+                .collect::<Option<Vec<_>>>()?;
+            merge_prefix_analyses(analyses)
+        }
+        parser::group::GroupContent::Sequence(sequence) => {
+            prefix_analysis_sequence(&sequence.elements)
+        }
+        parser::group::GroupContent::ParsedAlternation(sequences) => {
+            let analyses = sequences
+                .iter()
+                .map(|sequence| prefix_analysis_sequence(&sequence.elements))
+                .collect::<Option<Vec<_>>>()?;
+            merge_prefix_analyses(analyses)
+        }
+    }
+}
+
+fn prefix_analysis_capture_elements(elements: &[CaptureElement]) -> Option<PrefixAnalysis> {
+    let first = elements.first()?;
+    match first {
+        CaptureElement::Capture(ast, _) | CaptureElement::NonCapture(ast) => prefix_analysis(ast),
+    }
+}
+
+fn merge_prefix_analyses(analyses: Vec<PrefixAnalysis>) -> Option<PrefixAnalysis> {
+    let first = analyses.first()?;
+    let ascii_case_insensitive = first.ascii_case_insensitive;
+    if analyses
+        .iter()
+        .any(|analysis| analysis.ascii_case_insensitive != ascii_case_insensitive)
+    {
+        return None;
+    }
+
+    let literals = analyses
+        .into_iter()
+        .flat_map(|analysis| analysis.literals)
+        .collect();
+    Some(PrefixAnalysis {
+        literals,
+        ascii_case_insensitive,
+    })
+}
+
+fn ascii_lowercase(text: &str) -> Option<String> {
+    if !text.is_ascii() {
+        return None;
+    }
+
+    let mut bytes = text.as_bytes().to_vec();
+    for byte in &mut bytes {
+        if byte.is_ascii_uppercase() {
+            *byte += b'a' - b'A';
+        }
+    }
+    String::from_utf8(bytes).ok()
+}
+
 /// Parse patterns that contain groups combined with other elements
 /// Handles: ^(hello), (foo)(bar), prefix(foo|bar), (foo|bar)suffix, (http|https)://
 fn parse_pattern_with_groups(pattern: &str) -> Result<Ast, PatternError> {
@@ -1757,6 +1937,139 @@ enum CompiledCaptureElement {
 }
 
 impl Matcher {
+    /// Match at one exact byte position in the full haystack.
+    ///
+    /// Unlike `find`, this never searches past `start`. Keeping the complete
+    /// haystack available preserves context for boundaries and lookarounds.
+    fn match_at(&self, text: &str, start: usize) -> Option<usize> {
+        if start > text.len() || !text.is_char_boundary(start) {
+            return None;
+        }
+
+        match self {
+            Matcher::Literal(literal) => text
+                .get(start..)?
+                .starts_with(literal)
+                .then_some(start + literal.len()),
+            Matcher::MultiLiteral(ac) => ac
+                .find(text.get(start..)?)
+                .and_then(|matched| (matched.start() == 0).then_some(start + matched.end())),
+            Matcher::AnchoredLiteral {
+                literal,
+                start: anchored_start,
+                end: anchored_end,
+            } => {
+                if *anchored_start && start != 0 {
+                    return None;
+                }
+                if !text.get(start..)?.starts_with(literal) {
+                    return None;
+                }
+
+                let end = start + literal.len();
+                (!*anchored_end || end == text.len()).then_some(end)
+            }
+            Matcher::AnchoredGroup {
+                group,
+                start: anchored_start,
+                end: anchored_end,
+            } => {
+                if *anchored_start && start != 0 {
+                    return None;
+                }
+                let end = start + group.match_at(text, start)?;
+                (!*anchored_end || end == text.len()).then_some(end)
+            }
+            Matcher::AnchoredPattern {
+                inner,
+                start: anchored_start,
+                end: anchored_end,
+            } => {
+                if *anchored_start && start != 0 {
+                    return None;
+                }
+                let end = inner.match_at(text, start)?;
+                (!*anchored_end || end == text.len()).then_some(end)
+            }
+            Matcher::CharClass(class) => class.match_at(text, start).map(|len| start + len),
+            Matcher::Quantified(pattern) => {
+                pattern.match_at(text.get(start..)?).map(|len| start + len)
+            }
+            Matcher::Sequence(sequence) => sequence.match_at_pos(text, start),
+            Matcher::SequenceWithFlags(sequence, flags) => {
+                if flags.dot_matches_newline {
+                    sequence.match_at_with_dotall(text, start)
+                } else {
+                    sequence.match_at_pos(text, start)
+                }
+            }
+            Matcher::Group(group) => group.match_at(text, start).map(|len| start + len),
+            Matcher::DigitRun => optimization::fast_path::find_digit_run_at(text, start)
+                .and_then(|(found, end)| (found == start).then_some(end)),
+            Matcher::WordRun => optimization::fast_path::find_word_run_at(text, start)
+                .and_then(|(found, end)| (found == start).then_some(end)),
+            Matcher::Boundary(boundary_type) => {
+                boundary_type.matches_at(text, start).then_some(start)
+            }
+            Matcher::Lookaround(lookaround, inner) => {
+                lookaround.matches_at(text, start, inner).then_some(start)
+            }
+            Matcher::Capture(inner, _) => inner.match_at(text, start),
+            Matcher::QuantifiedCapture(inner, quantifier) => {
+                Self::quantified_find(text.get(start..)?, inner, quantifier).and_then(
+                    |(match_start, match_end)| (match_start == 0).then_some(start + match_end),
+                )
+            }
+            Matcher::CombinedWithLookaround {
+                prefix,
+                lookaround,
+                lookaround_matcher,
+            } => {
+                let end = prefix.match_at(text, start)?;
+                lookaround
+                    .matches_at(text, end, lookaround_matcher)
+                    .then_some(end)
+            }
+            Matcher::LookbehindWithSuffix {
+                lookbehind,
+                lookbehind_matcher,
+                suffix,
+            } => lookbehind
+                .matches_at(text, start, lookbehind_matcher)
+                .then(|| suffix.match_at(text, start))
+                .flatten(),
+            Matcher::PatternWithCaptures { elements, .. } => {
+                let has_backreferences = elements.iter().any(|element| {
+                    matches!(
+                        element,
+                        CompiledCaptureElement::NonCapture(Matcher::Backreference(_))
+                    )
+                });
+
+                if has_backreferences {
+                    Self::match_pattern_with_backreferences(text, start, elements)
+                } else {
+                    Self::match_elements_with_backtrack(text, start, elements)
+                }
+            }
+            Matcher::AlternationWithCaptures { branches, .. } => branches
+                .iter()
+                .find_map(|branch| branch.match_at(text, start)),
+            Matcher::Backreference(_) => None,
+            Matcher::DFA(dfa) => dfa
+                .find(text.get(start..)?)
+                .and_then(|(match_start, end)| (match_start == 0).then_some(start + end)),
+            Matcher::LazyDFA(lazy_dfa) => {
+                let mut dfa = lazy_dfa.clone();
+                dfa.find(text.get(start..)?)
+                    .and_then(|(match_start, end)| (match_start == 0).then_some(start + end))
+            }
+            // The prefix plan lowercases ASCII haystacks before calling this
+            // method, so offsets stay identical to the original text.
+            Matcher::CaseInsensitive(inner) => inner.match_at(text, start),
+        }
+    }
+
     fn is_match(&self, text: &str) -> bool {
         match self {
             Matcher::Literal(lit) => memmem::find(text.as_bytes(), lit.as_bytes()).is_some(),
@@ -4488,6 +4801,19 @@ mod tests {
     #[test]
     fn cached() {
         assert!(is_match("test", "this is a test").unwrap());
+    }
+
+    #[test]
+    fn prefix_plan_requires_a_sound_prefix() {
+        assert!(Pattern::new(r"abc\d+").unwrap().prefilter.is_some());
+        assert!(Pattern::new(r"(?:foo|bar)\d+").unwrap().prefilter.is_some());
+        assert!(Pattern::new(r"(?:x)?foo\d+").unwrap().prefilter.is_none());
+    }
+
+    #[test]
+    fn prefix_plan_only_case_folds_ascii_literals() {
+        assert!(Pattern::new(r"(?i)abc\d+").unwrap().prefilter.is_some());
+        assert!(Pattern::new(r"(?i)über\d+").unwrap().prefilter.is_none());
     }
 }
 
