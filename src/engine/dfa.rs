@@ -638,9 +638,7 @@ impl DFA {
         let bytes = text.as_bytes();
 
         // Special handling for digit patterns (10 chars: 0-9)
-        if first_chars.len() == 10
-            && first_chars == [b'0', b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9']
-        {
+        if first_chars.len() == 10 && first_chars == *b"0123456789" {
             // Adaptive strategy based on text length:
             // - Short text (<100 bytes): Use simple DFA scan (faster due to low overhead)
             // - Long text (>=100 bytes): Use memchr to skip non-digit regions
