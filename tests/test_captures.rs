@@ -1,4 +1,22 @@
+use regex::Regex;
 use rexile::Pattern;
+
+fn capture_texts(pattern: &str, text: &str) -> Option<Vec<Option<String>>> {
+    Pattern::new(pattern).ok()?.captures(text).map(|captures| {
+        (0..captures.len())
+            .map(|index| captures.get(index).map(str::to_string))
+            .collect()
+    })
+}
+
+fn regex_capture_texts(pattern: &str, text: &str) -> Option<Vec<Option<String>>> {
+    Regex::new(pattern).ok()?.captures(text).map(|captures| {
+        captures
+            .iter()
+            .map(|capture| capture.map(|matched| matched.as_str().to_string()))
+            .collect()
+    })
+}
 
 #[test]
 fn test_single_capture_group() {
@@ -233,4 +251,51 @@ fn test_optional_lazy_capture_in_function_call() {
     assert_eq!(&caps[0], "set(user.status, \"approved\")");
     assert_eq!(&caps[1], "set");
     assert_eq!(&caps[2], "user.status, \"approved\"");
+}
+
+#[test]
+fn capture_engine_matches_regex_for_nested_backtracking_shapes() {
+    for (pattern, text) in [
+        (r"((.).)", "ab"),
+        (r"x((.).);", "xab;"),
+        (r"when\s+(.+?)\s+then", "when café.price >= 10 then"),
+        (r"(.+)-(\d+)", "left-right-42"),
+        (r"(a)?b", "b"),
+        (r"(a)+", "aaa"),
+        (r"(a)+?", "aaa"),
+        (r"(a|ab)c", "abc"),
+        (r"(a|ab)b", "abb"),
+        (r"(a)|(b)", "b"),
+        (r"((a)|(b))+", "ab"),
+        (r"^x((.).);$", "xab;"),
+        (r"(?i)(hello)-(world)", "HELLO-WORLD"),
+        (r"(?i)(hello) (.)", "HELLO Đ"),
+    ] {
+        assert_eq!(
+            capture_texts(pattern, text),
+            regex_capture_texts(pattern, text),
+            "pattern {pattern:?} on text {text:?}",
+        );
+    }
+}
+
+#[test]
+fn capture_engine_uses_slots_for_backreferences() {
+    let pattern = Pattern::new(r"(\w+)\s+\1").unwrap();
+    let captures = pattern.captures("hello hello").expect("Expected captures");
+
+    assert_eq!(captures.get(0), Some("hello hello"));
+    assert_eq!(captures.get(1), Some("hello"));
+}
+
+#[test]
+fn captures_iter_uses_the_same_alternation_path() {
+    let pattern = Pattern::new(r"(a|ab)b").unwrap();
+    let captures: Vec<_> = pattern.captures_iter("abb abb").collect();
+
+    assert_eq!(captures.len(), 2);
+    for captures in captures {
+        assert_eq!(captures.get(0), Some("ab"));
+        assert_eq!(captures.get(1), Some("a"));
+    }
 }

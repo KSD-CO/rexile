@@ -86,6 +86,11 @@ impl<'t> Captures<'t> {
         Self { text, positions }
     }
 
+    /// Build captures from slots produced by the internal capture executor.
+    pub(crate) fn from_positions(text: &'t str, positions: Vec<Option<(usize, usize)>>) -> Self {
+        Self { text, positions }
+    }
+
     /// Get the matched substring for a capture group
     ///
     /// Index 0 returns the full match, indices 1+ return capture groups

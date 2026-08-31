@@ -137,6 +137,7 @@
 
 // Module organization
 mod advanced; // Advanced features: captures, lookaround
+mod capture_engine; // Capture-aware execution with rollback-safe capture slots
 mod engine; // Matching engines: NFA, DFA, Lazy DFA
 pub mod optimization; // Fast paths and optimizations
 mod parser; // Pattern parsing: escape, charclass, quantifier, etc.
@@ -164,6 +165,7 @@ pub use optimization::{literal, prefilter};
 #[derive(Debug, Clone)]
 pub struct Pattern {
     matcher: Matcher,
+    capture_group_count: usize,
     prefilter: Option<PrefilterPlan>,
     fast_path: Option<optimization::fast_path::FastPath>, // JIT-style fast path
     #[allow(dead_code)]
@@ -259,6 +261,11 @@ impl Pattern {
             matcher = Matcher::CaseInsensitive(Box::new(matcher));
         }
 
+        // The capture executor allocates a fixed slot for every group once per
+        // match attempt. Keep this topology metadata with the compiled pattern
+        // so `captures` and `captures_iter` share the same execution path.
+        let capture_group_count = matcher.capture_group_count();
+
         // Try to detect fast path first (JIT-style optimization)
         // Note: fast path supports case_insensitive flag but not multiline/dot_matches_newline
         // Skip fast-path only if multiline or dot_matches_newline flags are set
@@ -297,6 +304,7 @@ impl Pattern {
 
         Ok(Pattern {
             matcher,
+            capture_group_count,
             prefilter,
             fast_path,
             flags,
@@ -386,9 +394,10 @@ impl Pattern {
                     .map(|pos| (pos, pos + lit.len()))
                     .collect()
             }
-            Matcher::MultiLiteral(ac) => {
+            Matcher::MultiLiteral { finder, .. } => {
                 // AhoCorasick already has find_iter
-                ac.find_iter(text)
+                finder
+                    .find_iter(text)
                     .map(|mat| (mat.start(), mat.end()))
                     .collect()
             }
@@ -441,119 +450,43 @@ impl Pattern {
     /// Find captures at or after `search_start`, keeping positions relative to `text`.
     fn captures_from<'t>(&self, text: &'t str, search_start: usize) -> Option<Captures<'t>> {
         let search_start = char_boundaries(text, search_start).next()?;
-
-        // Check if this is a PatternWithCaptures matcher
-        if let Matcher::PatternWithCaptures {
-            elements,
-            total_groups,
-        } = &self.matcher
-        {
-            // Try matching with backtracking at any position
-            for start_pos in char_boundaries(text, search_start) {
-                if let Some((end_pos, capture_list)) =
-                    Matcher::match_elements_with_backtrack_and_captures(text, start_pos, elements)
-                {
-                    if end_pos > start_pos || elements.is_empty() {
-                        // Create Captures with full match and capture groups
-                        let mut caps = Captures::new(text, (start_pos, end_pos), *total_groups);
-
-                        // Add each capture group
-                        for (group_num, cap_start, cap_end) in capture_list {
-                            caps.set(group_num, cap_start, cap_end);
-                        }
-
-                        return Some(caps);
-                    }
-                }
+        let case_folded = match &self.matcher {
+            Matcher::CaseInsensitive(inner) => {
+                Some((inner.as_ref(), capture_engine::CaseFoldedText::new(text)))
             }
-            None
-        } else if let Matcher::Capture(inner_matcher, group_index) = &self.matcher {
-            // Single capture group - get total groups from inner matcher
-            let total_groups =
-                if let Matcher::PatternWithCaptures { total_groups, .. } = **inner_matcher {
-                    total_groups
-                } else {
-                    *group_index // If inner is not PatternWithCaptures, just use group_index
-                };
+            _ => None,
+        };
+        let matcher = case_folded
+            .as_ref()
+            .map(|(inner, _)| *inner)
+            .unwrap_or(&self.matcher);
+        let match_text = case_folded
+            .as_ref()
+            .map(|(_, folded)| folded.text())
+            .unwrap_or(text);
 
-            if let Some((relative_start, relative_end)) =
-                inner_matcher.find(safe_slice(text, search_start)?)
+        for start_pos in char_boundaries(text, search_start) {
+            let match_start = match case_folded.as_ref() {
+                Some((_, folded)) => folded.folded_offset(start_pos)?,
+                None => start_pos,
+            };
+            let mut state = capture_engine::CaptureState::new(self.capture_group_count);
+            if let Some(end_pos) =
+                matcher.match_at_with_captures(match_text, match_start, &mut state)
             {
-                let start = search_start + relative_start;
-                let end = search_start + relative_end;
-                let mut caps = Captures::new(text, (start, end), total_groups);
-
-                // Record the main capture
-                caps.set(*group_index, start, end);
-
-                // Extract all nested captures recursively
-                let nested = inner_matcher.extract_nested_captures_in_range(text, start, end);
-                for (group_num, cap_start, cap_end) in nested {
-                    caps.set(group_num, cap_start, cap_end);
-                }
-
-                Some(caps)
-            } else {
-                None
-            }
-        } else if let Matcher::AnchoredPattern { inner, start, end } = &self.matcher {
-            // Handle anchored patterns with captures
-            // Delegate to inner matcher's captures logic, but with anchor constraints
-            if let Matcher::PatternWithCaptures {
-                elements,
-                total_groups,
-            } = inner.as_ref()
-            {
-                // For anchored captures, we need to respect anchor constraints
-                let check_anchor = |match_start: usize, match_end: usize| -> bool {
-                    let start_ok = !*start || match_start == 0;
-                    let end_ok = !*end || match_end == text.len();
-                    start_ok && end_ok
+                let positions = state.into_positions((match_start, end_pos));
+                let positions = match case_folded.as_ref() {
+                    Some((_, folded)) => match folded.source_positions(positions) {
+                        Some(positions) => positions,
+                        None => continue,
+                    },
+                    None => positions,
                 };
-
-                // Try matching with backtracking at any position
-                for start_pos in char_boundaries(text, search_start) {
-                    // For start anchor, only try position 0
-                    if *start && start_pos != 0 {
-                        continue;
-                    }
-
-                    if let Some((end_pos, capture_list)) =
-                        Matcher::match_elements_with_backtrack_and_captures(
-                            text, start_pos, elements,
-                        )
-                    {
-                        if (end_pos > start_pos || elements.is_empty())
-                            && check_anchor(start_pos, end_pos)
-                        {
-                            // Create Captures with full match and capture groups
-                            let mut caps = Captures::new(text, (start_pos, end_pos), *total_groups);
-
-                            // Add each capture group
-                            for (group_num, cap_start, cap_end) in capture_list {
-                                caps.set(group_num, cap_start, cap_end);
-                            }
-
-                            return Some(caps);
-                        }
-                    }
-                }
-                None
-            } else {
-                // Simple pattern without captures - just return full match with anchor check
-                self.find(text).map(|(match_start, match_end)| {
-                    Captures::new(text, (match_start, match_end), 0)
-                })
+                return Some(Captures::from_positions(text, positions));
             }
-        } else {
-            // Simple pattern without explicit captures - just return full match
-            self.find(safe_slice(text, search_start)?)
-                .map(|(relative_start, relative_end)| {
-                    let start = search_start + relative_start;
-                    let end = search_start + relative_end;
-                    Captures::new(text, (start, end), 0)
-                })
         }
+
+        None
     }
 
     /// Iterate over all captures in the text
@@ -1801,7 +1734,10 @@ fn parse_pattern_with_captures_with_flags(
 #[derive(Debug, Clone)]
 enum Matcher {
     Literal(String),
-    MultiLiteral(AhoCorasick),
+    MultiLiteral {
+        finder: AhoCorasick,
+        alternatives: Vec<String>,
+    },
     AnchoredLiteral {
         literal: String,
         start: bool,
@@ -1875,7 +1811,7 @@ impl Matcher {
                 .get(start..)?
                 .starts_with(literal)
                 .then_some(start + literal.len()),
-            Matcher::MultiLiteral(ac) => ac
+            Matcher::MultiLiteral { finder, .. } => finder
                 .find(text.get(start..)?)
                 .and_then(|matched| (matched.start() == 0).then_some(start + matched.end())),
             Matcher::AnchoredLiteral {
@@ -1997,7 +1933,7 @@ impl Matcher {
     fn is_match(&self, text: &str) -> bool {
         match self {
             Matcher::Literal(lit) => memmem::find(text.as_bytes(), lit.as_bytes()).is_some(),
-            Matcher::MultiLiteral(ac) => ac.is_match(text),
+            Matcher::MultiLiteral { finder, .. } => finder.is_match(text),
             Matcher::AnchoredLiteral {
                 literal,
                 start,
@@ -2233,7 +2169,7 @@ impl Matcher {
                     }
                 }
                 // Fast path: alternation of literals
-                if let Matcher::MultiLiteral(ac) = inner.as_ref() {
+                if let Matcher::MultiLiteral { finder, .. } = inner.as_ref() {
                     let bytes = text.as_bytes();
                     let len = bytes.len();
                     if len <= 256 {
@@ -2249,7 +2185,7 @@ impl Matcher {
                         }
                         if all_ascii {
                             let lower = unsafe { std::str::from_utf8_unchecked(&buf[..len]) };
-                            return ac.is_match(lower);
+                            return finder.is_match(lower);
                         }
                     }
                 }
@@ -2276,127 +2212,6 @@ impl Matcher {
                 inner.is_match(&lower_text)
             }
         }
-    }
-
-    /// Extract nested captures from an already matched range.
-    fn extract_nested_captures_in_range(
-        &self,
-        text: &str,
-        start_pos: usize,
-        end_pos: usize,
-    ) -> Vec<(usize, usize, usize)> {
-        let Some(matched_text) = safe_slice_range(text, start_pos, end_pos) else {
-            return Vec::new();
-        };
-
-        self.extract_nested_captures(matched_text, 0)
-            .into_iter()
-            .map(|(group_num, start, end)| (group_num, start_pos + start, start_pos + end))
-            .collect()
-    }
-
-    /// Recursively extract all nested captures from a matched pattern.
-    /// Returns Vec<(group_num, start, end)> for all capture groups found.
-    fn extract_nested_captures(&self, text: &str, start_pos: usize) -> Vec<(usize, usize, usize)> {
-        let mut captures = Vec::new();
-
-        match self {
-            Matcher::PatternWithCaptures { elements, .. } => {
-                let mut pos = start_pos;
-
-                for element in elements {
-                    match element {
-                        CompiledCaptureElement::Capture(inner_matcher, group_num) => {
-                            if let Some((rel_start, rel_end)) =
-                                inner_matcher.find(safe_slice(text, pos).unwrap_or(""))
-                            {
-                                if rel_start == 0 {
-                                    let abs_start = pos;
-                                    let abs_end = pos + rel_end;
-
-                                    // Record this capture
-                                    captures.push((*group_num, abs_start, abs_end));
-
-                                    // Recursively extract nested captures
-                                    let nested = inner_matcher
-                                        .extract_nested_captures_in_range(text, abs_start, abs_end);
-                                    captures.extend(nested);
-
-                                    pos = abs_end;
-                                } else {
-                                    break;
-                                }
-                            } else {
-                                break;
-                            }
-                        }
-                        CompiledCaptureElement::NonCapture(inner_matcher) => {
-                            if let Some((rel_start, rel_end)) =
-                                inner_matcher.find(safe_slice(text, pos).unwrap_or(""))
-                            {
-                                if rel_start == 0 {
-                                    let abs_start = pos;
-                                    let abs_end = pos + rel_end;
-
-                                    // Even for non-capturing, extract nested captures
-                                    let nested = inner_matcher
-                                        .extract_nested_captures_in_range(text, abs_start, abs_end);
-                                    captures.extend(nested);
-
-                                    pos = abs_end;
-                                } else {
-                                    break;
-                                }
-                            } else {
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            Matcher::Capture(inner_matcher, group_num) => {
-                // This is a single capture - record it and check for nested
-                if let Some((rel_start, rel_end)) =
-                    inner_matcher.find(safe_slice(text, start_pos).unwrap_or(""))
-                {
-                    let abs_start = start_pos + rel_start;
-                    let abs_end = start_pos + rel_end;
-
-                    // Record this capture
-                    captures.push((*group_num, abs_start, abs_end));
-
-                    // Recursively extract nested captures
-                    let nested =
-                        inner_matcher.extract_nested_captures_in_range(text, abs_start, abs_end);
-                    captures.extend(nested);
-                }
-            }
-            Matcher::AlternationWithCaptures { branches, .. } => {
-                // Try each branch to find which one matched
-                for branch in branches {
-                    if let Some((rel_start, rel_end)) =
-                        branch.find(safe_slice(text, start_pos).unwrap_or(""))
-                    {
-                        if rel_start == 0 {
-                            let abs_start = start_pos;
-                            // Extract captures from the matched branch
-                            let nested = branch.extract_nested_captures_in_range(
-                                text,
-                                abs_start,
-                                abs_start + rel_end,
-                            );
-                            captures.extend(nested);
-                            break; // Only one branch can match
-                        }
-                    }
-                }
-            }
-            _ => {
-                // Other matchers don't have nested captures
-            }
-        }
-
-        captures
     }
 
     /// Match pattern with backreferences, tracking captures as we go
@@ -2714,204 +2529,6 @@ impl Matcher {
         }
     }
 
-    /// Match a sequence with no quantified element that needs backtracking.
-    fn match_elements_without_backtrack_and_captures(
-        text: &str,
-        start_pos: usize,
-        elements: &[CompiledCaptureElement],
-    ) -> Option<(usize, Vec<(usize, usize, usize)>)> {
-        let mut pos = start_pos;
-        let mut captures = Vec::with_capacity(elements.len());
-
-        for element in elements {
-            let (matcher, group_num) = match element {
-                CompiledCaptureElement::Capture(matcher, group_num) => (matcher, Some(*group_num)),
-                CompiledCaptureElement::NonCapture(matcher) => (matcher, None),
-            };
-
-            let (rel_start, rel_end) = matcher.find(safe_slice(text, pos)?)?;
-            if rel_start != 0 {
-                return None;
-            }
-
-            let end_pos = pos + rel_end;
-            if let Some(group_num) = group_num {
-                captures.push((group_num, pos, end_pos));
-            }
-            captures.extend(matcher.extract_nested_captures_in_range(text, pos, end_pos));
-            pos = end_pos;
-        }
-
-        Some((pos, captures))
-    }
-
-    /// Try to match sequence of elements with backtracking support AND extract captures.
-    /// Returns (end_pos, capture_positions) if successful.
-    fn match_elements_with_backtrack_and_captures(
-        text: &str,
-        start_pos: usize,
-        elements: &[CompiledCaptureElement],
-    ) -> Option<(usize, Vec<(usize, usize, usize)>)> {
-        // Base case: no more elements
-        if elements.is_empty() {
-            return Some((start_pos, Vec::new()));
-        }
-
-        let needs_backtracking = elements.iter().enumerate().any(|(index, element)| {
-            if index + 1 == elements.len() {
-                return false;
-            }
-
-            match element {
-                CompiledCaptureElement::Capture(matcher, _)
-                | CompiledCaptureElement::NonCapture(matcher) => Self::contains_quantified(matcher),
-            }
-        });
-
-        if !needs_backtracking {
-            // Common flat capture patterns can collect all spans in one buffer.
-            return Self::match_elements_without_backtrack_and_captures(text, start_pos, elements);
-        }
-
-        // Get first element
-        let first_element = &elements[0];
-
-        // Check if this element contains a quantified pattern that needs backtracking
-        let first_needs_backtracking = match first_element {
-            CompiledCaptureElement::Capture(matcher, _)
-            | CompiledCaptureElement::NonCapture(matcher) => Self::contains_quantified(matcher),
-        };
-
-        if first_needs_backtracking {
-            // Backtracking needed
-            let remaining_text = safe_slice(text, start_pos).unwrap_or("");
-            let prefers_lazy = match first_element {
-                CompiledCaptureElement::Capture(m, _) | CompiledCaptureElement::NonCapture(m) => {
-                    Self::prefers_lazy_backtracking(m)
-                }
-            };
-
-            let try_match = |try_len: usize| {
-                let next_pos = start_pos + try_len;
-
-                if let Some((final_pos, mut remaining_caps)) =
-                    Self::match_elements_with_backtrack_and_captures(text, next_pos, &elements[1..])
-                {
-                    if try_len == 0 {
-                        match first_element {
-                            CompiledCaptureElement::Capture(m, num) => {
-                                if Self::matches_entire(m, "") {
-                                    let mut caps = vec![(*num, start_pos, start_pos)];
-                                    caps.extend(m.extract_nested_captures_in_range(
-                                        text, start_pos, start_pos,
-                                    ));
-                                    caps.append(&mut remaining_caps);
-                                    return Some((final_pos, caps));
-                                }
-                            }
-                            CompiledCaptureElement::NonCapture(m) => {
-                                if Self::matches_entire(m, "") {
-                                    let mut all_caps = m.extract_nested_captures_in_range(
-                                        text, start_pos, start_pos,
-                                    );
-                                    all_caps.extend(remaining_caps);
-                                    return Some((final_pos, all_caps));
-                                }
-                            }
-                        }
-                    } else {
-                        let substring = safe_slice_range(text, start_pos, next_pos).unwrap_or("");
-
-                        match first_element {
-                            CompiledCaptureElement::Capture(m, num) => {
-                                if Self::matches_entire(m, substring) {
-                                    let mut caps = vec![(*num, start_pos, next_pos)];
-                                    caps.extend(m.extract_nested_captures_in_range(
-                                        text, start_pos, next_pos,
-                                    ));
-                                    caps.append(&mut remaining_caps);
-                                    return Some((final_pos, caps));
-                                }
-                            }
-                            CompiledCaptureElement::NonCapture(m) => {
-                                if Self::matches_entire(m, substring) {
-                                    let nested_caps = m.extract_nested_captures_in_range(
-                                        text, start_pos, next_pos,
-                                    );
-                                    let mut all_caps = nested_caps;
-                                    all_caps.extend(remaining_caps);
-                                    return Some((final_pos, all_caps));
-                                }
-                            }
-                        }
-                    }
-                }
-
-                None
-            };
-
-            for try_len in Self::backtracking_lengths(remaining_text, prefers_lazy) {
-                if let Some(result) = try_match(try_len) {
-                    return Some(result);
-                }
-            }
-
-            None
-        } else {
-            // No backtracking needed
-            match first_element {
-                CompiledCaptureElement::Capture(m, num) => {
-                    if let Some((rel_start, rel_end)) =
-                        m.find(safe_slice(text, start_pos).unwrap_or(""))
-                    {
-                        if rel_start == 0 {
-                            let next_pos = start_pos + rel_end;
-                            if let Some((final_pos, mut remaining_caps)) =
-                                Self::match_elements_with_backtrack_and_captures(
-                                    text,
-                                    next_pos,
-                                    &elements[1..],
-                                )
-                            {
-                                let mut caps = vec![(*num, start_pos, next_pos)];
-                                caps.extend(
-                                    m.extract_nested_captures_in_range(text, start_pos, next_pos),
-                                );
-                                caps.append(&mut remaining_caps);
-                                return Some((final_pos, caps));
-                            }
-                        }
-                    }
-                    None
-                }
-                CompiledCaptureElement::NonCapture(m) => {
-                    if let Some((rel_start, rel_end)) =
-                        m.find(safe_slice(text, start_pos).unwrap_or(""))
-                    {
-                        if rel_start == 0 {
-                            let next_pos = start_pos + rel_end;
-                            if let Some((final_pos, remaining_caps)) =
-                                Self::match_elements_with_backtrack_and_captures(
-                                    text,
-                                    next_pos,
-                                    &elements[1..],
-                                )
-                            {
-                                // Extract nested captures
-                                let nested_caps =
-                                    m.extract_nested_captures_in_range(text, start_pos, next_pos);
-                                let mut all_caps = nested_caps;
-                                all_caps.extend(remaining_caps);
-                                return Some((final_pos, all_caps));
-                            }
-                        }
-                    }
-                    None
-                }
-            }
-        }
-    }
-
     /// Try to match sequence of elements with backtracking support
     /// Returns (start, end) if successful
     fn match_elements_with_backtrack(
@@ -3043,8 +2660,8 @@ impl Matcher {
                 let pos = memmem::find(text.as_bytes(), lit.as_bytes())?;
                 Some((pos, pos + lit.len()))
             }
-            Matcher::MultiLiteral(ac) => {
-                let mat = ac.find(text)?;
+            Matcher::MultiLiteral { finder, .. } => {
+                let mat = finder.find(text)?;
                 Some((mat.start(), mat.end()))
             }
             Matcher::AnchoredLiteral {
@@ -3385,7 +3002,7 @@ impl Matcher {
                     .map(|pos| (pos, pos + lit.len()))
                     .collect()
             }
-            Matcher::MultiLiteral(ac) => ac
+            Matcher::MultiLiteral { finder, .. } => finder
                 .find_iter(text)
                 .map(|mat| (mat.start(), mat.end()))
                 .collect(),
@@ -3755,7 +3372,10 @@ fn compile_ast(ast: &Ast) -> Result<Matcher, PatternError> {
                 .match_kind(MatchKind::LeftmostFirst)
                 .build(parts)
                 .map_err(|e| PatternError::ParseError(format!("Aho-Corasick: {}", e)))?;
-            Ok(Matcher::MultiLiteral(ac))
+            Ok(Matcher::MultiLiteral {
+                finder: ac,
+                alternatives: parts.clone(),
+            })
         }
         Ast::Anchored {
             literal,
