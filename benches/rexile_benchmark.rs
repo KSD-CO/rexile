@@ -246,6 +246,28 @@ fn replacement_and_split_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
+fn captures_iter_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("captures_iter");
+    configure_group(&mut group);
+
+    for (name, pattern, text) in [
+        ("flat", r"(\w+)=(\d+)", "a=1 b=22 c=333 d=4444"),
+        ("nested", r"x((.).);", "xab;xcd;xef;xgh;"),
+    ] {
+        let rexile = Pattern::new(pattern).unwrap();
+        let regex = Regex::new(pattern).unwrap();
+
+        group.bench_with_input(BenchmarkId::new("rexile", name), &text, |b, &text| {
+            b.iter(|| black_box(rexile.captures_iter(black_box(text)).count()))
+        });
+        group.bench_with_input(BenchmarkId::new("regex", name), &text, |b, &text| {
+            b.iter(|| black_box(regex.captures_iter(black_box(text)).count()))
+        });
+    }
+
+    group.finish();
+}
+
 fn cached_api_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("cached_api");
     configure_group(&mut group);
@@ -339,6 +361,7 @@ criterion_group!(
     find_benchmark,
     find_all_benchmark,
     replacement_and_split_benchmark,
+    captures_iter_benchmark,
     cached_api_benchmark,
     prefix_churn_benchmark,
 );
