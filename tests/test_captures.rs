@@ -78,6 +78,84 @@ fn test_nested_capture_groups() {
 }
 
 #[test]
+fn test_captures_iter_nested_capture_groups() {
+    let pattern = Pattern::new(r"((.).)").unwrap();
+
+    let direct = pattern.captures("ab").expect("Expected captures");
+    assert_eq!(direct.len(), 3);
+    assert_eq!(direct.get(0), Some("ab"));
+    assert_eq!(direct.get(1), Some("ab"));
+    assert_eq!(direct.get(2), Some("a"));
+    assert_eq!(direct.pos(0), Some((0, 2)));
+    assert_eq!(direct.pos(1), Some((0, 2)));
+    assert_eq!(direct.pos(2), Some((0, 1)));
+
+    let all_captures: Vec<_> = pattern.captures_iter("ab").collect();
+    assert_eq!(all_captures.len(), 1);
+
+    let captures = &all_captures[0];
+    assert_eq!(captures.len(), 3);
+    assert_eq!(captures.get(0), Some("ab"));
+    assert_eq!(captures.get(1), Some("ab"));
+    assert_eq!(captures.get(2), Some("a"));
+    assert_eq!(captures.pos(0), Some((0, 2)));
+    assert_eq!(captures.pos(1), Some((0, 2)));
+    assert_eq!(captures.pos(2), Some((0, 1)));
+}
+
+#[test]
+fn test_nested_captures_with_context() {
+    let pattern = Pattern::new(r"x((.).);").unwrap();
+    let text = "xab;xcd;";
+
+    let direct = pattern.captures(text).expect("Expected captures");
+    assert_eq!(direct.len(), 3);
+    assert_eq!(direct.get(0), Some("xab;"));
+    assert_eq!(direct.get(1), Some("ab"));
+    assert_eq!(direct.get(2), Some("a"));
+    assert_eq!(direct.pos(0), Some((0, 4)));
+    assert_eq!(direct.pos(1), Some((1, 3)));
+    assert_eq!(direct.pos(2), Some((1, 2)));
+
+    let all_captures: Vec<_> = pattern.captures_iter(text).collect();
+    assert_eq!(all_captures.len(), 2);
+
+    assert_eq!(all_captures[0].get(0), Some("xab;"));
+    assert_eq!(all_captures[0].get(1), Some("ab"));
+    assert_eq!(all_captures[0].get(2), Some("a"));
+    assert_eq!(all_captures[0].pos(0), Some((0, 4)));
+    assert_eq!(all_captures[0].pos(1), Some((1, 3)));
+    assert_eq!(all_captures[0].pos(2), Some((1, 2)));
+
+    assert_eq!(all_captures[1].get(0), Some("xcd;"));
+    assert_eq!(all_captures[1].get(1), Some("cd"));
+    assert_eq!(all_captures[1].get(2), Some("c"));
+    assert_eq!(all_captures[1].pos(0), Some((4, 8)));
+    assert_eq!(all_captures[1].pos(1), Some((5, 7)));
+    assert_eq!(all_captures[1].pos(2), Some((5, 6)));
+}
+
+#[test]
+fn test_nested_captures_in_non_capturing_group() {
+    let pattern = Pattern::new(r"(?:x((.).));").unwrap();
+
+    let direct = pattern.captures("xab;").expect("Expected captures");
+    assert_eq!(direct.len(), 3);
+    assert_eq!(direct.get(0), Some("xab;"));
+    assert_eq!(direct.get(1), Some("ab"));
+    assert_eq!(direct.get(2), Some("a"));
+
+    let captures = pattern
+        .captures_iter("xab;")
+        .next()
+        .expect("Expected captures");
+    assert_eq!(captures.len(), 3);
+    assert_eq!(captures.get(0), Some("xab;"));
+    assert_eq!(captures.get(1), Some("ab"));
+    assert_eq!(captures.get(2), Some("a"));
+}
+
+#[test]
 fn test_backreference() {
     // Match same word twice: (\w+)\s+\1
     let pattern = Pattern::new(r"(\w+)\s+\1").unwrap();
