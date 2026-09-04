@@ -129,13 +129,7 @@ impl Lookaround {
             return false;
         }
 
-        let remaining = &text[pos..];
-        // Use find() and check if it starts at position 0
-        if let Some((start, _end)) = matcher.find(remaining) {
-            start == 0
-        } else {
-            false
-        }
+        matcher.match_at(text, pos).is_some()
     }
 
     /// Find if any match ends exactly at the given position
@@ -155,15 +149,7 @@ impl Lookaround {
             return false;
         }
 
-        let span = &text[start..end];
-
-        // Check if the pattern matches exactly this span
-        if let Some((match_start, match_end)) = matcher.find(span) {
-            // Must match the entire span (start at 0, end at span.len())
-            match_start == 0 && match_end == span.len()
-        } else {
-            false
-        }
+        matcher.match_at(text, start) == Some(end)
     }
 }
 

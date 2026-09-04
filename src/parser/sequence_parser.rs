@@ -3,9 +3,10 @@
 /// Handles patterns like: ab+c*, \d+\w*, hello\d+
 use crate::parser::charclass::CharClass;
 use crate::parser::escape::{parse_escape, starts_with_escape};
+use crate::parser::flags::Flags;
 use crate::parser::group::{Group, GroupContent};
 use crate::parser::quantifier::Quantifier;
-use crate::parser::sequence::{Sequence, SequenceElement};
+use crate::parser::sequence::{Anchor, Sequence, SequenceElement};
 
 /// Check if a pattern is a sequence (multiple elements)
 pub fn is_sequence_pattern(pattern: &str) -> bool {
@@ -167,12 +168,36 @@ fn has_top_level_alternation(pattern: &str) -> bool {
 
 /// Parse a sequence pattern
 pub fn parse_sequence(pattern: &str) -> Result<Sequence, String> {
+    parse_sequence_with_flags(pattern, &Flags::new())
+}
+
+/// Parse a sequence while applying global pattern flags to every nested
+/// element. Flags are encoded into the sequence so matching keeps the full
+/// input context instead of relying on a wrapper around only the outermost
+/// sequence.
+pub(crate) fn parse_sequence_with_flags(pattern: &str, flags: &Flags) -> Result<Sequence, String> {
     let mut elements = Vec::new();
     let mut i = 0;
     let _bytes = pattern.as_bytes();
 
     while i < pattern.len() {
         let remaining = &pattern[i..];
+
+        if remaining.starts_with('^') {
+            elements.push(SequenceElement::Anchor(Anchor::Start {
+                multiline: flags.multiline,
+            }));
+            i += 1;
+            continue;
+        }
+
+        if remaining.starts_with('$') {
+            elements.push(SequenceElement::Anchor(Anchor::End {
+                multiline: flags.multiline,
+            }));
+            i += 1;
+            continue;
+        }
 
         // Try escape sequence
         if starts_with_escape(remaining) {
@@ -231,13 +256,15 @@ pub fn parse_sequence(pattern: &str) -> Result<Sequence, String> {
                             || p.contains('+')
                             || p.contains('?')
                             || p.contains('(')
+                            || p.contains('^')
+                            || p.contains('$')
                     });
                     if needs_parsing {
                         // Parse each alternative as a sequence
                         let mut sequences = Vec::new();
                         for part in &parts {
                             if is_sequence_pattern(part) {
-                                match parse_sequence(part) {
+                                match parse_sequence_with_flags(part, flags) {
                                     Ok(seq) => sequences.push(seq),
                                     Err(_) => {
                                         // Fallback: single-char sequence
@@ -259,8 +286,8 @@ pub fn parse_sequence(pattern: &str) -> Result<Sequence, String> {
                     } else {
                         GroupContent::Alternation(parts.iter().map(|s| s.to_string()).collect())
                     }
-                } else if is_sequence_pattern(inner) {
-                    match parse_sequence(inner) {
+                } else if is_sequence_pattern(inner) || inner.contains('^') || inner.contains('$') {
+                    match parse_sequence_with_flags(inner, flags) {
                         Ok(seq) => GroupContent::Sequence(seq),
                         Err(_) => GroupContent::Single(inner.to_string()),
                     }
@@ -328,13 +355,13 @@ pub fn parse_sequence(pattern: &str) -> Result<Sequence, String> {
                 if let Some((quantifier, q_bytes)) = parse_quantifier_with_lazy(q_remaining) {
                     i += q_bytes;
 
-                    // Special case: dot with quantifier = quantified CharClass for [^\n]
+                    // Special case: dot with quantifier = a quantified wildcard.
                     if ch == '.' {
-                        use crate::parser::charclass::CharClass;
-                        let mut dot_class = CharClass::new();
-                        dot_class.add_char('\n');
-                        dot_class.negate();
-                        dot_class.finalize();
+                        let dot_class = if flags.dot_matches_newline {
+                            dot_all_class()
+                        } else {
+                            dot_class()
+                        };
                         elements.push(SequenceElement::QuantifiedCharClass(dot_class, quantifier));
                     } else {
                         elements.push(SequenceElement::QuantifiedChar(ch, quantifier));
@@ -345,7 +372,11 @@ pub fn parse_sequence(pattern: &str) -> Result<Sequence, String> {
 
             // No quantifier
             if ch == '.' {
-                elements.push(SequenceElement::Dot);
+                if flags.dot_matches_newline {
+                    elements.push(SequenceElement::CharClass(dot_all_class()));
+                } else {
+                    elements.push(SequenceElement::Dot);
+                }
             } else {
                 elements.push(SequenceElement::Char(ch));
             }
@@ -359,6 +390,21 @@ pub fn parse_sequence(pattern: &str) -> Result<Sequence, String> {
     }
 
     Ok(Sequence::new(elements))
+}
+
+fn dot_class() -> CharClass {
+    let mut char_class = CharClass::new();
+    char_class.add_char('\n');
+    char_class.negate();
+    char_class.finalize();
+    char_class
+}
+
+fn dot_all_class() -> CharClass {
+    let mut char_class = CharClass::new();
+    char_class.add_range('\0', char::MAX);
+    char_class.finalize();
+    char_class
 }
 
 fn find_class_end(pattern: &str) -> Option<usize> {

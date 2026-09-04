@@ -1,3 +1,4 @@
+use crate::parser::flags::Flags;
 use crate::parser::quantifier::Quantifier;
 /// Group support for regex patterns
 ///
@@ -7,7 +8,7 @@ use crate::parser::quantifier::Quantifier;
 /// - Alternation in groups: (a|b|c)
 /// - Quantified groups: (abc)+
 use crate::parser::sequence::Sequence;
-use crate::parser::sequence_parser::{is_sequence_pattern, parse_sequence};
+use crate::parser::sequence_parser::{is_sequence_pattern, parse_sequence_with_flags};
 
 /// A group in a pattern
 #[derive(Debug, Clone, PartialEq)]
@@ -58,6 +59,17 @@ impl Group {
         self
     }
 
+    /// Returns whether this group contains a positional assertion.
+    pub(crate) fn has_anchor(&self) -> bool {
+        match &self.content {
+            GroupContent::Sequence(sequence) => sequence.has_anchor(),
+            GroupContent::ParsedAlternation(sequences) => {
+                sequences.iter().any(Sequence::has_anchor)
+            }
+            GroupContent::Single(_) | GroupContent::Alternation(_) => false,
+        }
+    }
+
     /// Check if text matches this group at a given position
     /// Returns bytes consumed if match
     pub fn match_at(&self, text: &str, pos: usize) -> Option<usize> {
@@ -92,12 +104,12 @@ impl Group {
                 }
                 None
             }
-            GroupContent::Sequence(seq) => seq.match_at(remaining),
+            GroupContent::Sequence(seq) => seq.match_at_pos(text, pos).map(|end| end - pos),
             GroupContent::ParsedAlternation(sequences) => {
                 // Try each alternative sequence (leftmost first)
                 for seq in sequences {
-                    if let Some(consumed) = seq.match_at(remaining) {
-                        return Some(consumed);
+                    if let Some(end) = seq.match_at_pos(text, pos) {
+                        return Some(end - pos);
                     }
                 }
                 None
@@ -271,6 +283,14 @@ fn quantifier_bounds(q: &Quantifier) -> (usize, usize) {
 /// Parse a group from a pattern string
 /// Returns (Group, bytes_consumed)
 pub fn parse_group(pattern: &str) -> Result<(Group, usize), String> {
+    parse_group_with_flags(pattern, &Flags::new())
+}
+
+/// Parse a group using the global flags inherited from its parent pattern.
+pub(crate) fn parse_group_with_flags(
+    pattern: &str,
+    flags: &Flags,
+) -> Result<(Group, usize), String> {
     if !pattern.starts_with('(') {
         return Err("Pattern must start with '('".to_string());
     }
@@ -309,21 +329,29 @@ pub fn parse_group(pattern: &str) -> Result<(Group, usize), String> {
         let parts: Vec<String> = content_str.split('|').map(|s| s.to_string()).collect();
 
         // Check if any part is a sequence pattern
-        let has_sequences = parts
-            .iter()
-            .any(|p| is_sequence_pattern(p) || has_quantified_element(p));
+        let has_sequences = parts.iter().any(|p| {
+            is_sequence_pattern(p)
+                || has_quantified_element(p)
+                || contains_anchor(p)
+                || (flags.dot_matches_newline && p.contains('.'))
+        });
 
         if has_sequences {
-            // Parse each alternative as a potential sequence
-            // For now, store as alternation of strings
-            // TODO: Support sequences in alternation
-            GroupContent::Alternation(parts)
+            let sequences = parts
+                .iter()
+                .map(|part| parse_sequence_with_flags(part, flags))
+                .collect::<Result<Vec<_>, _>>()?;
+            GroupContent::ParsedAlternation(sequences)
         } else {
             GroupContent::Alternation(parts)
         }
-    } else if is_sequence_pattern(content_str) || has_quantified_element(content_str) {
+    } else if is_sequence_pattern(content_str)
+        || has_quantified_element(content_str)
+        || contains_anchor(content_str)
+        || (flags.dot_matches_newline && content_str.contains('.'))
+    {
         // Sequence pattern like \d+, [a-z]+, ab+c*, or single quantified element
-        match parse_sequence(content_str) {
+        match parse_sequence_with_flags(content_str, flags) {
             Ok(seq) => GroupContent::Sequence(seq),
             Err(_) => GroupContent::Single(content_str.to_string()),
         }
@@ -351,6 +379,34 @@ pub fn parse_group(pattern: &str) -> Result<(Group, usize), String> {
     }
 
     Ok((group, bytes_consumed))
+}
+
+fn contains_anchor(pattern: &str) -> bool {
+    let bytes = pattern.as_bytes();
+    let mut index = 0;
+
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\' if index + 1 < bytes.len() => index += 2,
+            b'[' => {
+                index += 1;
+                while index < bytes.len() {
+                    if bytes[index] == b'\\' && index + 1 < bytes.len() {
+                        index += 2;
+                    } else if bytes[index] == b']' {
+                        index += 1;
+                        break;
+                    } else {
+                        index += 1;
+                    }
+                }
+            }
+            b'^' | b'$' => return true,
+            _ => index += 1,
+        }
+    }
+
+    false
 }
 
 /// Parse quantifier including lazy variants (*, +, ?, *?, +?, ??)

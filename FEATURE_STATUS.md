@@ -44,7 +44,11 @@
 - ⚠ Lookbehind must be in combined patterns
 
 ### Flags
-- ✓ Case insensitive: `(?i)` (basic support)
+- ✓ Global case insensitive: `(?i)`
+- ✓ Global multiline anchors: `(?m)`
+- ✓ Global DOTALL: `(?s)`
+- ✓ Combined global flags: `(?ims)`
+- ⚠ Scoped/toggled flags and `x`, `u`, `U`, `R` are rejected as unsupported
 
 ### Metacharacters
 - ✓ Dot: `.` (matches any character)

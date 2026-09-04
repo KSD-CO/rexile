@@ -9,6 +9,34 @@ use crate::parser::charclass::CharClass;
 use crate::parser::group::Group;
 use crate::parser::quantifier::Quantifier;
 
+/// A zero-width positional assertion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Anchor {
+    /// Matches at the start of the input, or after LF in multiline mode.
+    Start { multiline: bool },
+    /// Matches at the end of the input, or before LF in multiline mode.
+    End { multiline: bool },
+}
+
+impl Anchor {
+    #[inline]
+    fn matches_at(self, text: &str, pos: usize) -> bool {
+        if pos > text.len() || !text.is_char_boundary(pos) {
+            return false;
+        }
+
+        match self {
+            Anchor::Start { multiline } => {
+                pos == 0 || (multiline && pos > 0 && text.as_bytes()[pos - 1] == b'\n')
+            }
+            Anchor::End { multiline } => {
+                pos == text.len()
+                    || (multiline && pos < text.len() && text.as_bytes()[pos] == b'\n')
+            }
+        }
+    }
+}
+
 /// A single element in a sequence
 #[derive(Debug, Clone, PartialEq)]
 pub enum SequenceElement {
@@ -30,6 +58,8 @@ pub enum SequenceElement {
     QuantifiedGroup(Group, Quantifier),
     /// A word boundary (e.g., \b or \B)
     Boundary(BoundaryType),
+    /// A start or end positional assertion (`^` or `$`).
+    Anchor(Anchor),
 }
 
 impl SequenceElement {
@@ -74,6 +104,7 @@ impl SequenceElement {
                         None
                     }
                 }
+                SequenceElement::Anchor(anchor) => anchor.matches_at(text, pos).then_some(0),
                 _ => None, // Other elements need at least one char
             };
         }
@@ -128,6 +159,7 @@ impl SequenceElement {
                     None
                 }
             }
+            SequenceElement::Anchor(anchor) => anchor.matches_at(text, pos).then_some(0),
         }
     }
 }
@@ -296,6 +328,34 @@ impl Sequence {
         Sequence {
             elements,
             nfa_table,
+        }
+    }
+
+    /// Returns whether this sequence contains a positional assertion.
+    pub(crate) fn has_anchor(&self) -> bool {
+        self.elements.iter().any(|element| match element {
+            SequenceElement::Anchor(_) => true,
+            SequenceElement::Group(group) | SequenceElement::QuantifiedGroup(group, _) => {
+                group.has_anchor()
+            }
+            _ => false,
+        })
+    }
+
+    fn leading_anchor(&self) -> Option<Anchor> {
+        match self.elements.first() {
+            Some(SequenceElement::Anchor(anchor)) => Some(*anchor),
+            _ => None,
+        }
+    }
+
+    fn leading_ascii_literal_after_anchor(&self) -> Option<u8> {
+        match self.elements.get(1) {
+            Some(SequenceElement::Char(ch)) if ch.is_ascii() => Some(*ch as u8),
+            Some(SequenceElement::Literal(literal)) if literal.is_ascii() => {
+                literal.as_bytes().first().copied()
+            }
+            _ => None,
         }
     }
 
@@ -911,6 +971,9 @@ impl Sequence {
 
     /// Find the sequence anywhere in text
     pub fn find(&self, text: &str) -> Option<(usize, usize)> {
+        if self.has_anchor() {
+            return self.find_from(text, 0);
+        }
         // FAST PRECHECK: For adjacent non-overlapping quantified charclasses
         // Check if pattern CAN match before trying expensive backtracking
         if self.elements.len() == 2 {
@@ -1292,6 +1355,31 @@ impl Sequence {
         None
     }
 
+    /// Find a sequence while preserving absolute input context for anchors.
+    pub(crate) fn find_from(&self, text: &str, start: usize) -> Option<(usize, usize)> {
+        if let (Some(anchor), Some(literal)) = (
+            self.leading_anchor(),
+            self.leading_ascii_literal_after_anchor(),
+        ) {
+            for offset in memchr::memchr_iter(literal, &text.as_bytes()[start..]) {
+                let position = start + offset;
+                if anchor.matches_at(text, position) {
+                    if let Some(end) = self.match_at_pos(text, position) {
+                        return Some((position, end));
+                    }
+                }
+            }
+            return None;
+        }
+
+        for position in (start..=text.len()).filter(|&position| text.is_char_boundary(position)) {
+            if let Some(end) = self.match_at_pos(text, position) {
+                return Some((position, end));
+            }
+        }
+        None
+    }
+
     /// Check if charclass is good candidate for memchr (selective + ASCII)
     fn is_memchr_candidate(cc: &CharClass) -> bool {
         if cc.negated {
@@ -1456,6 +1544,7 @@ impl Sequence {
                     min
                 }
                 SequenceElement::Boundary(_) => 0,
+                SequenceElement::Anchor(_) => 0,
                 SequenceElement::Literal(s) => s.len(),
                 SequenceElement::Group(_) => 0,
             })
@@ -2026,6 +2115,27 @@ impl Sequence {
 
     /// Find all occurrences of the sequence in text
     pub fn find_all(&self, text: &str) -> Vec<(usize, usize)> {
+        if self.has_anchor() {
+            let mut matches = Vec::new();
+            let mut position = 0;
+
+            while position <= text.len() {
+                let Some((start, end)) = self.find_from(text, position) else {
+                    break;
+                };
+                matches.push((start, end));
+
+                if end > start {
+                    position = end;
+                } else if let Some(ch) = text.get(start..).and_then(|rest| rest.chars().next()) {
+                    position = start + ch.len_utf8();
+                } else {
+                    break;
+                }
+            }
+
+            return matches;
+        }
         let mut results: Vec<(usize, usize)> = Vec::new();
 
         // OPTIMIZATION 1: Use literal prefix with memchr

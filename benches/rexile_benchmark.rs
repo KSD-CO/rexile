@@ -72,6 +72,21 @@ const SEARCH_WORKLOADS: &[SearchWorkload] = &[
         text: "rule 123",
     },
     SearchWorkload {
+        name: "multiline_line_anchor",
+        pattern: r"(?m)^ERROR$",
+        text: "INFO\nERROR\nWARN\nERROR\n",
+    },
+    SearchWorkload {
+        name: "combined_case_multiline_anchor",
+        pattern: r"(?im)^error$",
+        text: "info\nError\nWARN\nERROR\n",
+    },
+    SearchWorkload {
+        name: "dotall_capture",
+        pattern: r"(?s)(BEGIN.*END)",
+        text: "prefix BEGIN\npayload\nEND suffix",
+    },
+    SearchWorkload {
         name: "word_boundaries",
         pattern: r"\btest\b",
         text: "testing test tested test",
@@ -253,6 +268,11 @@ fn captures_iter_benchmark(c: &mut Criterion) {
     for (name, pattern, text) in [
         ("flat", r"(\w+)=(\d+)", "a=1 b=22 c=333 d=4444"),
         ("nested", r"x((.).);", "xab;xcd;xef;xgh;"),
+        (
+            "dotall",
+            r"(?s)(BEGIN.*END)",
+            "prefix BEGIN\npayload\nEND suffix",
+        ),
     ] {
         let rexile = Pattern::new(pattern).unwrap();
         let regex = Regex::new(pattern).unwrap();
@@ -354,6 +374,50 @@ fn prefix_churn_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
+fn flagged_context_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("flags_context");
+    configure_group(&mut group);
+
+    let no_match_text = "INFO\n".repeat(2_048);
+    let tail_match_text = format!("{}ERROR\n", no_match_text);
+    let multiline_pattern = r"(?m)^ERROR$";
+    let rexile_multiline = Pattern::new(multiline_pattern).unwrap();
+    let regex_multiline = Regex::new(multiline_pattern).unwrap();
+
+    group.bench_function("multiline_no_match/rexile", |b| {
+        b.iter(|| black_box(rexile_multiline.is_match(black_box(&no_match_text))))
+    });
+    group.bench_function("multiline_no_match/regex", |b| {
+        b.iter(|| black_box(regex_multiline.is_match(black_box(&no_match_text))))
+    });
+    group.bench_function("multiline_tail_find/rexile", |b| {
+        b.iter(|| black_box(rexile_multiline.find(black_box(&tail_match_text))))
+    });
+    group.bench_function("multiline_tail_find/regex", |b| {
+        b.iter(|| {
+            black_box(
+                regex_multiline
+                    .find(black_box(&tail_match_text))
+                    .map(|matched| (matched.start(), matched.end())),
+            )
+        })
+    });
+
+    let dotall_text = format!("BEGIN\n{}END", "payload\n".repeat(512));
+    let dotall_pattern = r"(?s)(BEGIN.*END)";
+    let rexile_dotall = Pattern::new(dotall_pattern).unwrap();
+    let regex_dotall = Regex::new(dotall_pattern).unwrap();
+
+    group.bench_function("dotall_capture/rexile", |b| {
+        b.iter(|| black_box(rexile_dotall.captures(black_box(&dotall_text))))
+    });
+    group.bench_function("dotall_capture/regex", |b| {
+        b.iter(|| black_box(regex_dotall.captures(black_box(&dotall_text))))
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     compilation_benchmark,
@@ -364,6 +428,7 @@ criterion_group!(
     captures_iter_benchmark,
     cached_api_benchmark,
     prefix_churn_benchmark,
+    flagged_context_benchmark,
 );
 
 criterion_main!(benches);
