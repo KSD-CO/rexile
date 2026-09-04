@@ -31,26 +31,32 @@ impl Flags {
         self.case_insensitive || self.multiline || self.dot_matches_newline
     }
 
-    /// Parse flags from a pattern string like `(?ims)`
-    /// Returns (Flags, remaining_pattern) or None if no flags found
-    pub fn parse_from_pattern(pattern: &str) -> Option<(Self, &str)> {
+    /// Parse one leading global flag group such as `(?ims)`.
+    ///
+    /// Only `i`, `m`, and `s` are supported. Other inline flag syntax must
+    /// fail instead of being accepted and silently ignored.
+    pub fn parse_from_pattern(pattern: &str) -> Result<Option<(Self, &str)>, String> {
         // Check for inline flags at start: (?...)
         if !pattern.starts_with("(?") {
-            return None;
+            return Ok(None);
         }
 
         // Find the closing parenthesis
-        let close_idx = pattern.find(')')?;
+        let Some(close_idx) = pattern.find(')') else {
+            return Ok(None);
+        };
         let flags_str = &pattern[2..close_idx];
 
-        // Check if this is actually a flags group (not lookahead, etc.)
-        // Flags can only contain i, m, s, x, or - (for turning off)
+        // Check if this is actually a flags group rather than a lookaround or
+        // another special group.
         if flags_str.is_empty() {
-            return None;
+            return Ok(None);
         }
 
         // Check for special groups that aren't flags
-        let first_char = flags_str.chars().next()?;
+        let Some(first_char) = flags_str.chars().next() else {
+            return Ok(None);
+        };
         match first_char {
             '=' | '!' | '<' | ':' | '#' | '>' | 'P' => {
                 // These are special groups, not flags
@@ -62,46 +68,48 @@ impl Flags {
                 // (?#...) comment
                 // (?>...) atomic group
                 // (?P<name>...) named capture
-                return None;
+                return Ok(None);
             }
             _ => {}
         }
 
-        // Parse flags
+        if flags_str.contains(':') {
+            return Err("scoped inline flags are not supported".to_string());
+        }
+
+        // Parse flags.
         let mut flags = Flags::new();
-        let mut has_flags = false;
 
         for ch in flags_str.chars() {
             match ch {
                 'i' => {
                     flags.case_insensitive = true;
-                    has_flags = true;
                 }
                 'm' => {
                     flags.multiline = true;
-                    has_flags = true;
                 }
                 's' => {
                     flags.dot_matches_newline = true;
-                    has_flags = true;
                 }
-                // Ignore other valid flag modifiers for now
-                'x' | 'U' | '-' => {
-                    has_flags = true;
+                'x' | 'U' | 'u' | 'R' => {
+                    return Err(format!("inline flag `{}` is not supported", ch));
                 }
+                '-' => return Err("inline flag disabling is not supported".to_string()),
                 _ => {
-                    // Invalid flag character - this might not be a flags group
-                    return None;
+                    return Err(format!("unsupported inline flag syntax `(?{})`", flags_str));
                 }
             }
         }
 
-        if !has_flags {
-            return None;
-        }
-
         let remaining = &pattern[close_idx + 1..];
-        Some((flags, remaining))
+        Ok(Some((flags, remaining)))
+    }
+
+    /// Merge another global flag group into this one.
+    pub fn merge(&mut self, other: Self) {
+        self.case_insensitive |= other.case_insensitive;
+        self.multiline |= other.multiline;
+        self.dot_matches_newline |= other.dot_matches_newline;
     }
 }
 
@@ -111,7 +119,7 @@ mod tests {
 
     #[test]
     fn test_parse_single_flag() {
-        let (flags, rest) = Flags::parse_from_pattern("(?i)hello").unwrap();
+        let (flags, rest) = Flags::parse_from_pattern("(?i)hello").unwrap().unwrap();
         assert!(flags.case_insensitive);
         assert!(!flags.multiline);
         assert!(!flags.dot_matches_newline);
@@ -120,7 +128,7 @@ mod tests {
 
     #[test]
     fn test_parse_multiple_flags() {
-        let (flags, rest) = Flags::parse_from_pattern("(?ims)pattern").unwrap();
+        let (flags, rest) = Flags::parse_from_pattern("(?ims)pattern").unwrap().unwrap();
         assert!(flags.case_insensitive);
         assert!(flags.multiline);
         assert!(flags.dot_matches_newline);
@@ -129,7 +137,7 @@ mod tests {
 
     #[test]
     fn test_parse_dotall_flag() {
-        let (flags, rest) = Flags::parse_from_pattern("(?s)a.*b").unwrap();
+        let (flags, rest) = Flags::parse_from_pattern("(?s)a.*b").unwrap().unwrap();
         assert!(!flags.case_insensitive);
         assert!(!flags.multiline);
         assert!(flags.dot_matches_newline);
@@ -138,8 +146,17 @@ mod tests {
 
     #[test]
     fn test_no_flags() {
-        assert!(Flags::parse_from_pattern("hello").is_none());
-        assert!(Flags::parse_from_pattern("(?:hello)").is_none());
-        assert!(Flags::parse_from_pattern("(?=lookahead)").is_none());
+        assert!(Flags::parse_from_pattern("hello").unwrap().is_none());
+        assert!(Flags::parse_from_pattern("(?:hello)").unwrap().is_none());
+        assert!(Flags::parse_from_pattern("(?=lookahead)")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn test_unsupported_flags_fail() {
+        for pattern in ["(?x)hello", "(?U)hello", "(?-i)hello", "(?i:hello)"] {
+            assert!(Flags::parse_from_pattern(pattern).is_err(), "{pattern}");
+        }
     }
 }

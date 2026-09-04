@@ -21,4 +21,4 @@ pub use flags::Flags;
 pub use group::Group;
 pub use quantifier::{parse_quantified_pattern, QuantifiedPattern};
 pub use sequence::Sequence;
-pub use sequence_parser::{is_sequence_pattern, parse_sequence};
+pub use sequence_parser::is_sequence_pattern;

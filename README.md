@@ -61,10 +61,10 @@ cargo run --release --example perf_compare   # vs regex crate
 | Character classes | `[a-z]`, `[^0-9]` |
 | Quantifiers (greedy & lazy) | `*`, `+`, `?`, `{n,m}`, `*?`, `+?` |
 | Escape sequences | `\d`, `\w`, `\s`, `\b`, `\B` |
-| Anchors | `^`, `$` |
+| Anchors | `^`, `$`, multiline `(?m)` |
 | Dot wildcard / DOTALL | `.`, `.*`, `(?s)` |
 | Groups | `(...)`, `(?:...)` |
-| Case-insensitive flag | `(?i)` |
+| Global flags | `(?i)`, `(?m)`, `(?s)`, combined `(?ims)` |
 | Capturing groups | `(\w+)` with `.captures()` |
 | Lookaround | `(?=...)`, `(?!...)`, `(?<=...)`, `(?<!...)` |
 | Backreferences | `\1`, `\2` |
@@ -72,7 +72,10 @@ cargo run --release --example perf_compare   # vs regex crate
 
 Full status and version history: [FEATURE_STATUS.md](FEATURE_STATUS.md) · [CHANGELOG.md](CHANGELOG.md)
 
-Not yet supported: Unicode property classes (`\p{L}`), named capture groups.
+Not yet supported: Unicode property classes (`\p{L}`), named capture groups,
+scoped/toggled flags (`(?i:...)`, `(?-i)`), and `x`, `u`, `U`, `R` flags.
+Flags are global and must appear at the beginning of a pattern. Multiline mode
+uses LF line boundaries; CRLF mode is not supported.
 
 ## Performance
 

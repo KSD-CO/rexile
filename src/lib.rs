@@ -152,9 +152,10 @@ use std::sync::{Mutex, OnceLock};
 // Internal imports using new module structure
 use advanced::{Lookaround, LookaroundType};
 use engine::DFA;
+use parser::sequence_parser::parse_sequence_with_flags;
 use parser::{
-    is_sequence_pattern, parse_escape, parse_quantified_pattern, parse_sequence,
-    starts_with_escape, BoundaryType, CharClass, Flags, Group, QuantifiedPattern, Sequence,
+    is_sequence_pattern, parse_escape, parse_quantified_pattern, starts_with_escape, BoundaryType,
+    CharClass, Flags, Group, QuantifiedPattern, Sequence,
 };
 
 // Re-export public types
@@ -168,8 +169,9 @@ pub struct Pattern {
     capture_group_count: usize,
     prefilter: Option<PrefilterPlan>,
     fast_path: Option<optimization::fast_path::FastPath>, // JIT-style fast path
+    context_sensitive: bool,
     #[allow(dead_code)]
-    flags: Flags,                  // Regex flags: (?i), (?m), (?s)
+    flags: Flags, // Regex flags: (?i), (?m), (?s)
 }
 
 /// A sound literal-prefix prefilter for a compiled pattern.
@@ -202,57 +204,74 @@ fn char_boundaries(text: &str, start_pos: usize) -> impl Iterator<Item = usize> 
     (start_pos..=text.len()).filter(|&i| text.is_char_boundary(i))
 }
 
+/// Reject inline flag groups that this crate does not implement. Existing
+/// lookaround and non-capturing-group prefixes intentionally remain available
+/// to the regular parser.
+fn validate_inline_flag_positions(pattern: &str) -> Result<(), PatternError> {
+    let bytes = pattern.as_bytes();
+    let mut index = 0;
+
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\' if index + 1 < bytes.len() => index += 2,
+            b'[' => {
+                index += 1;
+                while index < bytes.len() {
+                    if bytes[index] == b'\\' && index + 1 < bytes.len() {
+                        index += 2;
+                    } else if bytes[index] == b']' {
+                        index += 1;
+                        break;
+                    } else {
+                        index += 1;
+                    }
+                }
+            }
+            b'(' if index + 2 < bytes.len() && bytes[index + 1] == b'?' => {
+                if matches!(
+                    bytes[index + 2],
+                    b'i' | b'm' | b's' | b'x' | b'U' | b'u' | b'R' | b'-'
+                ) {
+                    return Err(PatternError::UnsupportedFeature(
+                        "inline flags are only supported at the beginning of a pattern".to_string(),
+                    ));
+                }
+                index += 1;
+            }
+            _ => index += 1,
+        }
+    }
+
+    Ok(())
+}
+
 impl Pattern {
     pub fn new(pattern: &str) -> Result<Self, PatternError> {
-        // Parse inline flags like (?i), (?m), (?s) at the start of the pattern
-        let (flags, effective_pattern) =
-            if let Some((parsed_flags, rest)) = Flags::parse_from_pattern(pattern) {
-                (parsed_flags, rest)
-            } else {
-                (Flags::new(), pattern)
-            };
-
-        // Check for anchors
-        let has_start_anchor = effective_pattern.starts_with('^');
-        let has_end_anchor =
-            effective_pattern.ends_with('$') && !effective_pattern.ends_with("\\$");
-
-        // Strip anchors to get inner pattern
-        let inner_pattern = {
-            let mut p = effective_pattern;
-            if has_start_anchor {
-                p = p.strip_prefix('^').unwrap_or(p);
-            }
-            if has_end_anchor {
-                p = p.strip_suffix('$').unwrap_or(p);
-            }
-            p
-        };
+        // Parse any consecutive global flag groups at the start of the pattern.
+        // Scoped and mid-pattern flag changes are rejected below instead of being
+        // silently ignored.
+        let mut flags = Flags::new();
+        let mut effective_pattern = pattern;
+        while let Some((parsed_flags, rest)) = Flags::parse_from_pattern(effective_pattern)
+            .map_err(PatternError::UnsupportedFeature)?
+        {
+            flags.merge(parsed_flags);
+            effective_pattern = rest;
+        }
+        validate_inline_flag_positions(effective_pattern)?;
 
         // Check for capture groups, but exclude special patterns like (?:...), (?=...), (?!...), etc.
-        let has_captures = inner_pattern.contains('(')
-            && !inner_pattern.contains("(?:")
-            && !inner_pattern.contains("(?=")
-            && !inner_pattern.contains("(?!")
-            && !inner_pattern.contains("(?<=")
-            && !inner_pattern.contains("(?<!");
+        let has_captures = effective_pattern.contains('(')
+            && !effective_pattern.contains("(?:")
+            && !effective_pattern.contains("(?=")
+            && !effective_pattern.contains("(?!")
+            && !effective_pattern.contains("(?<=")
+            && !effective_pattern.contains("(?<!");
 
-        // Parse the inner pattern (without anchors)
-        let inner_ast = if has_captures {
-            parse_pattern_with_captures_with_flags(inner_pattern, &flags)?
+        let ast = if has_captures {
+            parse_pattern_with_captures_with_flags(effective_pattern, &flags)?
         } else {
-            parse_pattern_with_flags(inner_pattern, &flags)?
-        };
-
-        // Wrap with anchor constraints if needed
-        let ast = if has_start_anchor || has_end_anchor {
-            Ast::AnchoredPattern {
-                inner: Box::new(inner_ast),
-                start: has_start_anchor,
-                end: has_end_anchor,
-            }
-        } else {
-            inner_ast
+            parse_pattern_with_flags(effective_pattern, &flags)?
         };
         let mut matcher = compile_ast(&ast)?;
 
@@ -265,11 +284,12 @@ impl Pattern {
         // match attempt. Keep this topology metadata with the compiled pattern
         // so `captures` and `captures_iter` share the same execution path.
         let capture_group_count = matcher.capture_group_count();
+        let context_sensitive = matcher.has_contextual_assertion();
 
         // Try to detect fast path first (JIT-style optimization)
         // Note: fast path supports case_insensitive flag but not multiline/dot_matches_newline
         // Skip fast-path only if multiline or dot_matches_newline flags are set
-        let fast_path = if flags.multiline || flags.dot_matches_newline {
+        let fast_path = if context_sensitive || flags.multiline || flags.dot_matches_newline {
             None
         } else {
             // First check if we can compile a CaptureDFA for patterns with captures
@@ -300,18 +320,25 @@ impl Pattern {
             }
         };
 
-        let prefilter = PrefilterPlan::from_ast(&ast);
+        let prefilter = (!context_sensitive)
+            .then(|| PrefilterPlan::from_ast(&ast))
+            .flatten();
 
         Ok(Pattern {
             matcher,
             capture_group_count,
             prefilter,
             fast_path,
+            context_sensitive,
             flags,
         })
     }
 
     pub fn is_match(&self, text: &str) -> bool {
+        if self.context_sensitive {
+            return self.matcher.find_from(text, 0).is_some();
+        }
+
         // Fast path for common patterns (JIT-style)
         if let Some(ref fp) = self.fast_path {
             return fp.find(text).is_some();
@@ -347,6 +374,10 @@ impl Pattern {
     }
 
     pub fn find(&self, text: &str) -> Option<(usize, usize)> {
+        if self.context_sensitive {
+            return self.matcher.find_from(text, 0);
+        }
+
         // Fast path for common patterns (JIT-style)
         if let Some(ref fp) = self.fast_path {
             return fp.find(text);
@@ -381,6 +412,10 @@ impl Pattern {
     }
 
     pub fn find_all(&self, text: &str) -> Vec<(usize, usize)> {
+        if self.context_sensitive {
+            return self.find_all_from(text, 0);
+        }
+
         // Fast path for common patterns (JIT-style)
         if let Some(ref fp) = self.fast_path {
             return fp.find_all(text);
@@ -423,7 +458,44 @@ impl Pattern {
             fast_path: &self.fast_path,
             text,
             pos: 0,
+            context_sensitive: self.context_sensitive,
+            finished: false,
         }
+    }
+
+    fn find_from(&self, text: &str, start: usize) -> Option<(usize, usize)> {
+        if self.context_sensitive {
+            return self.matcher.find_from(text, start);
+        }
+
+        if let Some(fast_path) = &self.fast_path {
+            return fast_path.find_at(text, start);
+        }
+
+        self.matcher
+            .find(safe_slice(text, start)?)
+            .map(|(match_start, match_end)| (start + match_start, start + match_end))
+    }
+
+    fn find_all_from(&self, text: &str, mut position: usize) -> Vec<(usize, usize)> {
+        let mut matches = Vec::new();
+
+        while position <= text.len() {
+            let Some((start, end)) = self.find_from(text, position) else {
+                break;
+            };
+            matches.push((start, end));
+
+            if end > start {
+                position = end;
+            } else if let Some(ch) = text.get(start..).and_then(|rest| rest.chars().next()) {
+                position = start + ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+
+        matches
     }
 
     /// Capture groups from the first match
@@ -745,15 +817,31 @@ pub struct FindIter<'a> {
     fast_path: &'a Option<optimization::fast_path::FastPath>,
     text: &'a str,
     pos: usize,
+    context_sensitive: bool,
+    finished: bool,
 }
 
 impl<'a> Iterator for FindIter<'a> {
     type Item = Match<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // TRUE LAZY EVALUATION: Find one match at a time
-        if self.pos >= self.text.len() {
+        if self.finished
+            || (!self.context_sensitive && self.pos >= self.text.len())
+            || (self.context_sensitive && self.pos > self.text.len())
+        {
             return None;
+        }
+
+        if self.context_sensitive {
+            let (start, end) = self.matcher.find_from(self.text, self.pos)?;
+            if end > start {
+                self.pos = end;
+            } else if let Some(ch) = self.text.get(start..).and_then(|text| text.chars().next()) {
+                self.pos = start + ch.len_utf8();
+            } else {
+                self.finished = true;
+            }
+            return Some(Match::new(self.text, start, end));
         }
 
         // Use fast path if available - find_at() finds ONE match from position
@@ -826,14 +914,20 @@ impl<'r, 't> Iterator for SplitIter<'r, 't> {
         }
 
         // Find next match starting from current position
-        let remaining = &self.text[self.pos..];
-        if let Some((rel_start, rel_end)) = self.pattern.matcher.find(remaining) {
-            let abs_start = self.pos + rel_start;
-            let abs_end = self.pos + rel_end;
-
+        if let Some((abs_start, abs_end)) = self.pattern.find_from(self.text, self.pos) {
             // Return text before the match
             let result = &self.text[self.pos..abs_start];
-            self.pos = abs_end;
+            if abs_end > abs_start {
+                self.pos = abs_end;
+            } else if let Some(ch) = self
+                .text
+                .get(abs_start..)
+                .and_then(|text| text.chars().next())
+            {
+                self.pos = abs_start + ch.len_utf8();
+            } else {
+                self.finished = true;
+            }
 
             Some(result)
         } else {
@@ -1179,7 +1273,7 @@ fn ascii_lowercase(text: &str) -> Option<String> {
 
 /// Parse patterns that contain groups combined with other elements
 /// Handles: ^(hello), (foo)(bar), prefix(foo|bar), (foo|bar)suffix, (http|https)://
-fn parse_pattern_with_groups(pattern: &str) -> Result<Ast, PatternError> {
+fn parse_pattern_with_groups(pattern: &str, flags: &Flags) -> Result<Ast, PatternError> {
     // Case 1: Multiple consecutive groups: (foo)(bar) - CHECK FIRST!
     if pattern.matches('(').count() > 1 && !pattern.contains('|') {
         let mut combined_literals = Vec::new();
@@ -1187,7 +1281,7 @@ fn parse_pattern_with_groups(pattern: &str) -> Result<Ast, PatternError> {
         let mut all_parsed = true;
 
         while pos < pattern.len() && pattern[pos..].starts_with('(') {
-            match parser::group::parse_group(&pattern[pos..]) {
+            match parser::group::parse_group_with_flags(&pattern[pos..], flags) {
                 Ok((group, bytes_consumed)) => {
                     // Extract literals from this group
                     match &group.content {
@@ -1269,7 +1363,8 @@ fn parse_pattern_with_groups(pattern: &str) -> Result<Ast, PatternError> {
         }
 
         if inner.starts_with('(') {
-            if let Ok((group, bytes_consumed)) = parser::group::parse_group(inner) {
+            if let Ok((group, bytes_consumed)) = parser::group::parse_group_with_flags(inner, flags)
+            {
                 if bytes_consumed == inner.len() {
                     // Extract the actual pattern from group for anchored matching
                     let group_literal = match &group.content {
@@ -1329,7 +1424,7 @@ fn parse_pattern_with_groups(pattern: &str) -> Result<Ast, PatternError> {
 
     // Case 3: Just a single group
     if pattern.starts_with('(') {
-        if let Ok((group, bytes_consumed)) = parser::group::parse_group(pattern) {
+        if let Ok((group, bytes_consumed)) = parser::group::parse_group_with_flags(pattern, flags) {
             if bytes_consumed == pattern.len() {
                 return Ok(Ast::Group(group));
             }
@@ -1380,7 +1475,9 @@ fn parse_pattern_with_groups(pattern: &str) -> Result<Ast, PatternError> {
             if prefix != "^" && prefix != "$" {
                 let group_part = &pattern[group_start..];
 
-                if let Ok((group, bytes_consumed)) = parser::group::parse_group(group_part) {
+                if let Ok((group, bytes_consumed)) =
+                    parser::group::parse_group_with_flags(group_part, flags)
+                {
                     if bytes_consumed == group_part.len() {
                         // prefix + group
                         match &group.content {
@@ -1406,12 +1503,16 @@ fn parse_pattern_with_groups(pattern: &str) -> Result<Ast, PatternError> {
 }
 
 fn parse_pattern(pattern: &str) -> Result<Ast, PatternError> {
-    parse_pattern_with_depth(pattern, 0)
+    parse_pattern_with_depth_and_flags(pattern, 0, &Flags::new())
 }
 
 const MAX_RECURSION_DEPTH: usize = 100;
 
-fn parse_pattern_with_depth(pattern: &str, depth: usize) -> Result<Ast, PatternError> {
+fn parse_pattern_with_depth_and_flags(
+    pattern: &str,
+    depth: usize,
+    flags: &Flags,
+) -> Result<Ast, PatternError> {
     if depth > MAX_RECURSION_DEPTH {
         return Err(PatternError::ParseError(
             "Pattern too complex: recursion depth exceeded".to_string(),
@@ -1436,7 +1537,7 @@ fn parse_pattern_with_depth(pattern: &str, depth: usize) -> Result<Ast, PatternE
         || pattern.starts_with("(?<=")
         || pattern.starts_with("(?<!")
     {
-        return parse_lookaround(pattern, depth);
+        return parse_lookaround(pattern, depth, flags);
     }
 
     // Phase 7.2: Check for combined patterns with lookaround: foo(?=bar), \d+(?!x)
@@ -1446,7 +1547,7 @@ fn parse_pattern_with_depth(pattern: &str, depth: usize) -> Result<Ast, PatternE
         || pattern.contains("(?<!")
     {
         // Try to parse as combined pattern with lookaround
-        if let Ok(ast) = parse_combined_with_lookaround(pattern, depth) {
+        if let Ok(ast) = parse_combined_with_lookaround(pattern, depth, flags) {
             return Ok(ast);
         }
     }
@@ -1463,7 +1564,7 @@ fn parse_pattern_with_depth(pattern: &str, depth: usize) -> Result<Ast, PatternE
                 // If inner contains captures, let parse_pattern_with_captures handle it
                 if !contains_unescaped_paren(inner) || inner.starts_with("(?") {
                     // Simple capture with no nesting
-                    let inner_ast = parse_pattern_with_depth(inner, depth + 1)?;
+                    let inner_ast = parse_pattern_with_depth_and_flags(inner, depth + 1, flags)?;
                     return Ok(Ast::Capture(Box::new(inner_ast), 1)); // Group 1
                 }
                 // Else: fall through to parse_pattern_with_captures below
@@ -1491,8 +1592,6 @@ fn parse_pattern_with_depth(pattern: &str, depth: usize) -> Result<Ast, PatternE
         };
 
     if contains_unescaped_paren(pattern)
-        && !pattern.starts_with('^')
-        && !pattern.ends_with('$')
         && !is_quantified_group
         && !is_bounded_quantified_group
         && !pattern.contains("(?=")
@@ -1501,7 +1600,7 @@ fn parse_pattern_with_depth(pattern: &str, depth: usize) -> Result<Ast, PatternE
         && !pattern.contains("(?<!")
     {
         // Try to parse as pattern with captures (including non-capturing groups)
-        if let Ok(ast) = parse_pattern_with_captures(pattern) {
+        if let Ok(ast) = parse_pattern_with_captures(pattern, flags) {
             return Ok(ast);
         }
     }
@@ -1510,45 +1609,38 @@ fn parse_pattern_with_depth(pattern: &str, depth: usize) -> Result<Ast, PatternE
     // e.g., ^(hello), (foo)(bar), prefix(foo|bar), (foo|bar)suffix
     if contains_unescaped_paren(pattern) {
         // Try to parse as complex pattern with groups
-        if let Ok(ast) = parse_pattern_with_groups(pattern) {
+        if let Ok(ast) = parse_pattern_with_groups(pattern, flags) {
             return Ok(ast);
         }
-    }
-
-    // Check for anchors (before sequences)
-    let has_start_anchor = pattern.starts_with('^');
-    let has_end_anchor = pattern.ends_with('$');
-
-    if has_start_anchor || has_end_anchor {
-        // Strip anchors properly - don't fall back to original pattern
-        let mut literal = pattern;
-        if has_start_anchor {
-            literal = literal.strip_prefix('^').unwrap();
-        }
-        if has_end_anchor {
-            literal = literal.strip_suffix('$').unwrap();
-        }
-
-        // Don't treat anchored patterns as sequences
-        return Ok(Ast::Anchored {
-            literal: literal.to_string(),
-            start: has_start_anchor,
-            end: has_end_anchor,
-        });
     }
 
     // Check for alternation (|) - only split on unescaped, top-level '|'.
     // A naive `pattern.split('|')` would also split on an escaped `\|`,
     // producing a bogus empty alternative that matches any input.
-    if !pattern.contains('[') {
-        if let Some(parts) = split_by_alternation(pattern) {
+    if let Some(parts) = split_by_alternation(pattern) {
+        if flags.dot_matches_newline || parts.iter().any(|part| contains_unescaped_anchor(part)) {
+            let branches = parts
+                .iter()
+                .map(|part| parse_pattern_with_depth_and_flags(part, depth + 1, flags))
+                .collect::<Result<Vec<_>, _>>()?;
+            return Ok(Ast::AlternationWithCaptures {
+                branches,
+                total_groups: 0,
+            });
+        } else {
             return Ok(Ast::Alternation(parts));
         }
     }
 
+    if contains_unescaped_anchor(pattern) || (flags.dot_matches_newline && pattern.contains('.')) {
+        let sequence =
+            parse_sequence_with_flags(pattern, flags).map_err(PatternError::ParseError)?;
+        return Ok(Ast::Sequence(sequence));
+    }
+
     // Check for sequence pattern (most complex)
     if is_sequence_pattern(pattern) {
-        match parse_sequence(pattern) {
+        match parse_sequence_with_flags(pattern, flags) {
             Ok(seq) => return Ok(Ast::Sequence(seq)),
             Err(_) => {
                 // Fall through to other parsers
@@ -1660,68 +1752,11 @@ fn parse_pattern_with_depth(pattern: &str, depth: usize) -> Result<Ast, PatternE
 /// Parse pattern with flags applied
 /// This handles (?i) case-insensitive, (?m) multiline, (?s) dotall flags
 fn parse_pattern_with_flags(pattern: &str, flags: &Flags) -> Result<Ast, PatternError> {
-    // If dotall flag is set, we need to handle . differently
-    // If case_insensitive is set, wrap result in CaseInsensitive
-
-    if flags.dot_matches_newline {
-        // Parse the pattern with dot matching newlines
-        let ast = parse_pattern_dotall(pattern, flags)?;
-        if flags.case_insensitive {
-            return Ok(Ast::CaseInsensitive(Box::new(ast)));
-        }
-        return Ok(ast);
-    }
-
-    // Parse normally
-    let ast = parse_pattern(pattern)?;
+    let ast = parse_pattern_with_depth_and_flags(pattern, 0, flags)?;
     if flags.case_insensitive {
         return Ok(Ast::CaseInsensitive(Box::new(ast)));
     }
     Ok(ast)
-}
-
-/// Parse pattern with DOTALL mode: . matches newlines
-fn parse_pattern_dotall(pattern: &str, flags: &Flags) -> Result<Ast, PatternError> {
-    if pattern.is_empty() {
-        return Ok(Ast::Literal(String::new()));
-    }
-
-    // Check for single dot wildcard
-    if pattern == "." {
-        return Ok(Ast::DotAll);
-    }
-
-    // Check if pattern contains dots - needs sequence parsing with DotAll
-    if pattern.contains('.') {
-        // Check if this is a sequence pattern
-        if is_sequence_pattern(pattern) {
-            // Parse the sequence and apply DOTALL flag
-            match parse_sequence(pattern) {
-                Ok(seq) => return Ok(Ast::SequenceWithFlags(seq, *flags)),
-                Err(_) => {
-                    // Fall through to other parsers
-                }
-            }
-        }
-
-        // Pattern like "a.c" needs to be parsed as sequence with dot wildcard
-        use crate::parser::sequence::{Sequence, SequenceElement};
-        let mut elements = Vec::new();
-
-        for ch in pattern.chars() {
-            if ch == '.' {
-                // Use DotAll element (will be handled by SequenceWithFlags)
-                elements.push(SequenceElement::Dot);
-            } else {
-                elements.push(SequenceElement::Char(ch));
-            }
-        }
-
-        return Ok(Ast::SequenceWithFlags(Sequence::new(elements), *flags));
-    }
-
-    // For non-dot patterns, delegate to normal parsing
-    parse_pattern(pattern)
 }
 
 /// Parse patterns with captures and flags
@@ -1729,16 +1764,12 @@ fn parse_pattern_with_captures_with_flags(
     pattern: &str,
     flags: &Flags,
 ) -> Result<Ast, PatternError> {
-    // For now, parse normally and wrap if case-insensitive
-    // TODO: proper flags handling for captures
-    let ast = parse_pattern_with_captures(pattern)?;
+    let ast = parse_pattern_with_captures(pattern, flags)?;
 
     if flags.case_insensitive {
         return Ok(Ast::CaseInsensitive(Box::new(ast)));
     }
 
-    // If DOTALL flag is set and the pattern has sequences, we need special handling
-    // For now, return as-is - full support requires more work
     Ok(ast)
 }
 
@@ -1939,6 +1970,74 @@ impl Matcher {
             // method, so offsets stay identical to the original text.
             Matcher::CaseInsensitive(inner) => inner.match_at(text, start),
         }
+    }
+
+    /// Whether searching this matcher requires the complete input rather than
+    /// a suffix because it contains a positional anchor.
+    fn has_contextual_assertion(&self) -> bool {
+        match self {
+            Matcher::AnchoredLiteral { .. }
+            | Matcher::AnchoredGroup { .. }
+            | Matcher::AnchoredPattern { .. } => true,
+            Matcher::Sequence(sequence) | Matcher::SequenceWithFlags(sequence, _) => {
+                sequence.has_anchor()
+            }
+            Matcher::Group(group) => group.has_anchor(),
+            Matcher::Capture(inner, _)
+            | Matcher::QuantifiedCapture(inner, _)
+            | Matcher::CaseInsensitive(inner) => inner.has_contextual_assertion(),
+            Matcher::Lookaround(_, inner) => inner.has_contextual_assertion(),
+            Matcher::CombinedWithLookaround {
+                prefix,
+                lookaround_matcher,
+                ..
+            } => prefix.has_contextual_assertion() || lookaround_matcher.has_contextual_assertion(),
+            Matcher::LookbehindWithSuffix {
+                lookbehind_matcher,
+                suffix,
+                ..
+            } => lookbehind_matcher.has_contextual_assertion() || suffix.has_contextual_assertion(),
+            Matcher::PatternWithCaptures { elements, .. } => elements.iter().any(|element| {
+                let matcher = match element {
+                    CompiledCaptureElement::Capture(matcher, _)
+                    | CompiledCaptureElement::NonCapture(matcher) => matcher,
+                };
+                matcher.has_contextual_assertion()
+            }),
+            Matcher::AlternationWithCaptures { branches, .. } => {
+                branches.iter().any(Self::has_contextual_assertion)
+            }
+            _ => false,
+        }
+    }
+
+    /// Find from an absolute offset while retaining the complete haystack for
+    /// zero-width assertions.
+    fn find_from(&self, text: &str, start: usize) -> Option<(usize, usize)> {
+        if start > text.len() || !text.is_char_boundary(start) {
+            return None;
+        }
+
+        if let Matcher::CaseInsensitive(inner) = self {
+            if text.is_ascii() {
+                let folded = text.to_ascii_lowercase();
+                return inner.find_from(&folded, start);
+            }
+
+            let folded = text.to_lowercase();
+            return inner.find_from(&folded, start);
+        }
+
+        if let Matcher::Sequence(sequence) | Matcher::SequenceWithFlags(sequence, _) = self {
+            return sequence.find_from(text, start);
+        }
+
+        for position in char_boundaries(text, start) {
+            if let Some(end) = self.match_at(text, position) {
+                return Some((position, end));
+            }
+        }
+        None
     }
 
     fn is_match(&self, text: &str) -> bool {
@@ -2607,33 +2706,22 @@ impl Matcher {
             if let Matcher::AlternationWithCaptures { branches, .. } = first_matcher {
                 // Try each branch - return first one that leads to complete match
                 for branch in branches {
-                    if let Some((rel_start, rel_end)) =
-                        branch.find(safe_slice(text, start_pos).unwrap_or(""))
-                    {
-                        if rel_start == 0 {
-                            let next_pos = start_pos + rel_end;
-                            // Try to match remaining elements with this branch
-                            if let Some(final_pos) =
-                                Self::match_elements_with_backtrack(text, next_pos, &elements[1..])
-                            {
-                                return Some(final_pos);
-                            }
-                            // This branch didn't lead to complete match, try next branch
+                    if let Some(next_pos) = branch.match_at(text, start_pos) {
+                        // Try to match remaining elements with this branch.
+                        if let Some(final_pos) =
+                            Self::match_elements_with_backtrack(text, next_pos, &elements[1..])
+                        {
+                            return Some(final_pos);
                         }
+                        // This branch didn't lead to complete match, try next branch.
                     }
                 }
                 return None;
             }
 
             // Regular case: non-alternation element
-            if let Some((rel_start, rel_end)) =
-                first_matcher.find(safe_slice(text, start_pos).unwrap_or(""))
-            {
-                if rel_start == 0 {
-                    let next_pos = start_pos + rel_end;
-                    // Match remaining elements
-                    return Self::match_elements_with_backtrack(text, next_pos, &elements[1..]);
-                }
+            if let Some(next_pos) = first_matcher.match_at(text, start_pos) {
+                return Self::match_elements_with_backtrack(text, next_pos, &elements[1..]);
             }
             None
         }
@@ -3437,6 +3525,10 @@ fn compile_ast(ast: &Ast) -> Result<Matcher, PatternError> {
             Ok(Matcher::Quantified(qp.clone()))
         }
         Ast::Sequence(seq) => {
+            if seq.has_anchor() {
+                return Ok(Matcher::Sequence(seq.clone()));
+            }
+
             // Lazy DFA is experimental and currently slower - disabled for now
             // TODO: Optimize LazyDFA implementation
             // if let Some(lazy_dfa) = engine::lazy_dfa::LazyDFA::try_compile(seq) {
@@ -3794,7 +3886,7 @@ fn is_word_charclass(cc: &CharClass) -> bool {
 }
 
 /// Parse lookaround assertion patterns: (?=...), (?!...), (?<=...), (?<!...)
-fn parse_lookaround(pattern: &str, depth: usize) -> Result<Ast, PatternError> {
+fn parse_lookaround(pattern: &str, depth: usize, flags: &Flags) -> Result<Ast, PatternError> {
     let lookaround_type = if pattern.starts_with("(?=") {
         LookaroundType::PositiveLookahead
     } else if pattern.starts_with("(?!") {
@@ -3818,13 +3910,13 @@ fn parse_lookaround(pattern: &str, depth: usize) -> Result<Ast, PatternError> {
 
     if let Some(close_idx) = find_matching_paren(pattern, 0) {
         let inner = &pattern[prefix_len..close_idx];
-        let inner_ast = parse_pattern_with_depth(inner, depth + 1)?;
+        let inner_ast = parse_pattern_with_depth_and_flags(inner, depth + 1, flags)?;
 
         // Check if there's a suffix after the lookaround
         if close_idx != pattern.len() - 1 {
             // This is a lookaround with suffix
             let suffix = &pattern[close_idx + 1..];
-            let suffix_ast = parse_pattern_with_depth(suffix, depth + 1)?;
+            let suffix_ast = parse_pattern_with_depth_and_flags(suffix, depth + 1, flags)?;
 
             // For lookbehind: (?<=foo)bar - match bar only if preceded by foo
             // For lookahead: (?=foo)bar - doesn't make semantic sense
@@ -3853,7 +3945,11 @@ fn parse_lookaround(pattern: &str, depth: usize) -> Result<Ast, PatternError> {
 }
 
 /// Parse combined patterns with lookaround: foo(?=bar), \d+(?!x), etc.
-fn parse_combined_with_lookaround(pattern: &str, depth: usize) -> Result<Ast, PatternError> {
+fn parse_combined_with_lookaround(
+    pattern: &str,
+    depth: usize,
+    flags: &Flags,
+) -> Result<Ast, PatternError> {
     // Find the lookaround position
     let lookaround_patterns = ["(?=", "(?!", "(?<=", "(?<!"];
 
@@ -3869,7 +3965,7 @@ fn parse_combined_with_lookaround(pattern: &str, depth: usize) -> Result<Ast, Pa
             let lookaround_part = &pattern[pos..];
 
             // Parse the prefix
-            let prefix_ast = parse_pattern_with_depth(prefix, depth + 1)?;
+            let prefix_ast = parse_pattern_with_depth_and_flags(prefix, depth + 1, flags)?;
 
             // Parse the lookaround
             let lookaround_type = if lookaround_start == "(?=" {
@@ -3891,7 +3987,7 @@ fn parse_combined_with_lookaround(pattern: &str, depth: usize) -> Result<Ast, Pa
                 }
 
                 let inner = &lookaround_part[prefix_len..close_idx];
-                let inner_ast = parse_pattern_with_depth(inner, depth + 1)?;
+                let inner_ast = parse_pattern_with_depth_and_flags(inner, depth + 1, flags)?;
 
                 let lookaround = Lookaround::new(lookaround_type, inner_ast);
 
@@ -3943,6 +4039,36 @@ fn contains_unescaped_paren(pattern: &str) -> bool {
             i += 1;
         }
     }
+    false
+}
+
+/// Check whether a pattern contains an unescaped positional anchor outside a
+/// character class.
+fn contains_unescaped_anchor(pattern: &str) -> bool {
+    let bytes = pattern.as_bytes();
+    let mut index = 0;
+
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\' if index + 1 < bytes.len() => index += 2,
+            b'[' => {
+                index += 1;
+                while index < bytes.len() {
+                    if bytes[index] == b'\\' && index + 1 < bytes.len() {
+                        index += 2;
+                    } else if bytes[index] == b']' {
+                        index += 1;
+                        break;
+                    } else {
+                        index += 1;
+                    }
+                }
+            }
+            b'^' | b'$' => return true,
+            _ => index += 1,
+        }
+    }
+
     false
 }
 
@@ -4045,9 +4171,10 @@ fn find_matching_paren(pattern: &str, start: usize) -> Option<usize> {
 
 /// Parse patterns with embedded capture groups: Hello (\w+), (\w+)=(\d+), (\d{4})-(\d{2})-(\d{2})
 /// Returns an AST that represents a sequence with captures
-fn parse_pattern_with_captures(pattern: &str) -> Result<Ast, PatternError> {
+fn parse_pattern_with_captures(pattern: &str, flags: &Flags) -> Result<Ast, PatternError> {
     let mut group_counter = 1;
-    let (ast, _total_groups) = parse_pattern_with_captures_inner(pattern, &mut group_counter)?;
+    let (ast, _total_groups) =
+        parse_pattern_with_captures_inner(pattern, &mut group_counter, flags)?;
     Ok(ast)
 }
 
@@ -4123,6 +4250,7 @@ fn split_by_alternation(pattern: &str) -> Option<Vec<String>> {
 fn parse_pattern_with_captures_inner(
     pattern: &str,
     group_counter: &mut usize,
+    flags: &Flags,
 ) -> Result<(Ast, usize), PatternError> {
     // FIRST: Check if this pattern contains top-level alternation
     if let Some(branches) = split_by_alternation(pattern) {
@@ -4132,7 +4260,7 @@ fn parse_pattern_with_captures_inner(
 
         for branch in branches {
             // Parse each branch independently
-            let (branch_ast, _) = parse_pattern_with_captures_inner(&branch, group_counter)?;
+            let (branch_ast, _) = parse_pattern_with_captures_inner(&branch, group_counter, flags)?;
             parsed_branches.push(branch_ast);
         }
 
@@ -4207,7 +4335,8 @@ fn parse_pattern_with_captures_inner(
             if let Some(close_idx) = find_matching_paren(pattern, pos) {
                 // Parse the content as a non-capturing group (recursive)
                 let inner = &pattern[pos + 3..close_idx]; // Skip "(?:"
-                let (inner_ast, _) = parse_pattern_with_captures_inner(inner, group_counter)?;
+                let (inner_ast, _) =
+                    parse_pattern_with_captures_inner(inner, group_counter, flags)?;
 
                 // Check for quantifier after the non-capturing group (same as capturing groups)
                 let mut after_group = close_idx + 1;
@@ -4274,7 +4403,8 @@ fn parse_pattern_with_captures_inner(
 
                 // Parse the content of the capture (recursive, may have nested captures)
                 let inner = &pattern[pos + 1..close_idx];
-                let (inner_ast, _) = parse_pattern_with_captures_inner(inner, group_counter)?;
+                let (inner_ast, _) =
+                    parse_pattern_with_captures_inner(inner, group_counter, flags)?;
 
                 // Check for quantifier after the group
                 let mut after_group = close_idx + 1;
@@ -4411,7 +4541,7 @@ fn parse_pattern_with_captures_inner(
                     Ast::Literal(String::new())
                 } else {
                     // Use basic parsing for non-capture segments
-                    parse_pattern(segment)?
+                    parse_pattern_with_depth_and_flags(segment, 0, flags)?
                 };
 
                 elements.push(CaptureElement::NonCapture(segment_ast));

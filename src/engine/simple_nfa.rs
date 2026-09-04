@@ -119,7 +119,9 @@ impl SimpleNFA {
             // SimpleNFA doesn't support boundaries - return None to fallback to other engines
             SequenceElement::Boundary(_) => None,
             // Groups not supported in simple NFA
-            SequenceElement::Group(_) | SequenceElement::QuantifiedGroup(_, _) => None,
+            SequenceElement::Group(_)
+            | SequenceElement::QuantifiedGroup(_, _)
+            | SequenceElement::Anchor(_) => None,
         }
     }
 
