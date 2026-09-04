@@ -1,3 +1,16 @@
+## [0.7.0] - 2026-09-04
+
+### Fixed
+- **Global flags were not semantically correct** - `(?i)`, `(?m)`, and `(?s)` were parsed but not consistently honored deeper in the AST (groups, alternations, captures, quantified non-capturing groups). `^`/`$` are now represented as true zero-width `Anchor` assertions evaluated against the full haystack instead of a fragile prefix/suffix string strip, fixing multiline anchors inside groups, alternations, captures, and lookarounds. DOTALL now applies consistently inside captures and quantified non-capturing groups.
+- **Unsupported inline flag syntax was silently ignored** - `x`, `u`, `U`, `R`, flag-disabling (`(?-i)`), scoped flags (`(?i:...)`), and mid-pattern flag changes now return `PatternError::UnsupportedFeature` instead of being accepted and producing wrong results. Supported flags remain global and must appear at the beginning of a pattern; consecutive leading flag groups (e.g. `(?i)(?m)`) are merged.
+- Added a safe line-start/literal prefilter so multiline anchors don't regress performance on long inputs.
+
+### Testing
+- Added `tests/test_flags.rs`, a differential suite covering multiline anchors in alternations/groups/captures/replacement/split, DOTALL in captures, consecutive flag groups, literal anchors, and unsupported flag syntax, all checked against the `regex` crate.
+
+### Credits
+- Thanks to [@nghiaphamln](https://github.com/nghiaphamln) for the fix. ([#11](https://github.com/KSD-CO/rexile/pull/11))
+
 ## [0.6.3] - 2026-09-04
 
 ### Fixed

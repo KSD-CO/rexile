@@ -21,7 +21,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-rexile = "0.6"
+rexile = "0.7"
 ```
 
 ```rust
