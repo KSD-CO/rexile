@@ -8,6 +8,52 @@ struct Case {
 }
 
 type SearchResult = (bool, Option<(usize, usize)>, Vec<(usize, usize)>);
+type CaptureSnapshot = Vec<Option<(String, (usize, usize))>>;
+
+#[derive(Clone, Copy)]
+struct CaptureAtom {
+    pattern: &'static str,
+    one: &'static str,
+    run: &'static str,
+}
+
+const CAPTURE_ATOMS: [CaptureAtom; 7] = [
+    CaptureAtom {
+        pattern: "a",
+        one: "a",
+        run: "aa",
+    },
+    CaptureAtom {
+        pattern: "b",
+        one: "b",
+        run: "bb",
+    },
+    CaptureAtom {
+        pattern: r"\d",
+        one: "7",
+        run: "77",
+    },
+    CaptureAtom {
+        pattern: r"\w",
+        one: "x",
+        run: "xy",
+    },
+    CaptureAtom {
+        pattern: "[ab]",
+        one: "a",
+        run: "ab",
+    },
+    CaptureAtom {
+        pattern: "[a-z]",
+        one: "m",
+        run: "mn",
+    },
+    CaptureAtom {
+        pattern: ".",
+        one: "q",
+        run: "qr",
+    },
+];
 
 fn assert_search_compatible(cases: &[Case]) {
     for case in cases {
@@ -46,6 +92,62 @@ fn regex_search(pattern: &str, haystack: &str) -> SearchResult {
             .map(|mat| (mat.start(), mat.end()))
             .collect(),
     )
+}
+
+fn rexile_capture_snapshot(captures: rexile::Captures<'_>) -> CaptureSnapshot {
+    (0..captures.len())
+        .map(|index| {
+            captures.get(index).map(|text| {
+                (
+                    text.to_string(),
+                    captures
+                        .pos(index)
+                        .expect("a matched capture has a position"),
+                )
+            })
+        })
+        .collect()
+}
+
+fn regex_capture_snapshot(captures: regex::Captures<'_>) -> CaptureSnapshot {
+    captures
+        .iter()
+        .map(|capture| {
+            capture.map(|matched| {
+                (
+                    matched.as_str().to_string(),
+                    (matched.start(), matched.end()),
+                )
+            })
+        })
+        .collect()
+}
+
+fn assert_capture_compatible(pattern: &str, haystack: &str) {
+    let rexile = Pattern::new(pattern).unwrap_or_else(|err| {
+        panic!("rexile failed to compile pattern {pattern:?}: {err}");
+    });
+    let regex = Regex::new(pattern).unwrap_or_else(|err| {
+        panic!("regex failed to compile pattern {pattern:?}: {err}");
+    });
+
+    assert_eq!(
+        rexile.captures(haystack).map(rexile_capture_snapshot),
+        regex.captures(haystack).map(regex_capture_snapshot),
+        "captures for pattern {pattern:?} on haystack {haystack:?}",
+    );
+
+    assert_eq!(
+        rexile
+            .captures_iter(haystack)
+            .map(rexile_capture_snapshot)
+            .collect::<Vec<_>>(),
+        regex
+            .captures_iter(haystack)
+            .map(regex_capture_snapshot)
+            .collect::<Vec<_>>(),
+        "captures_iter for pattern {pattern:?} on haystack {haystack:?}",
+    );
 }
 
 #[test]
@@ -345,6 +447,59 @@ fn captures_match_regex_for_simple_ascii_patterns() {
             case.pattern, case.haystack
         );
     }
+}
+
+#[test]
+fn generated_capture_matrix_matches_regex() {
+    let mut case_count = 0;
+    let mut assert_generated = |pattern: String, haystack: String| {
+        assert_capture_compatible(&pattern, &haystack);
+        assert_capture_compatible(&pattern, "plain text without a match");
+        case_count += 2;
+    };
+
+    for left in CAPTURE_ATOMS {
+        for right in CAPTURE_ATOMS {
+            assert_generated(
+                format!("!({})-({});", left.pattern, right.pattern),
+                format!(
+                    "prefix !{}-{}; middle !{}-{}; suffix",
+                    left.one, right.one, left.one, right.one,
+                ),
+            );
+            assert_generated(
+                format!("!({}+)-({}+);", left.pattern, right.pattern),
+                format!(
+                    "prefix !{}-{}; middle !{}-{}; suffix",
+                    left.run, right.run, left.one, right.one,
+                ),
+            );
+        }
+    }
+
+    for atom in CAPTURE_ATOMS {
+        assert_generated(
+            format!("!(({}).);", atom.pattern),
+            format!("prefix !{}z; middle !{}y; suffix", atom.one, atom.one),
+        );
+        assert_generated(
+            format!("!({})?;", atom.pattern),
+            format!("prefix !{}; middle !; suffix", atom.one),
+        );
+        assert_generated(
+            format!("!({}+?);", atom.pattern),
+            format!("prefix !{}; middle !{}; suffix", atom.run, atom.one),
+        );
+        assert_generated(
+            format!("!({}|{}{})#", atom.pattern, atom.pattern, atom.pattern),
+            format!(
+                "prefix !{}{}# middle !{}# suffix",
+                atom.one, atom.one, atom.one
+            ),
+        );
+    }
+
+    assert_eq!(case_count, 252);
 }
 
 #[test]
