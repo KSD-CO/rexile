@@ -41,6 +41,8 @@ ReXile is a **high-performance regex engine** built in **100% safe Rust** that a
 - ✅ **Case-insensitive optimization** - Branchless ASCII matching - **v0.5.5**
 - ✅ **Hybrid execution strategy** - Multi-layered fast-paths like `regex` - **v0.5.5**
 - ✅ **Backreference fix** - `\1`, `\2` now working correctly - **v0.5.4**
+- ✅ **Security fix** - Unmatched parenthesis (e.g. `)`) no longer causes a stack overflow; it now returns a proper parse error - **v0.6.3**
+- ✅ **Escape fix** - `\|` now correctly matches only a literal `|` instead of matching any text - **v0.6.3**
 
 ## 🎯 Purpose
 

@@ -1,3 +1,12 @@
+## [0.6.3] - 2026-09-04
+
+### Fixed
+- **Security: DoS via stack overflow** - `Pattern::new(")")` (and other patterns with an unmatched parenthesis) crashed the process with a stack overflow instead of returning a parse error. The unmatched `)` fell through to the capture-group segmentation logic, which re-parsed the identical segment forever without ever advancing the recursion-depth guard. Added `check_balanced_parens()` to reject unbalanced parentheses up front with a normal `PatternError`. ([#9](https://github.com/KSD-CO/rexile/issues/9))
+- **`\|` matched any text** - The top-level alternation check used a naive `pattern.split('|')`, which also split on an escaped `\|`, producing a bogus empty alternative that matched anything. Now reuses the existing escape-aware `split_by_alternation()` helper so `\|` only matches a literal `|`. ([#7](https://github.com/KSD-CO/rexile/issues/7))
+
+### Credits
+- Thanks to [@Viorel](https://github.com/Viorel) for reporting both issues with clear repro steps.
+
 ## [0.5.3] - 2026-02-02
 
 ### Fixed
