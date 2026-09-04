@@ -1489,6 +1489,14 @@ fn parse_pattern_with_depth(pattern: &str, depth: usize) -> Result<Ast, PatternE
         return Ok(Ast::Literal(String::new()));
     }
 
+    // Reject unbalanced parentheses up front. Without this check, a lone ')'
+    // (or an unmatched '(') falls through to the capture-group segmentation
+    // logic, which re-parses the identical segment and recurses forever
+    // (stack overflow) instead of returning a parse error.
+    if let Err(msg) = check_balanced_parens(pattern) {
+        return Err(PatternError::ParseError(msg));
+    }
+
     // Phase 7: Check for lookaround assertions (?=...), (?!...), (?<=...), (?<!...)
     if pattern.starts_with("(?=")
         || pattern.starts_with("(?!")
@@ -1596,10 +1604,13 @@ fn parse_pattern_with_depth(pattern: &str, depth: usize) -> Result<Ast, PatternE
         });
     }
 
-    // Check for alternation (|)
-    if pattern.contains('|') && !pattern.contains('[') {
-        let parts: Vec<String> = pattern.split('|').map(|s| s.to_string()).collect();
-        return Ok(Ast::Alternation(parts));
+    // Check for alternation (|) - only split on unescaped, top-level '|'.
+    // A naive `pattern.split('|')` would also split on an escaped `\|`,
+    // producing a bogus empty alternative that matches any input.
+    if !pattern.contains('[') {
+        if let Some(parts) = split_by_alternation(pattern) {
+            return Ok(Ast::Alternation(parts));
+        }
     }
 
     // Check for sequence pattern (most complex)
@@ -4313,6 +4324,53 @@ fn contains_unescaped_paren(pattern: &str) -> bool {
         }
     }
     false
+}
+
+/// Check that parentheses in a pattern are balanced, accounting for escaped
+/// characters (`\(`, `\)`) and character classes (`[...]`), which may
+/// contain unescaped parentheses that don't participate in grouping.
+fn check_balanced_parens(pattern: &str) -> Result<(), String> {
+    let bytes = pattern.as_bytes();
+    let mut depth: i32 = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if i + 1 < bytes.len() => {
+                i += 2;
+                continue;
+            }
+            b'[' => {
+                i += 1;
+                if i < bytes.len() && bytes[i] == b'^' {
+                    i += 1;
+                }
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                        i += 2;
+                    } else if bytes[i] == b']' {
+                        i += 1;
+                        break;
+                    } else {
+                        i += 1;
+                    }
+                }
+                continue;
+            }
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth < 0 {
+                    return Err("Unmatched closing parenthesis ')'".to_string());
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    if depth != 0 {
+        return Err("Unmatched opening parenthesis '('".to_string());
+    }
+    Ok(())
 }
 
 fn find_matching_paren(pattern: &str, start: usize) -> Option<usize> {
