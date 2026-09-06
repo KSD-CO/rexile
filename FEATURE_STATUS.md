@@ -1,5 +1,19 @@
 # Rexile Feature Status
 
+## PatternSet
+
+- Multiple patterns with stable IDs, including duplicate patterns.
+- First and all match locations and numbered captures.
+- Independent matching with overlaps between rules.
+- Shared immutable compilation, reusable caches, and cancellable visitors.
+- UTF-8 offsets and empty-match iteration.
+
+See [PatternSet documentation](docs/PATTERN_SET.md) for compatibility boundaries
+and performance acceptance checks. Performance targets require measured
+validation; feature availability does not imply every workload beats regex.
+The [measured results](docs/PATTERN_SET_RESULTS.md) currently fail the per-case
+speed gate, despite passing the aggregate speed, heap, and regression targets.
+
 ## Production-Ready Features (✓)
 
 ### Literals & Character Classes

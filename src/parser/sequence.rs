@@ -342,6 +342,16 @@ impl Sequence {
         })
     }
 
+    pub(crate) fn has_boundary(&self) -> bool {
+        self.elements.iter().any(|element| match element {
+            SequenceElement::Boundary(_) => true,
+            SequenceElement::Group(group) | SequenceElement::QuantifiedGroup(group, _) => {
+                group.has_boundary()
+            }
+            _ => false,
+        })
+    }
+
     fn leading_anchor(&self) -> Option<Anchor> {
         match self.elements.first() {
             Some(SequenceElement::Anchor(anchor)) => Some(*anchor),
@@ -409,26 +419,25 @@ impl Sequence {
 
         // Pre-compute byte→element match table
         let mut byte_elem_mask = [0u32; 128];
-        for b in 0..128u8 {
-            let idx = b as usize;
-            let word_idx = idx / 64;
-            let bit = 1u64 << (idx % 64);
-            for (i, elem) in elements.iter().enumerate() {
-                match elem {
-                    SequenceElement::QuantifiedCharClass(cc, _) => {
-                        let bm = cc.get_ascii_bitmap()?;
-                        let hit = (bm[word_idx] & bit) != 0;
-                        if hit != cc.negated {
-                            byte_elem_mask[b as usize] |= 1u32 << i;
+        for (i, elem) in elements.iter().enumerate() {
+            let element_bit = 1u32 << i;
+            match elem {
+                SequenceElement::QuantifiedCharClass(cc, _) => {
+                    let bitmap = cc.get_ascii_bitmap()?;
+                    for (block, &word) in bitmap.iter().enumerate() {
+                        let mut remaining = if cc.negated { !word } else { word };
+                        while remaining != 0 {
+                            let byte = block * 64 + remaining.trailing_zeros() as usize;
+                            byte_elem_mask[byte] |= element_bit;
+                            remaining &= remaining - 1;
                         }
                     }
-                    SequenceElement::Char(ch) => {
-                        if (*ch as u32) < 128 && b == *ch as u8 {
-                            byte_elem_mask[b as usize] |= 1u32 << i;
-                        }
-                    }
-                    _ => return None,
                 }
+                SequenceElement::Char(ch) if ch.is_ascii() => {
+                    byte_elem_mask[*ch as usize] |= element_bit;
+                }
+                SequenceElement::Char(_) => {}
+                _ => return None,
             }
         }
 

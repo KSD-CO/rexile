@@ -137,7 +137,11 @@ impl QuantifiedPattern {
                     }
                 }
                 return if match_count >= min {
-                    Some(byte_len)
+                    if self.quantifier.is_lazy() {
+                        Some(text.chars().take(min).map(char::len_utf8).sum())
+                    } else {
+                        Some(byte_len)
+                    }
                 } else {
                     None
                 };

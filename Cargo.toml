@@ -24,10 +24,18 @@ aho-corasick = "1.1"
 
 [dev-dependencies]
 criterion = "0.5"
-regex = "1"  # For benchmark comparisons only
+regex = "=1.13.1"  # Differential tests and benchmark baseline only
 
 [[bench]]
 name = "rexile_benchmark"
+harness = false
+
+[[bench]]
+name = "pattern_set"
+harness = false
+
+[[bench]]
+name = "pattern_literals"
 harness = false
 
 [workspace]
