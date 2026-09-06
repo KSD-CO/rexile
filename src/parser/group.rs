@@ -329,6 +329,11 @@ pub(crate) fn parse_group_with_flags(
     // Check if non-capturing group
     let (is_capturing, content_str) = if group_str.starts_with("?:") {
         (false, &group_str[2..])
+    } else if group_str.starts_with('?') {
+        return Err(format!(
+            "invalid group syntax `(?{}`",
+            &group_str[1..group_str.len().min(10)]
+        ));
     } else {
         (true, group_str)
     };

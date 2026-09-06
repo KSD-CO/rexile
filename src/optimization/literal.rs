@@ -169,7 +169,7 @@ fn extract_alternation_prefix(pattern: &str) -> Option<String> {
     }
 
     let first = branches[0];
-    let mut prefix_len = first.len();
+    let mut prefix_len = first.chars().count();
 
     for branch in &branches[1..] {
         let common = first
@@ -183,7 +183,12 @@ fn extract_alternation_prefix(pattern: &str) -> Option<String> {
         }
     }
 
-    Some(first[..prefix_len].to_string())
+    let byte_end = first
+        .char_indices()
+        .nth(prefix_len)
+        .map(|(i, _)| i)
+        .unwrap_or(first.len());
+    Some(first[..byte_end].to_string())
 }
 
 /// Extract all branches from alternation pattern

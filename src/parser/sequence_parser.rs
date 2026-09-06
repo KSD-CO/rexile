@@ -239,6 +239,12 @@ pub(crate) fn parse_sequence_with_flags(pattern: &str, flags: &Flags) -> Result<
         if remaining.starts_with('(') {
             // Find matching closing paren
             if let Some(close_idx) = find_matching_paren_in_str(remaining) {
+                if remaining.starts_with("(?") && !remaining.starts_with("(?:") {
+                    return Err(format!(
+                        "invalid or unsupported group syntax in sequence: {}",
+                        &remaining[..close_idx + 1]
+                    ));
+                }
                 let group_content_start = if remaining.starts_with("(?:") { 3 } else { 1 };
                 let is_capturing = !remaining.starts_with("(?:");
                 let inner = &remaining[group_content_start..close_idx];
@@ -318,6 +324,8 @@ pub(crate) fn parse_sequence_with_flags(pattern: &str, flags: &Flags) -> Result<
 
                 elements.push(SequenceElement::Group(group));
                 continue;
+            } else {
+                return Err("Unclosed parenthesis in sequence".to_string());
             }
         }
 
