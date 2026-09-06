@@ -1429,9 +1429,12 @@ impl FastPath {
         match self {
             // Avoid a second enum dispatch through find for literal queries.
             FastPath::Literal(s) => find_literal(text, s).is_some(),
-            FastPath::LiteralCaseInsensitive(s) => find_literal_case_insensitive(text, s).is_some(),
             // A boolean query needs only the first digit, not the full run.
             FastPath::DigitRun => text.as_bytes().iter().any(u8::is_ascii_digit),
+            // Identifier existence needs only its first valid character.
+            FastPath::IdentifierRun => text
+                .bytes()
+                .any(|byte| byte.is_ascii_alphabetic() || byte == b'_'),
             FastPath::LiteralDotStarLiteral { prefix, suffix, .. } => {
                 find_literal_dot_star_literal(text, prefix, suffix, true).is_some()
             }

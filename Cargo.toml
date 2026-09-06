@@ -34,4 +34,8 @@ harness = false
 name = "pattern_set"
 harness = false
 
+[[bench]]
+name = "pattern_literals"
+harness = false
+
 [workspace]

@@ -56,10 +56,16 @@ counts concern ordinary `Pattern::is_match`, not PatternSet. The two CI runs
 also used different runner images and regex versions (1.12.4 and 1.13.1).
 
 The new boolean fast path sent literal queries through a second enum dispatch
-in `find`. The follow-up dispatches literal and case-insensitive literal
-queries directly to their existing search functions. It also adds
-`literal_log` and `literal_code` Criterion cases with the exact inputs from
-`perf_compare`; the 22-case example itself is unchanged.
+in `find`. The follow-up dispatches literal queries directly to their existing
+search function. Identifier existence queries also stop at the first valid
+starting byte instead of scanning the rest of an identifier. A differential
+test covers empty input, digits, ASCII letters, underscores, NUL, and Unicode.
+Formatting, all 232 tests, and Clippy passed for this follow-up.
+
+The standalone `pattern_literals` benchmark adds `literal_log` and
+`literal_code` with the exact inputs from `perf_compare`. The original
+90-case regression harness and the 22-case example remain byte-for-byte
+identical to the base commit, preserving their benchmark setup.
 
 A diagnostic comparison on the same M1 Pro compiled the base, initial PR, and
 fix with identical dependencies. It measured all 22 example cases in 15
@@ -68,22 +74,23 @@ Medians for the two literals were:
 
 | Pattern | Base (ns) | Initial PR (ns) | Fix (ns) |
 |---|---:|---:|---:|
-| `ERROR` | 6.80 | 7.39 | 6.49 |
-| `calculate_total` | 8.38 | 8.75 | 8.03 |
+| `ERROR` | 7.03 | 7.29 | 6.60 |
+| `calculate_total` | 8.56 | 8.63 | 8.21 |
 
 All three versions won 13/22 comparisons against regex in this diagnostic.
 The count alone therefore missed the smaller literal slowdowns on M1. The
 earlier 90-case regression check used different literal inputs and did not
 cover these exact cases.
 
-The added Criterion cases measured the fix at 6.467 ns versus regex at
-9.397 ns for the log, and 8.075 ns versus 10.571 ns for the code snippet.
+The standalone Criterion cases, with 100 samples each, measured the fix at
+6.669 ns versus regex at 9.220 ns for the log, and 8.238 ns versus 8.958 ns
+for the code snippet.
 These are local measurements, not a prediction of the win count on other
 machines. The initial full PatternSet table has not been remeasured for this
 follow-up.
 
 ```sh
-cargo bench --locked --bench rexile_benchmark -- 'is_match_supported_subset/(rexile|regex)/literal_(log|code)$' --noplot
+cargo bench --locked --bench pattern_literals -- --noplot
 ```
 
 ## Reproduction

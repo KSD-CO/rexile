@@ -419,6 +419,20 @@ fn cache_reuse_errors_cancellation_and_threads() {
 }
 
 #[test]
+fn ordinary_identifier_boolean_queries() {
+    let pattern = Pattern::new(r"[a-zA-Z_]\w*").unwrap();
+    let regex = Regex::new(r"(?-u:[a-zA-Z_]\w*)").unwrap();
+    for text in ["", "123", "éΩ", "123_", "42 A9", "é_name9Ω", "\0z", "a"] {
+        assert_eq!(pattern.is_match(text), regex.is_match(text), "{text:?}");
+        assert_eq!(
+            pattern.find(text),
+            regex.find(text).map(|hit| (hit.start(), hit.end())),
+            "{text:?}",
+        );
+    }
+}
+
+#[test]
 fn ordinary_pattern_iterator_regressions() {
     let lazy = Pattern::new("a.*?b\nc").unwrap();
     assert_eq!(lazy.find("a x b\nc later"), Some((0, 7)));
