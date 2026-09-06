@@ -1427,6 +1427,9 @@ impl FastPath {
     #[inline(always)]
     pub(crate) fn is_match(&self, text: &str) -> bool {
         match self {
+            // Avoid a second enum dispatch through find for literal queries.
+            FastPath::Literal(s) => find_literal(text, s).is_some(),
+            FastPath::LiteralCaseInsensitive(s) => find_literal_case_insensitive(text, s).is_some(),
             // A boolean query needs only the first digit, not the full run.
             FastPath::DigitRun => text.as_bytes().iter().any(u8::is_ascii_digit),
             FastPath::LiteralDotStarLiteral { prefix, suffix, .. } => {

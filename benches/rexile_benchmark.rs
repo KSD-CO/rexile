@@ -22,6 +22,16 @@ const SEARCH_WORKLOADS: &[SearchWorkload] = &[
         text: "hay hay hay hay hay hay hay hay hay hay hay hay hay hay hay hay hay needle",
     },
     SearchWorkload {
+        name: "literal_log",
+        pattern: "ERROR",
+        text: "2024-01-15 ERROR [main] Connection timeout after 30s retry=3 user=admin@example.com",
+    },
+    SearchWorkload {
+        name: "literal_code",
+        pattern: "calculate_total",
+        text: "fn calculate_total(items: Vec<Item>) -> Result<f64, Error> { Ok(0.0) }",
+    },
+    SearchWorkload {
         name: "alternation_keywords",
         pattern: "import|export|function|return",
         text: "const value = function() { return import_name; } export value;",
