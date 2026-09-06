@@ -1,3 +1,22 @@
+## [Unreleased]
+
+### Added
+- PatternSet with stable rule IDs, first/all match locations, numbered captures,
+  independent overlaps, reusable caches, and cancellable capture visitors.
+- Shared literal candidate indexing and deterministic capture programs, with
+  general rexile matching retained where those optimizations are not applicable.
+- A fixed differential corpus, allocation checks, examples, and a reproducible
+  Criterion/heap acceptance runner against regex 1.13.1. Performance targets
+  require passing the measured gates; no universal speedup is claimed.
+
+### Fixed
+- Empty-match iterators now progress at UTF-8 boundaries, include the end of
+  the input, and suppress empty matches adjacent to the preceding match.
+- Capture parsing no longer slices UTF-8 while scanning for backreferences.
+- Unicode case-insensitive find results retain original source offsets.
+- Lazy quantifiers preserve their minimum match length on non-ASCII input.
+- Internal visibility no longer exposes private matcher types to Rust 1.70.
+
 ## [0.7.0] - 2026-09-04
 
 ### Fixed

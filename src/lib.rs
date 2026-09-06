@@ -141,6 +141,8 @@ mod capture_engine; // Capture-aware execution with rollback-safe capture slots
 mod engine; // Matching engines: NFA, DFA, Lazy DFA
 pub mod optimization; // Fast paths and optimizations
 mod parser; // Pattern parsing: escape, charclass, quantifier, etc.
+mod pattern_set;
+mod set_program;
 
 // External dependencies
 use aho_corasick::AhoCorasick;
@@ -161,6 +163,10 @@ use parser::{
 // Re-export public types
 pub use advanced::{CaptureGroup, Captures};
 pub use optimization::{literal, prefilter};
+pub use pattern_set::{
+    PatternSet, PatternSetError, SetCache, SetCaptures, SetCapturesIter, SetCapturesRef,
+    SetFindIter, SetMatch, SetMatches, SetSearchMode,
+};
 
 /// Main ReXile pattern type
 #[derive(Debug, Clone)]
@@ -170,6 +176,8 @@ pub struct Pattern {
     prefilter: Option<PrefilterPlan>,
     fast_path: Option<optimization::fast_path::FastPath>, // JIT-style fast path
     context_sensitive: bool,
+    prefix_context: bool,
+    unicode_case_pattern: bool,
     #[allow(dead_code)]
     flags: Flags, // Regex flags: (?i), (?m), (?s)
 }
@@ -246,7 +254,38 @@ fn validate_inline_flag_positions(pattern: &str) -> Result<(), PatternError> {
 }
 
 impl Pattern {
+    /// Compile a pattern for repeated searches.
     pub fn new(pattern: &str) -> Result<Self, PatternError> {
+        if pattern == r"\d+" || pattern == "[0-9]+" {
+            return Ok(Self {
+                matcher: Matcher::DigitRun,
+                capture_group_count: 0,
+                prefilter: None,
+                fast_path: Some(optimization::fast_path::FastPath::DigitRun),
+                context_sensitive: false,
+                prefix_context: false,
+                unicode_case_pattern: false,
+                flags: Flags::default(),
+            });
+        }
+        if pattern == r"\w+" {
+            return Ok(Self {
+                matcher: Matcher::WordRun,
+                capture_group_count: 0,
+                prefilter: None,
+                fast_path: Some(optimization::fast_path::FastPath::WordRun),
+                context_sensitive: false,
+                prefix_context: false,
+                unicode_case_pattern: false,
+                flags: Flags::default(),
+            });
+        }
+        let (ast, flags, effective_pattern) = Self::parse(pattern)?;
+        Self::from_ast::<true>(pattern, effective_pattern, flags, &ast)
+    }
+
+    #[inline]
+    fn parse(pattern: &str) -> Result<(Ast, Flags, &str), PatternError> {
         // Parse any consecutive global flag groups at the start of the pattern.
         // Scoped and mid-pattern flag changes are rejected below instead of being
         // silently ignored.
@@ -273,7 +312,17 @@ impl Pattern {
         } else {
             parse_pattern_with_flags(effective_pattern, &flags)?
         };
-        let mut matcher = compile_ast(&ast)?;
+        Ok((ast, flags, effective_pattern))
+    }
+
+    #[inline]
+    fn from_ast<const INDIVIDUAL: bool>(
+        pattern: &str,
+        effective_pattern: &str,
+        flags: Flags,
+        ast: &Ast,
+    ) -> Result<Self, PatternError> {
+        let mut matcher = compile_ast_with::<INDIVIDUAL>(ast)?;
 
         // Apply flags to matcher (avoid double-wrapping if AST already wrapped)
         if flags.case_insensitive && !matches!(matcher, Matcher::CaseInsensitive(_)) {
@@ -284,24 +333,35 @@ impl Pattern {
         // match attempt. Keep this topology metadata with the compiled pattern
         // so `captures` and `captures_iter` share the same execution path.
         let capture_group_count = matcher.capture_group_count();
-        let context_sensitive = matcher.has_contextual_assertion();
+        let context_sensitive = matcher.has_contextual_assertion::<false>();
+        let prefix_context = context_sensitive || matcher.has_contextual_assertion::<true>();
 
         // Try to detect fast path first (JIT-style optimization)
         // Note: fast path supports case_insensitive flag but not multiline/dot_matches_newline
         // Skip fast-path only if multiline or dot_matches_newline flags are set
-        let fast_path = if context_sensitive || flags.multiline || flags.dot_matches_newline {
-            None
-        } else {
-            // First check if we can compile a CaptureDFA for patterns with captures
-            if let Matcher::PatternWithCaptures { ref elements, .. } = matcher {
-                // Try to compile DFA
-                if let Some(dfa) = engine::capture_dfa::compile_capture_pattern(elements) {
-                    // Successfully compiled DFA - use it as fast path
-                    Some(optimization::fast_path::FastPath::CaptureDFA(
-                        std::sync::Arc::new(dfa),
-                    ))
+        let fast_path =
+            if !INDIVIDUAL || context_sensitive || flags.multiline || flags.dot_matches_newline {
+                None
+            } else {
+                // First check if we can compile a CaptureDFA for patterns with captures
+                if let Matcher::PatternWithCaptures { ref elements, .. } = matcher {
+                    // Try to compile DFA
+                    if let Some(dfa) = engine::capture_dfa::compile_capture_pattern(elements) {
+                        // Successfully compiled DFA - use it as fast path
+                        Some(optimization::fast_path::FastPath::CaptureDFA(
+                            std::sync::Arc::new(dfa),
+                        ))
+                    } else {
+                        // DFA compilation failed - fall back to normal fast path detection
+                        let fast_path_pattern = if flags.case_insensitive {
+                            pattern
+                        } else {
+                            effective_pattern
+                        };
+                        optimization::fast_path::detect_fast_path(fast_path_pattern)
+                    }
                 } else {
-                    // DFA compilation failed - fall back to normal fast path detection
+                    // Not a capture pattern - use normal fast path detection
                     let fast_path_pattern = if flags.case_insensitive {
                         pattern
                     } else {
@@ -309,19 +369,10 @@ impl Pattern {
                     };
                     optimization::fast_path::detect_fast_path(fast_path_pattern)
                 }
-            } else {
-                // Not a capture pattern - use normal fast path detection
-                let fast_path_pattern = if flags.case_insensitive {
-                    pattern
-                } else {
-                    effective_pattern
-                };
-                optimization::fast_path::detect_fast_path(fast_path_pattern)
-            }
-        };
+            };
 
-        let prefilter = (!context_sensitive)
-            .then(|| PrefilterPlan::from_ast(&ast))
+        let prefilter = (INDIVIDUAL && !context_sensitive)
+            .then(|| PrefilterPlan::from_ast(ast))
             .flatten();
 
         Ok(Pattern {
@@ -330,18 +381,31 @@ impl Pattern {
             prefilter,
             fast_path,
             context_sensitive,
+            prefix_context,
+            unicode_case_pattern: flags.case_insensitive && !pattern.is_ascii(),
             flags,
         })
     }
 
     pub fn is_match(&self, text: &str) -> bool {
         if self.context_sensitive {
+            if self.flags.case_insensitive && (self.unicode_case_pattern || !text.is_ascii()) {
+                return self.captures(text).is_some();
+            }
             return self.matcher.find_from(text, 0).is_some();
         }
 
         // Fast path for common patterns (JIT-style)
         if let Some(ref fp) = self.fast_path {
-            return fp.find(text).is_some();
+            // A raw fast-path hit stays valid after Unicode lowercasing. Only
+            // a miss needs folding to discover additional equivalent strings.
+            return fp.is_match(text)
+                || (self.flags.case_insensitive
+                    && (self.unicode_case_pattern || !text.is_ascii())
+                    && self.captures(text).is_some());
+        }
+        if self.flags.case_insensitive && (self.unicode_case_pattern || !text.is_ascii()) {
+            return self.captures(text).is_some();
         }
 
         // Use prefilter if available for faster scanning
@@ -373,7 +437,28 @@ impl Pattern {
         false
     }
 
+    #[inline]
     pub fn find(&self, text: &str) -> Option<(usize, usize)> {
+        if self.flags.case_insensitive {
+            if let Some(fp) = &self.fast_path {
+                let found = fp.find(text);
+                // A later Unicode suffix cannot move this ASCII match. Check
+                // only the preceding text before falling back to mapped slots.
+                let checked_end = found.map_or(text.len(), |(_, end)| end);
+                if !self.unicode_case_pattern
+                    && text
+                        .as_bytes()
+                        .get(..checked_end)
+                        .is_some_and(|bytes| bytes.is_ascii())
+                {
+                    return found;
+                }
+                return self.captures(text)?.pos(0);
+            }
+        }
+        if self.flags.case_insensitive && (self.unicode_case_pattern || !text.is_ascii()) {
+            return self.captures(text)?.pos(0);
+        }
         if self.context_sensitive {
             return self.matcher.find_from(text, 0);
         }
@@ -412,7 +497,15 @@ impl Pattern {
     }
 
     pub fn find_all(&self, text: &str) -> Vec<(usize, usize)> {
+        if text.is_empty()
+            || (self.flags.case_insensitive && (self.unicode_case_pattern || !text.is_ascii()))
+        {
+            return self.find_iter(text).map(|m| (m.start(), m.end())).collect();
+        }
         if self.context_sensitive {
+            if matches!(self.matcher, Matcher::AnchoredLiteral { .. }) {
+                return self.find(text).into_iter().collect();
+            }
             return self.find_all_from(text, 0);
         }
 
@@ -454,27 +547,40 @@ impl Pattern {
     /// Create an iterator over all matches
     pub fn find_iter<'a>(&'a self, text: &'a str) -> FindIter<'a> {
         FindIter {
-            matcher: &self.matcher,
-            fast_path: &self.fast_path,
+            pattern: self,
             text,
-            pos: 0,
-            context_sensitive: self.context_sensitive,
-            finished: false,
+            progress: SearchProgress::default(),
         }
     }
 
     fn find_from(&self, text: &str, start: usize) -> Option<(usize, usize)> {
         if self.context_sensitive {
+            if self.flags.case_insensitive && (self.unicode_case_pattern || !text.is_ascii()) {
+                return self.captures_from(text, start)?.pos(0);
+            }
+            // The contextual matcher validates this absolute offset itself.
             return self.matcher.find_from(text, start);
         }
-
+        if start > text.len() || !text.is_char_boundary(start) {
+            return None;
+        }
+        if self.flags.case_insensitive && (self.unicode_case_pattern || !text.is_ascii()) {
+            return self.captures_from(text, start)?.pos(0);
+        }
+        if start == text.len() {
+            return self.matcher.match_at(text, start).map(|end| (start, end));
+        }
         if let Some(fast_path) = &self.fast_path {
             return fast_path.find_at(text, start);
         }
 
-        self.matcher
-            .find(safe_slice(text, start)?)
-            .map(|(match_start, match_end)| (start + match_start, start + match_end))
+        if self.prefix_context {
+            self.matcher.find_from(text, start)
+        } else {
+            self.matcher
+                .find(&text[start..])
+                .map(|(begin, end)| (start + begin, start + end))
+        }
     }
 
     fn find_all_from(&self, text: &str, mut position: usize) -> Vec<(usize, usize)> {
@@ -578,7 +684,7 @@ impl Pattern {
         CapturesIter {
             pattern: self,
             text,
-            pos: 0,
+            progress: SearchProgress::default(),
         }
     }
 
@@ -811,91 +917,88 @@ impl<'t> Match<'t> {
     }
 }
 
-/// Iterator over pattern matches
-pub struct FindIter<'a> {
-    matcher: &'a Matcher,
-    fast_path: &'a Option<optimization::fast_path::FastPath>,
-    text: &'a str,
+/// Progress shared by ordinary and set iterators, including empty UTF-8 matches.
+#[derive(Debug, Default, Clone)]
+struct SearchProgress {
     pos: usize,
-    context_sensitive: bool,
+    suppress_empty: bool,
     finished: bool,
+}
+
+impl SearchProgress {
+    fn accept(&mut self, text: &str, start: usize, end: usize) -> bool {
+        let duplicate_empty = start == end && self.suppress_empty && self.pos == end;
+        self.pos = end;
+        self.suppress_empty = start != end;
+        if end == text.len() {
+            // An empty match immediately following a nonempty EOF match would
+            // be suppressed, so no further search can yield a result.
+            self.finished = true;
+        }
+        if start == end {
+            match text.get(end..).and_then(|tail| tail.chars().next()) {
+                Some(ch) => self.pos += ch.len_utf8(),
+                None => self.finished = true,
+            }
+        }
+        !duplicate_empty
+    }
+}
+
+/// Iterator over non-overlapping matches, including empty UTF-8 matches.
+pub struct FindIter<'a> {
+    pattern: &'a Pattern,
+    text: &'a str,
+    progress: SearchProgress,
 }
 
 impl<'a> Iterator for FindIter<'a> {
     type Item = Match<'a>;
 
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        if self.finished
-            || (!self.context_sensitive && self.pos >= self.text.len())
-            || (self.context_sensitive && self.pos > self.text.len())
-        {
-            return None;
-        }
-
-        if self.context_sensitive {
-            let (start, end) = self.matcher.find_from(self.text, self.pos)?;
-            if end > start {
-                self.pos = end;
-            } else if let Some(ch) = self.text.get(start..).and_then(|text| text.chars().next()) {
-                self.pos = start + ch.len_utf8();
-            } else {
-                self.finished = true;
-            }
-            return Some(Match::new(self.text, start, end));
-        }
-
-        // Use fast path if available - find_at() finds ONE match from position
-        if let Some(ref fast_path) = self.fast_path {
-            if let Some((start, end)) = fast_path.find_at(self.text, self.pos) {
-                // Move position past this match
-                self.pos = end.max(self.pos + 1);
-                return Some(Match::new(self.text, start, end));
-            } else {
-                // No more matches
+        while !self.progress.finished {
+            let Some((start, end)) = self.pattern.find_from(self.text, self.progress.pos) else {
+                self.progress.finished = true;
                 return None;
+            };
+            if self.progress.accept(self.text, start, end) {
+                return Some(Match::new(self.text, start, end));
             }
         }
-
-        // Fallback: normal matcher iteration
-        let remaining = &self.text[self.pos..];
-        if let Some((rel_start, rel_end)) = self.matcher.find(remaining) {
-            let abs_start = self.pos + rel_start;
-            let abs_end = self.pos + rel_end;
-
-            // Move position past this match to avoid infinite loop
-            self.pos = abs_end.max(self.pos + 1);
-
-            Some(Match::new(self.text, abs_start, abs_end))
-        } else {
-            None
-        }
+        None
     }
 }
 
-/// Iterator over captures for each match
+impl std::iter::FusedIterator for FindIter<'_> {}
+
+/// Iterator over captures for each non-overlapping match.
 pub struct CapturesIter<'r, 't> {
     pattern: &'r Pattern,
     text: &'t str,
-    pos: usize,
+    progress: SearchProgress,
 }
 
 impl<'r, 't> Iterator for CapturesIter<'r, 't> {
     type Item = Captures<'t>;
 
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        if self.pos >= self.text.len() {
-            return None;
+        while !self.progress.finished {
+            let Some(captures) = self.pattern.captures_from(self.text, self.progress.pos) else {
+                self.progress.finished = true;
+                return None;
+            };
+            let (start, end) = captures.pos(0)?;
+            if self.progress.accept(self.text, start, end) {
+                return Some(captures);
+            }
         }
-
-        let captures = self.pattern.captures_from(self.text, self.pos)?;
-        let (_, match_end) = captures.pos(0)?;
-
-        // Move position past this match to avoid returning it again.
-        self.pos = match_end.max(self.pos + 1);
-
-        Some(captures)
+        None
     }
 }
+
+impl std::iter::FusedIterator for CapturesIter<'_, '_> {}
 
 /// Iterator over text split by pattern matches
 pub struct SplitIter<'r, 't> {
@@ -1974,39 +2077,59 @@ impl Matcher {
 
     /// Whether searching this matcher requires the complete input rather than
     /// a suffix because it contains a positional anchor.
-    fn has_contextual_assertion(&self) -> bool {
+    fn has_contextual_assertion<const BOUNDARIES: bool>(&self) -> bool {
         match self {
             Matcher::AnchoredLiteral { .. }
             | Matcher::AnchoredGroup { .. }
             | Matcher::AnchoredPattern { .. } => true,
             Matcher::Sequence(sequence) | Matcher::SequenceWithFlags(sequence, _) => {
-                sequence.has_anchor()
+                sequence.has_anchor() || (BOUNDARIES && sequence.has_boundary())
             }
-            Matcher::Group(group) => group.has_anchor(),
+            Matcher::Group(group) => group.has_anchor() || (BOUNDARIES && group.has_boundary()),
+            Matcher::Boundary(_) => BOUNDARIES,
             Matcher::Capture(inner, _)
             | Matcher::QuantifiedCapture(inner, _)
-            | Matcher::CaseInsensitive(inner) => inner.has_contextual_assertion(),
-            Matcher::Lookaround(_, inner) => inner.has_contextual_assertion(),
+            | Matcher::CaseInsensitive(inner) => inner.has_contextual_assertion::<BOUNDARIES>(),
+            Matcher::Lookaround(lookaround, inner) => {
+                (BOUNDARIES
+                    && matches!(
+                        lookaround.lookaround_type,
+                        LookaroundType::PositiveLookbehind | LookaroundType::NegativeLookbehind
+                    ))
+                    || inner.has_contextual_assertion::<BOUNDARIES>()
+            }
             Matcher::CombinedWithLookaround {
                 prefix,
+                lookaround,
                 lookaround_matcher,
-                ..
-            } => prefix.has_contextual_assertion() || lookaround_matcher.has_contextual_assertion(),
+            } => {
+                (BOUNDARIES
+                    && matches!(
+                        lookaround.lookaround_type,
+                        LookaroundType::PositiveLookbehind | LookaroundType::NegativeLookbehind
+                    ))
+                    || prefix.has_contextual_assertion::<BOUNDARIES>()
+                    || lookaround_matcher.has_contextual_assertion::<BOUNDARIES>()
+            }
             Matcher::LookbehindWithSuffix {
                 lookbehind_matcher,
                 suffix,
                 ..
-            } => lookbehind_matcher.has_contextual_assertion() || suffix.has_contextual_assertion(),
+            } => {
+                BOUNDARIES
+                    || lookbehind_matcher.has_contextual_assertion::<BOUNDARIES>()
+                    || suffix.has_contextual_assertion::<BOUNDARIES>()
+            }
             Matcher::PatternWithCaptures { elements, .. } => elements.iter().any(|element| {
                 let matcher = match element {
                     CompiledCaptureElement::Capture(matcher, _)
                     | CompiledCaptureElement::NonCapture(matcher) => matcher,
                 };
-                matcher.has_contextual_assertion()
+                matcher.has_contextual_assertion::<BOUNDARIES>()
             }),
-            Matcher::AlternationWithCaptures { branches, .. } => {
-                branches.iter().any(Self::has_contextual_assertion)
-            }
+            Matcher::AlternationWithCaptures { branches, .. } => branches
+                .iter()
+                .any(Self::has_contextual_assertion::<BOUNDARIES>),
             _ => false,
         }
     }
@@ -2587,18 +2710,18 @@ impl Matcher {
         rec(text, 0, 0, min, max, inner_matcher, quantifier.is_lazy())
     }
 
-    fn backtracking_lengths(text: &str, prefers_lazy: bool) -> Vec<usize> {
-        let mut lengths: Vec<usize> = text
+    fn backtracking_lengths(text: &str, prefers_lazy: bool) -> impl Iterator<Item = usize> + '_ {
+        let mut lengths = text
             .char_indices()
             .map(|(idx, _)| idx)
-            .chain(std::iter::once(text.len()))
-            .collect();
-
-        if !prefers_lazy {
-            lengths.reverse();
-        }
-
-        lengths
+            .chain(std::iter::once(text.len()));
+        std::iter::from_fn(move || {
+            if prefers_lazy {
+                lengths.next()
+            } else {
+                lengths.next_back()
+            }
+        })
     }
 
     fn matches_entire(matcher: &Matcher, text: &str) -> bool {
@@ -3455,6 +3578,10 @@ impl Matcher {
 }
 
 fn compile_ast(ast: &Ast) -> Result<Matcher, PatternError> {
+    compile_ast_with::<true>(ast)
+}
+
+fn compile_ast_with<const INDIVIDUAL: bool>(ast: &Ast) -> Result<Matcher, PatternError> {
     match ast {
         Ast::Literal(lit) => Ok(Matcher::Literal(lit.clone())),
         Ast::Dot => {
@@ -3499,7 +3626,7 @@ fn compile_ast(ast: &Ast) -> Result<Matcher, PatternError> {
                 });
             }
 
-            let inner_matcher = compile_ast(inner)?;
+            let inner_matcher = compile_ast_with::<INDIVIDUAL>(inner)?;
             Ok(Matcher::AnchoredPattern {
                 inner: Box::new(inner_matcher),
                 start: *start,
@@ -3525,7 +3652,44 @@ fn compile_ast(ast: &Ast) -> Result<Matcher, PatternError> {
             Ok(Matcher::Quantified(qp.clone()))
         }
         Ast::Sequence(seq) => {
+            if !INDIVIDUAL {
+                if let Some(literal) = literal_from_ast(ast) {
+                    return Ok(Matcher::Literal(literal));
+                }
+                return Ok(Matcher::Sequence(seq.clone()));
+            }
             if seq.has_anchor() {
+                use crate::parser::sequence::{Anchor, SequenceElement};
+                let start = matches!(
+                    seq.elements.first(),
+                    Some(SequenceElement::Anchor(Anchor::Start { multiline: false }))
+                );
+                let end = matches!(
+                    seq.elements.last(),
+                    Some(SequenceElement::Anchor(Anchor::End { multiline: false }))
+                );
+                if start || end {
+                    let body = &seq.elements[start as usize..seq.elements.len() - end as usize];
+                    let mut literal = String::new();
+                    let mut exact = true;
+                    for element in body {
+                        match element {
+                            SequenceElement::Char(ch) => literal.push(*ch),
+                            SequenceElement::Literal(text) => literal.push_str(text),
+                            _ => {
+                                exact = false;
+                                break;
+                            }
+                        }
+                    }
+                    if exact {
+                        return Ok(Matcher::AnchoredLiteral {
+                            literal,
+                            start,
+                            end,
+                        });
+                    }
+                }
                 return Ok(Matcher::Sequence(seq.clone()));
             }
 
@@ -3546,7 +3710,7 @@ fn compile_ast(ast: &Ast) -> Result<Matcher, PatternError> {
         Ast::Boundary(boundary_type) => Ok(Matcher::Boundary(*boundary_type)),
         Ast::Lookaround(lookaround) => {
             // Compile the inner pattern of the lookaround
-            let inner_matcher = compile_ast(&lookaround.pattern)?;
+            let inner_matcher = compile_ast_with::<INDIVIDUAL>(&lookaround.pattern)?;
             Ok(Matcher::Lookaround(
                 Box::new(lookaround.clone()),
                 Box::new(inner_matcher),
@@ -3554,12 +3718,12 @@ fn compile_ast(ast: &Ast) -> Result<Matcher, PatternError> {
         }
         Ast::Capture(inner_ast, group_index) => {
             // Compile the inner pattern of the capture group
-            let inner_matcher = compile_ast(inner_ast)?;
+            let inner_matcher = compile_ast_with::<INDIVIDUAL>(inner_ast)?;
             Ok(Matcher::Capture(Box::new(inner_matcher), *group_index))
         }
         Ast::QuantifiedCapture(inner_ast, quantifier) => {
             // Compile the inner pattern and create a quantified capture matcher
-            let inner_matcher = compile_ast(inner_ast)?;
+            let inner_matcher = compile_ast_with::<INDIVIDUAL>(inner_ast)?;
             Ok(Matcher::QuantifiedCapture(
                 Box::new(inner_matcher),
                 quantifier.clone(),
@@ -3567,8 +3731,8 @@ fn compile_ast(ast: &Ast) -> Result<Matcher, PatternError> {
         }
         Ast::CombinedWithLookaround { prefix, lookaround } => {
             // Compile both the prefix and the lookaround's inner pattern
-            let prefix_matcher = compile_ast(prefix)?;
-            let lookaround_inner = compile_ast(&lookaround.pattern)?;
+            let prefix_matcher = compile_ast_with::<INDIVIDUAL>(prefix)?;
+            let lookaround_inner = compile_ast_with::<INDIVIDUAL>(&lookaround.pattern)?;
             Ok(Matcher::CombinedWithLookaround {
                 prefix: Box::new(prefix_matcher),
                 lookaround: Box::new(lookaround.clone()),
@@ -3577,8 +3741,8 @@ fn compile_ast(ast: &Ast) -> Result<Matcher, PatternError> {
         }
         Ast::LookbehindWithSuffix { lookbehind, suffix } => {
             // Compile both the lookbehind and the suffix
-            let lookbehind_inner = compile_ast(&lookbehind.pattern)?;
-            let suffix_matcher = compile_ast(suffix)?;
+            let lookbehind_inner = compile_ast_with::<INDIVIDUAL>(&lookbehind.pattern)?;
+            let suffix_matcher = compile_ast_with::<INDIVIDUAL>(suffix)?;
             Ok(Matcher::LookbehindWithSuffix {
                 lookbehind: Box::new(lookbehind.clone()),
                 lookbehind_matcher: Box::new(lookbehind_inner),
@@ -3594,12 +3758,12 @@ fn compile_ast(ast: &Ast) -> Result<Matcher, PatternError> {
             for elem in elements {
                 match elem {
                     CaptureElement::Capture(ast, group_num) => {
-                        let matcher = compile_ast(ast)?;
+                        let matcher = compile_ast_with::<INDIVIDUAL>(ast)?;
                         compiled_elements
                             .push(CompiledCaptureElement::Capture(matcher, *group_num));
                     }
                     CaptureElement::NonCapture(ast) => {
-                        let matcher = compile_ast(ast)?;
+                        let matcher = compile_ast_with::<INDIVIDUAL>(ast)?;
                         compiled_elements.push(CompiledCaptureElement::NonCapture(matcher));
                     }
                 }
@@ -3616,7 +3780,7 @@ fn compile_ast(ast: &Ast) -> Result<Matcher, PatternError> {
             // Compile each branch
             let mut compiled_branches = Vec::new();
             for branch_ast in branches {
-                let branch_matcher = compile_ast(branch_ast)?;
+                let branch_matcher = compile_ast_with::<INDIVIDUAL>(branch_ast)?;
                 compiled_branches.push(branch_matcher);
             }
             Ok(Matcher::AlternationWithCaptures {
@@ -3642,7 +3806,7 @@ fn compile_ast(ast: &Ast) -> Result<Matcher, PatternError> {
         Ast::CaseInsensitive(inner) => {
             // Lowercase the pattern before compiling
             let lowercased = lowercase_ast(inner);
-            let inner_matcher = compile_ast(&lowercased)?;
+            let inner_matcher = compile_ast_with::<INDIVIDUAL>(&lowercased)?;
             Ok(Matcher::CaseInsensitive(Box::new(inner_matcher)))
         }
     }
@@ -4465,7 +4629,7 @@ fn parse_pattern_with_captures_inner(
         } else {
             // Check for backreference \1, \2, etc. AT CURRENT POSITION
             if pattern[pos..].starts_with('\\') && pos + 1 < pattern.len() {
-                let next_char = pattern.chars().nth(pos + 1);
+                let next_char = pattern.get(pos + 1..).and_then(|tail| tail.chars().next());
                 if let Some(ch) = next_char {
                     if ch.is_ascii_digit() {
                         // This is a backreference like \1
@@ -4512,18 +4676,17 @@ fn parse_pattern_with_captures_inner(
                 result
             };
 
-            // Find next backreference \digit (search from current position + 1 to avoid finding current char)
+            // Byte scanning never slices at a UTF-8 continuation byte.
             let mut search_pos = pos;
             let mut next_backref = pattern.len();
-
-            while search_pos < pattern.len() {
-                if pattern[search_pos..].starts_with('\\') && search_pos + 1 < pattern.len() {
-                    let next_ch = pattern.chars().nth(search_pos + 1);
-                    if next_ch.map(|c| c.is_ascii_digit()).unwrap_or(false) {
+            let bytes = pattern.as_bytes();
+            while search_pos + 1 < bytes.len() {
+                if bytes[search_pos] == b'\\' {
+                    if bytes[search_pos + 1].is_ascii_digit() {
                         next_backref = search_pos;
                         break;
                     }
-                    search_pos += 2; // Skip this escape
+                    search_pos += 2;
                 } else {
                     search_pos += 1;
                 }

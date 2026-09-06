@@ -70,6 +70,16 @@ impl Group {
         }
     }
 
+    pub(crate) fn has_boundary(&self) -> bool {
+        match &self.content {
+            GroupContent::Sequence(sequence) => sequence.has_boundary(),
+            GroupContent::ParsedAlternation(sequences) => {
+                sequences.iter().any(Sequence::has_boundary)
+            }
+            GroupContent::Single(_) | GroupContent::Alternation(_) => false,
+        }
+    }
+
     /// Check if text matches this group at a given position
     /// Returns bytes consumed if match
     pub fn match_at(&self, text: &str, pos: usize) -> Option<usize> {

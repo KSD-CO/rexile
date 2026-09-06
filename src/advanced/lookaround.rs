@@ -45,12 +45,12 @@ pub enum LookaroundType {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Lookaround {
     pub lookaround_type: LookaroundType,
-    pub pattern: Box<Ast>,
+    pub(crate) pattern: Box<Ast>,
 }
 
 impl Lookaround {
     /// Create a new lookaround assertion
-    pub fn new(lookaround_type: LookaroundType, pattern: Ast) -> Self {
+    pub(crate) fn new(lookaround_type: LookaroundType, pattern: Ast) -> Self {
         Self {
             lookaround_type,
             pattern: Box::new(pattern),
@@ -64,7 +64,7 @@ impl Lookaround {
     ///
     /// Returns true if the assertion succeeds (pattern matches for positive,
     /// or doesn't match for negative lookaround)
-    pub fn matches_at(&self, text: &str, pos: usize, matcher: &Matcher) -> bool {
+    pub(crate) fn matches_at(&self, text: &str, pos: usize, matcher: &Matcher) -> bool {
         match self.lookaround_type {
             LookaroundType::PositiveLookahead => {
                 // Check if pattern matches starting at pos

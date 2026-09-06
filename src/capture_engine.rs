@@ -14,23 +14,41 @@ use crate::{safe_slice, safe_slice_range, CompiledCaptureElement, Matcher};
 /// Rust's Unicode lowercasing can expand one source character into multiple
 /// normalized characters. Capture offsets are only valid at source boundaries,
 /// so callers can reject a match whose end falls inside such an expansion.
+#[derive(Debug, Default)]
 pub(super) struct CaseFoldedText {
     text: String,
     source_to_folded: Vec<Option<usize>>,
     folded_to_source: Vec<Option<usize>>,
+    ascii: bool,
 }
 
 impl CaseFoldedText {
     pub(super) fn new(source: &str) -> Self {
-        let mut text = String::new();
-        let mut source_to_folded = vec![None; source.len() + 1];
-        let mut folded_to_source = Vec::new();
+        let mut folded = Self::default();
+        folded.reset(source);
+        folded
+    }
+
+    pub(super) fn reset(&mut self, source: &str) {
+        self.text.clear();
+        self.source_to_folded.clear();
+        self.folded_to_source.clear();
+        self.ascii = source.is_ascii();
+        if self.ascii {
+            self.text.push_str(source);
+            self.text.make_ascii_lowercase();
+            return;
+        }
+        let text = &mut self.text;
+        let source_to_folded = &mut self.source_to_folded;
+        let folded_to_source = &mut self.folded_to_source;
+        source_to_folded.resize(source.len() + 1, None);
 
         for (source_start, character) in source.char_indices() {
             let source_end = source_start + character.len_utf8();
             let folded_start = text.len();
-            let folded = character.to_lowercase().collect::<String>();
-            let folded_end = folded_start + folded.len();
+            text.extend(character.to_lowercase());
+            let folded_end = text.len();
 
             source_to_folded[source_start] = Some(folded_start);
             if folded_to_source.len() <= folded_end {
@@ -38,7 +56,6 @@ impl CaseFoldedText {
             }
             folded_to_source[folded_start] = Some(source_start);
             folded_to_source[folded_end] = Some(source_end);
-            text.push_str(&folded);
         }
 
         source_to_folded[source.len()] = Some(text.len());
@@ -46,12 +63,6 @@ impl CaseFoldedText {
             folded_to_source.resize(text.len() + 1, None);
         }
         folded_to_source[text.len()] = Some(source.len());
-
-        Self {
-            text,
-            source_to_folded,
-            folded_to_source,
-        }
     }
 
     pub(super) fn text(&self) -> &str {
@@ -59,6 +70,9 @@ impl CaseFoldedText {
     }
 
     pub(super) fn folded_offset(&self, source_offset: usize) -> Option<usize> {
+        if self.ascii {
+            return (source_offset <= self.text.len()).then_some(source_offset);
+        }
         self.source_to_folded
             .get(source_offset)
             .and_then(|&offset| offset)
@@ -66,31 +80,36 @@ impl CaseFoldedText {
 
     pub(super) fn source_positions(
         &self,
-        positions: Vec<Option<(usize, usize)>>,
+        mut positions: Vec<Option<(usize, usize)>>,
     ) -> Option<Vec<Option<(usize, usize)>>> {
-        positions
-            .into_iter()
-            .map(|position| {
-                position.map(|(start, end)| {
-                    Some((
-                        self.folded_to_source
-                            .get(start)
-                            .and_then(|&offset| offset)?,
-                        self.folded_to_source.get(end).and_then(|&offset| offset)?,
-                    ))
-                })
-            })
-            .collect()
+        self.map_positions(&mut positions)?;
+        Some(positions)
+    }
+
+    pub(super) fn map_positions(&self, positions: &mut [Option<(usize, usize)>]) -> Option<()> {
+        if !self.ascii {
+            for position in positions.iter_mut().flatten() {
+                position.0 = self.folded_to_source.get(position.0).copied().flatten()?;
+                position.1 = self.folded_to_source.get(position.1).copied().flatten()?;
+            }
+        }
+        Some(())
     }
 }
 
 /// Mutable capture slots for one match attempt.
+#[derive(Debug, Default)]
 pub(super) struct CaptureState {
-    positions: Vec<Option<(usize, usize)>>,
+    pub(super) positions: Vec<Option<(usize, usize)>>,
     undo: Vec<(usize, Option<(usize, usize)>)>,
 }
 
 impl CaptureState {
+    pub(super) fn reset(&mut self, group_count: usize) {
+        self.positions.resize(group_count + 1, None);
+        self.positions.fill(None);
+        self.undo.clear();
+    }
     pub(super) fn new(group_count: usize) -> Self {
         Self {
             positions: vec![None; group_count + 1],

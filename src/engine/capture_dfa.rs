@@ -499,7 +499,9 @@ impl CaptureDFA {
 
 /// Compile a pattern with captures into a DFA
 /// Returns None if the pattern is too complex for DFA compilation
-pub fn compile_capture_pattern(elements: &[crate::CompiledCaptureElement]) -> Option<CaptureDFA> {
+pub(crate) fn compile_capture_pattern(
+    elements: &[crate::CompiledCaptureElement],
+) -> Option<CaptureDFA> {
     // Count capture groups
     let mut num_captures = 0;
     for elem in elements.iter() {

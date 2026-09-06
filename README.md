@@ -66,11 +66,15 @@ cargo run --release --example perf_compare   # vs regex crate
 | Groups | `(...)`, `(?:...)` |
 | Global flags | `(?i)`, `(?m)`, `(?s)`, combined `(?ims)` |
 | Capturing groups | `(\w+)` with `.captures()` |
+| Pattern sets | `PatternSet`: rule IDs, locations, captures, reusable visitors |
 | Lookaround | `(?=...)`, `(?!...)`, `(?<=...)`, `(?<!...)` |
 | Backreferences | `\1`, `\2` |
 | Replace / split | `.replace()`, `.replace_all()`, `.split()` |
 
 Full status and version history: [FEATURE_STATUS.md](FEATURE_STATUS.md) · [CHANGELOG.md](CHANGELOG.md)
+
+See [PatternSet](docs/PATTERN_SET.md) for multi-rule matching, overlap semantics,
+capture visitors, and reproducible performance checks.
 
 Not yet supported: Unicode property classes (`\p{L}`), named capture groups,
 scoped/toggled flags (`(?i:...)`, `(?-i)`), and `x`, `u`, `U`, `R` flags.

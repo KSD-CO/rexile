@@ -30,8 +30,8 @@ pub fn find_literal(text: &str, literal: &str) -> Option<(usize, usize)> {
     while pos < end {
         if let Some(found) = memchr(first_byte, &haystack[pos..end]) {
             let start = pos + found;
-            // Compare full needle (including first byte for safety)
-            if haystack[start..start + needle_len] == *needle {
+            // memchr already verified the first byte.
+            if haystack[start + 1..start + needle_len] == needle[1..] {
                 return Some((start, start + needle_len));
             }
             pos = start + 1;
@@ -123,7 +123,9 @@ fn matches_case_insensitive(haystack: &[u8], needle_lowercase: &[u8]) -> bool {
     // Branchless comparison: convert to lowercase and compare in one pass
     // This avoids conditional branches in the hot loop
     for i in 0..len {
-        if ascii_lowercase_byte(haystack[i]) != needle_lowercase[i] {
+        if haystack[i] != needle_lowercase[i]
+            && ascii_lowercase_byte(haystack[i]) != needle_lowercase[i]
+        {
             return false;
         }
     }
@@ -190,16 +192,23 @@ pub fn find_literal_dot_star_literal_at(
     while search_pos <= bytes.len() {
         let prefix_start = find_bytes_at(bytes, prefix_bytes, search_pos)?;
         let after_prefix = prefix_start + prefix_bytes.len();
+        if lazy {
+            let suffix_start = find_bytes_at(bytes, suffix_bytes, after_prefix)?;
+            // Only the wildcard's gap excludes LF. The literal suffix may
+            // contain one, and a lazy query need not scan the rest of the line.
+            if memchr(b'\n', &bytes[after_prefix..suffix_start]).is_none() {
+                return Some((prefix_start, suffix_start + suffix_bytes.len()));
+            }
+            search_pos = prefix_start + 1;
+            continue;
+        }
         let line_end = memchr(b'\n', &bytes[after_prefix..])
             .map(|pos| after_prefix + pos)
             .unwrap_or(bytes.len());
 
-        if let Some(suffix_start) = if lazy {
-            find_bytes_at(bytes, suffix_bytes, after_prefix)
-                .filter(|&pos| pos + suffix_bytes.len() <= line_end)
-        } else {
+        if let Some(suffix_start) =
             rfind_bytes_in_range(bytes, suffix_bytes, after_prefix, line_end)
-        } {
+        {
             return Some((prefix_start, suffix_start + suffix_bytes.len()));
         }
 
@@ -295,6 +304,7 @@ pub fn find_word_run(text: &str) -> Option<(usize, usize)> {
         let b = bytes[i];
         if b.is_ascii_alphanumeric() || b == b'_' {
             let start = i;
+            i += 1;
             while i < bytes.len() {
                 let b = bytes[i];
                 if b.is_ascii_alphanumeric() || b == b'_' {
@@ -1000,7 +1010,7 @@ pub fn detect_fast_path(pattern: &str) -> Option<FastPath> {
     }
 
     // Check for digit run
-    if normalized == r"\d+" {
+    if normalized == r"\d+" || normalized == "[0-9]+" {
         return Some(FastPath::DigitRun);
     }
 
@@ -1414,6 +1424,18 @@ impl std::fmt::Debug for FastPath {
 }
 
 impl FastPath {
+    #[inline(always)]
+    pub(crate) fn is_match(&self, text: &str) -> bool {
+        match self {
+            // A boolean query needs only the first digit, not the full run.
+            FastPath::DigitRun => text.as_bytes().iter().any(u8::is_ascii_digit),
+            FastPath::LiteralDotStarLiteral { prefix, suffix, .. } => {
+                find_literal_dot_star_literal(text, prefix, suffix, true).is_some()
+            }
+            _ => self.find(text).is_some(),
+        }
+    }
+
     #[inline]
     pub fn find(&self, text: &str) -> Option<(usize, usize)> {
         match self {
