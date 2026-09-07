@@ -253,6 +253,107 @@ fn validate_inline_flag_positions(pattern: &str) -> Result<(), PatternError> {
     Ok(())
 }
 
+/// Validate group syntax for unescaped `(` followed by `?`.
+/// Rejects unsupported or malformed group constructs like `(?)`, `(?#...)`, `(?P<...>)`,
+/// `(?>...)`, `(?|...)`, and unknown group characters like `(?a...)`.
+fn validate_group_syntax(pattern: &str) -> Result<(), PatternError> {
+    let bytes = pattern.as_bytes();
+    let mut index = 0;
+
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\' if index + 1 < bytes.len() => index += 2,
+            b'[' => {
+                index += 1;
+                if index < bytes.len() && bytes[index] == b'^' {
+                    index += 1;
+                }
+                while index < bytes.len() {
+                    if bytes[index] == b'\\' && index + 1 < bytes.len() {
+                        index += 2;
+                    } else if bytes[index] == b']' {
+                        index += 1;
+                        break;
+                    } else {
+                        index += 1;
+                    }
+                }
+            }
+            b'(' if index + 1 < bytes.len() && bytes[index + 1] == b'?' => {
+                if index + 2 >= bytes.len() {
+                    return Err(PatternError::ParseError(
+                        "Unmatched opening parenthesis '('".to_string(),
+                    ));
+                }
+                match bytes[index + 2] {
+                    b')' => {
+                        return Err(PatternError::ParseError(
+                            "unknown or invalid group syntax `(?)`".to_string(),
+                        ));
+                    }
+                    b':' => {
+                        // Non-capturing group (?:...)
+                        index += 2;
+                    }
+                    b'=' | b'!' => {
+                        // Lookahead (?=...) or (?!...)
+                        index += 2;
+                    }
+                    b'<' => {
+                        // Could be lookbehind (?<=...) or (?<!...)
+                        if index + 3 < bytes.len()
+                            && (bytes[index + 3] == b'=' || bytes[index + 3] == b'!')
+                        {
+                            index += 3;
+                        } else {
+                            return Err(PatternError::UnsupportedFeature(
+                                "named capture groups are not supported".to_string(),
+                            ));
+                        }
+                    }
+                    b'P' => {
+                        return Err(PatternError::UnsupportedFeature(
+                            "named capture groups are not supported".to_string(),
+                        ));
+                    }
+                    b'#' => {
+                        return Err(PatternError::UnsupportedFeature(
+                            "comment groups are not supported".to_string(),
+                        ));
+                    }
+                    b'>' => {
+                        return Err(PatternError::UnsupportedFeature(
+                            "atomic groups are not supported".to_string(),
+                        ));
+                    }
+                    b'|' => {
+                        return Err(PatternError::UnsupportedFeature(
+                            "branch reset groups are not supported".to_string(),
+                        ));
+                    }
+                    b'(' => {
+                        return Err(PatternError::UnsupportedFeature(
+                            "conditional groups are not supported".to_string(),
+                        ));
+                    }
+                    b'i' | b'm' | b's' | b'x' | b'U' | b'u' | b'R' | b'-' => {
+                        index += 2;
+                    }
+                    c => {
+                        return Err(PatternError::ParseError(format!(
+                            "unknown or invalid group syntax `(?{}`",
+                            c as char
+                        )));
+                    }
+                }
+            }
+            _ => index += 1,
+        }
+    }
+
+    Ok(())
+}
+
 impl Pattern {
     /// Compile a pattern for repeated searches.
     pub fn new(pattern: &str) -> Result<Self, PatternError> {
@@ -297,16 +398,17 @@ impl Pattern {
             flags.merge(parsed_flags);
             effective_pattern = rest;
         }
+        check_balanced_parens(effective_pattern).map_err(PatternError::ParseError)?;
         validate_inline_flag_positions(effective_pattern)?;
+        validate_group_syntax(effective_pattern)?;
 
         // Check for capture groups, but exclude special patterns like (?:...), (?=...), (?!...), etc.
-        let has_captures = effective_pattern.contains('(')
+        let has_captures = contains_unescaped_paren(effective_pattern)
             && !effective_pattern.contains("(?:")
             && !effective_pattern.contains("(?=")
             && !effective_pattern.contains("(?!")
             && !effective_pattern.contains("(?<=")
             && !effective_pattern.contains("(?<!");
-
         let ast = if has_captures {
             parse_pattern_with_captures_with_flags(effective_pattern, &flags)?
         } else {
@@ -1649,10 +1751,8 @@ fn parse_pattern_with_depth_and_flags(
         || pattern.contains("(?<=")
         || pattern.contains("(?<!")
     {
-        // Try to parse as combined pattern with lookaround
-        if let Ok(ast) = parse_combined_with_lookaround(pattern, depth, flags) {
-            return Ok(ast);
-        }
+        // Parse as combined pattern with lookaround
+        return parse_combined_with_lookaround(pattern, depth, flags);
     }
 
     // Phase 8: Check for capture groups (...) - but not (?:...) which is handled by group parser
@@ -4559,7 +4659,13 @@ fn parse_pattern_with_captures_inner(
                     "Unmatched parenthesis".to_string(),
                 ));
             }
-        } else if pattern[pos..].starts_with('(') && !pattern[pos..].starts_with("(?") {
+        } else if pattern[pos..].starts_with('(') {
+            if pattern[pos..].starts_with("(?") {
+                return Err(PatternError::ParseError(format!(
+                    "unsupported or invalid group syntax in capture pattern: {}",
+                    &pattern[pos..]
+                )));
+            }
             // Found a capture group
             if let Some(close_idx) = find_matching_paren(pattern, pos) {
                 let my_group_num = *group_counter;
@@ -4710,8 +4816,13 @@ fn parse_pattern_with_captures_inner(
                 elements.push(CaptureElement::NonCapture(segment_ast));
                 pos = next_boundary;
             } else {
-                // Move forward
-                pos += 1;
+                // Move forward by char len to avoid slicing inside a multi-byte UTF-8 character
+                let ch_len = pattern[pos..]
+                    .chars()
+                    .next()
+                    .map(|c| c.len_utf8())
+                    .unwrap_or(1);
+                pos += ch_len;
             }
         }
     }
