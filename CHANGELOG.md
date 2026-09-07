@@ -1,5 +1,35 @@
 ## [Unreleased]
 
+## [0.7.2] - 2026-09-07
+
+### Fixed
+- **Invalid pattern `(?` was accepted** - `check_balanced_parens` was bypassed
+  whenever `has_captures` routed a pattern directly to
+  `parse_pattern_with_captures_with_flags`, so `(?` silently dropped the `(`
+  and matched `?` as a literal. Unbalanced parentheses are now rejected upfront
+  in `Pattern::parse`, and a new `validate_group_syntax` check whitelists
+  supported group extensions (`(?:`, `(?=`, `(?!`, `(?<=`, `(?<!`) while
+  explicitly rejecting unsupported ones (named captures, comments, atomic
+  groups, branch resets, conditionals) and malformed ones (`(?)`, `(?a`, `(??`,
+  etc.) with a proper parse error. ([#13](https://github.com/KSD-CO/rexile/issues/13))
+- **Valid pattern `(é)` panicked on multi-byte UTF-8** - byte-by-byte position
+  advancement in `parse_pattern_with_captures_inner` and a char-count/byte-slice
+  mismatch in `extract_alternation_prefix` could slice a string in the middle of
+  a multi-byte UTF-8 character. Positions now advance by `char::len_utf8()`, and
+  prefix lengths are mapped to byte offsets via `char_indices()`, fixing panics
+  on 2-byte, 3-byte (CJK), and 4-byte (emoji) characters inside groups.
+  ([#14](https://github.com/KSD-CO/rexile/issues/14))
+
+### Testing
+- Added `tests/test_issue_13_14_regression.rs` covering rejection of unclosed/
+  malformed/unsupported group syntax and acceptance of multi-byte UTF-8
+  captures, alternations, quantifiers, and classes.
+
+### Credits
+- Thanks to [@Viorel](https://github.com/Viorel) for reporting both issues and
+  [@nghiaphamln](https://github.com/nghiaphamln) for the fix.
+  ([#15](https://github.com/KSD-CO/rexile/pull/15))
+
 ### Added
 - PatternSet with stable rule IDs, first/all match locations, numbered captures,
   independent overlaps, reusable caches, and cancellable capture visitors.
