@@ -390,31 +390,26 @@ fn parse_quantifier(s: &str) -> Result<Quantifier, String> {
             let inner = &s[1..s.len() - 1];
             if let Ok(n) = inner.parse::<usize>() {
                 Ok(Quantifier::Exactly(n))
-            } else if inner.contains(',') {
-                let parts: Vec<&str> = inner.split(',').collect();
-                if parts.len() == 2 {
-                    if parts[1].is_empty() {
-                        // {n,}
-                        let min = parts[0].parse().map_err(|_| "Invalid number")?;
-                        Ok(Quantifier::AtLeast(min))
-                    } else {
-                        // {n,m}
-                        let min = parts[0].parse().map_err(|_| "Invalid min")?;
-                        let max = parts[1].parse().map_err(|_| "Invalid max")?;
-                        if min > max {
-                            return Err("Quantifier minimum exceeds maximum".to_string());
-                        }
-                        Ok(Quantifier::Between(min, max))
-                    }
+            } else if let Some((min_str, max_str)) = inner.split_once(',') {
+                if max_str.is_empty() {
+                    // {n,}
+                    let min = min_str.parse().map_err(|_| "Invalid number")?;
+                    Ok(Quantifier::AtLeast(min))
                 } else {
-                    Err("Invalid quantifier format".to_string())
+                    // {n,m}
+                    let min = min_str.parse().map_err(|_| "Invalid min")?;
+                    let max = max_str.parse().map_err(|_| "Invalid max")?;
+                    if min > max {
+                        return Err("Quantifier minimum exceeds maximum".to_string());
+                    }
+                    Ok(Quantifier::Between(min, max))
                 }
             } else {
                 Err("Invalid quantifier".to_string())
             }
         }
         // Handle {n}? and {n,m}? lazy quantifiers
-        _ if s.ends_with("?") && s.len() > 1 => {
+        _ if s.ends_with('?') && s.len() > 1 => {
             // Strip the trailing ? and parse the base quantifier
             let _base = &s[..s.len() - 1];
             // For now, just parse without lazy support for bounded quantifiers
@@ -422,6 +417,56 @@ fn parse_quantifier(s: &str) -> Result<Quantifier, String> {
             Err(format!("Lazy bounded quantifiers not yet supported: {}", s))
         }
         _ => Err(format!("Unknown quantifier: {}", s)),
+    }
+}
+
+/// Parse a quantifier at the start of `s`, returning the quantifier and number of bytes consumed.
+///
+/// Returns `Ok(None)` if `s` does not begin with a quantifier token (`*`, `+`, `?`, `{`).
+/// Returns an error if the quantifier syntax is malformed (e.g., `{2,1}` or unclosed `{`).
+pub(crate) fn parse_quantifier_at(s: &str) -> Result<Option<(Quantifier, usize)>, String> {
+    let mut chars = s.chars();
+    let Some(first) = chars.next() else {
+        return Ok(None);
+    };
+
+    match first {
+        '*' => {
+            if chars.next() == Some('?') {
+                Ok(Some((Quantifier::ZeroOrMoreLazy, 2)))
+            } else {
+                Ok(Some((Quantifier::ZeroOrMore, 1)))
+            }
+        }
+        '+' => {
+            if chars.next() == Some('?') {
+                Ok(Some((Quantifier::OneOrMoreLazy, 2)))
+            } else {
+                Ok(Some((Quantifier::OneOrMore, 1)))
+            }
+        }
+        '?' => {
+            if chars.next() == Some('?') {
+                Ok(Some((Quantifier::ZeroOrOneLazy, 2)))
+            } else {
+                Ok(Some((Quantifier::ZeroOrOne, 1)))
+            }
+        }
+        '{' => {
+            let close_idx = s
+                .find('}')
+                .ok_or_else(|| "Unclosed quantifier".to_string())?;
+            let has_lazy = s[close_idx + 1..].starts_with('?');
+            let end_idx = if has_lazy {
+                close_idx + 2
+            } else {
+                close_idx + 1
+            };
+            let slice = &s[..end_idx];
+            let q = parse_quantifier(slice)?;
+            Ok(Some((q, end_idx)))
+        }
+        _ => Ok(None),
     }
 }
 
@@ -507,5 +552,50 @@ mod tests {
         let pattern = parse_quantified_pattern("[0-9]+").unwrap();
         let matches = pattern.find_all("a1b22c333");
         assert_eq!(matches, vec![(1, 2), (3, 5), (6, 9)]);
+    }
+
+    #[test]
+    fn test_parse_quantifier_at() {
+        assert_eq!(parse_quantifier_at("").unwrap(), None);
+        assert_eq!(parse_quantifier_at("abc").unwrap(), None);
+        assert_eq!(
+            parse_quantifier_at("*rest").unwrap(),
+            Some((Quantifier::ZeroOrMore, 1))
+        );
+        assert_eq!(
+            parse_quantifier_at("*?rest").unwrap(),
+            Some((Quantifier::ZeroOrMoreLazy, 2))
+        );
+        assert_eq!(
+            parse_quantifier_at("+rest").unwrap(),
+            Some((Quantifier::OneOrMore, 1))
+        );
+        assert_eq!(
+            parse_quantifier_at("+?rest").unwrap(),
+            Some((Quantifier::OneOrMoreLazy, 2))
+        );
+        assert_eq!(
+            parse_quantifier_at("?rest").unwrap(),
+            Some((Quantifier::ZeroOrOne, 1))
+        );
+        assert_eq!(
+            parse_quantifier_at("??rest").unwrap(),
+            Some((Quantifier::ZeroOrOneLazy, 2))
+        );
+        assert_eq!(
+            parse_quantifier_at("{3}rest").unwrap(),
+            Some((Quantifier::Exactly(3), 3))
+        );
+        assert_eq!(
+            parse_quantifier_at("{2,}rest").unwrap(),
+            Some((Quantifier::AtLeast(2), 4))
+        );
+        assert_eq!(
+            parse_quantifier_at("{1,5}rest").unwrap(),
+            Some((Quantifier::Between(1, 5), 5))
+        );
+        assert!(parse_quantifier_at("{2,1}rest").is_err());
+        assert!(parse_quantifier_at("{invalid}rest").is_err());
+        assert!(parse_quantifier_at("{unclosed").is_err());
     }
 }

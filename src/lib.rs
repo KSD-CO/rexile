@@ -402,9 +402,8 @@ impl Pattern {
         validate_inline_flag_positions(effective_pattern)?;
         validate_group_syntax(effective_pattern)?;
 
-        // Check for capture groups, but exclude special patterns like (?:...), (?=...), (?!...), etc.
-        let has_captures = contains_unescaped_paren(effective_pattern)
-            && !effective_pattern.contains("(?:")
+        // Check for capture groups, but exclude special patterns like (?=...), (?!...), etc.
+        let has_captures = contains_unescaped_capture_paren(effective_pattern)
             && !effective_pattern.contains("(?=")
             && !effective_pattern.contains("(?!")
             && !effective_pattern.contains("(?<=")
@@ -1488,6 +1487,10 @@ fn parse_pattern_with_groups(pattern: &str, flags: &Flags) -> Result<Ast, Patter
         while pos < pattern.len() && pattern[pos..].starts_with('(') {
             match parser::group::parse_group_with_flags(&pattern[pos..], flags) {
                 Ok((group, bytes_consumed)) => {
+                    if group.quantifier.is_some() || group.capturing {
+                        all_parsed = false;
+                        break;
+                    }
                     // Extract literals from this group
                     match &group.content {
                         parser::group::GroupContent::Single(s) => {
@@ -1661,8 +1664,10 @@ fn parse_pattern_with_groups(pattern: &str, flags: &Flags) -> Result<Ast, Patter
                     }
                     parser::group::GroupContent::Single(s) => {
                         // Simple literal + suffix
-                        let combined = format!("{}{}", s, suffix);
-                        return Ok(Ast::Literal(combined));
+                        if group.quantifier.is_none() && !group.capturing {
+                            let combined = format!("{}{}", s, suffix);
+                            return Ok(Ast::Literal(combined));
+                        }
                     }
                     parser::group::GroupContent::ParsedAlternation(_) => {
                         // Complex alternation with suffix - fall through
@@ -1789,7 +1794,21 @@ fn parse_pattern_with_depth_and_flags(
 
     let is_bounded_quantified_group = pattern.starts_with('(')
         && if let Some(close_idx) = find_matching_paren(pattern, 0) {
-            close_idx < pattern.len() - 1 && pattern[close_idx + 1..].starts_with('{')
+            if close_idx < pattern.len() - 1 && pattern[close_idx + 1..].starts_with('{') {
+                if let Some(brace_close) = pattern[close_idx + 1..].find('}') {
+                    let has_lazy = pattern[close_idx + 1 + brace_close + 1..].starts_with('?');
+                    let quantifier_end = if has_lazy {
+                        close_idx + 1 + brace_close + 2
+                    } else {
+                        close_idx + 1 + brace_close + 1
+                    };
+                    quantifier_end == pattern.len()
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
         } else {
             false
         };
@@ -4306,6 +4325,42 @@ fn contains_unescaped_paren(pattern: &str) -> bool {
     false
 }
 
+/// Check if a pattern contains unescaped capture parentheses (not \( and not inside [...], and not (?...)
+fn contains_unescaped_capture_paren(pattern: &str) -> bool {
+    let bytes = pattern.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 1 < bytes.len() {
+            i += 2; // Skip escaped character
+        } else if bytes[i] == b'[' {
+            // Skip character class to avoid counting parens inside it
+            i += 1;
+            if i < bytes.len() && bytes[i] == b'^' {
+                i += 1;
+            }
+            while i < bytes.len() {
+                if bytes[i] == b'\\' {
+                    i += 2;
+                } else if bytes[i] == b']' {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+        } else if bytes[i] == b'(' {
+            if i + 1 < bytes.len() && bytes[i + 1] == b'?' {
+                i += 2;
+            } else {
+                return true;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    false
+}
+
 /// Check whether a pattern contains an unescaped positional anchor outside a
 /// character class.
 fn contains_unescaped_anchor(pattern: &str) -> bool {
@@ -4604,44 +4659,18 @@ fn parse_pattern_with_captures_inner(
 
                 // Check for quantifier after the non-capturing group (same as capturing groups)
                 let mut after_group = close_idx + 1;
-                let mut quantifier: Option<parser::quantifier::Quantifier> = None;
-
-                if after_group < pattern.len() {
-                    let remaining = &pattern[after_group..];
-                    let chars: Vec<char> = remaining.chars().take(2).collect();
-                    if !chars.is_empty() {
-                        let first = chars[0];
-                        let has_lazy = chars.len() > 1 && chars[1] == '?';
-
-                        match first {
-                            '*' if has_lazy => {
-                                quantifier = Some(parser::quantifier::Quantifier::ZeroOrMoreLazy);
-                                after_group += 2;
-                            }
-                            '*' => {
-                                quantifier = Some(parser::quantifier::Quantifier::ZeroOrMore);
-                                after_group += 1;
-                            }
-                            '+' if has_lazy => {
-                                quantifier = Some(parser::quantifier::Quantifier::OneOrMoreLazy);
-                                after_group += 2;
-                            }
-                            '+' => {
-                                quantifier = Some(parser::quantifier::Quantifier::OneOrMore);
-                                after_group += 1;
-                            }
-                            '?' if has_lazy => {
-                                quantifier = Some(parser::quantifier::Quantifier::ZeroOrOneLazy);
-                                after_group += 2;
-                            }
-                            '?' => {
-                                quantifier = Some(parser::quantifier::Quantifier::ZeroOrOne);
-                                after_group += 1;
-                            }
-                            _ => {}
+                let quantifier = if after_group < pattern.len() {
+                    match parser::quantifier::parse_quantifier_at(&pattern[after_group..]) {
+                        Ok(Some((q, q_len))) => {
+                            after_group += q_len;
+                            Some(q)
                         }
+                        Ok(None) => None,
+                        Err(e) => return Err(PatternError::ParseError(e)),
                     }
-                }
+                } else {
+                    None
+                };
 
                 // Build the non-capture element with optional quantifier
                 if let Some(q) = quantifier {
@@ -4678,44 +4707,18 @@ fn parse_pattern_with_captures_inner(
 
                 // Check for quantifier after the group
                 let mut after_group = close_idx + 1;
-                let mut quantifier: Option<parser::quantifier::Quantifier> = None;
-
-                if after_group < pattern.len() {
-                    let remaining = &pattern[after_group..];
-                    let chars: Vec<char> = remaining.chars().take(2).collect();
-                    if !chars.is_empty() {
-                        let first = chars[0];
-                        let has_lazy = chars.len() > 1 && chars[1] == '?';
-
-                        match first {
-                            '*' if has_lazy => {
-                                quantifier = Some(parser::quantifier::Quantifier::ZeroOrMoreLazy);
-                                after_group += 2;
-                            }
-                            '*' => {
-                                quantifier = Some(parser::quantifier::Quantifier::ZeroOrMore);
-                                after_group += 1;
-                            }
-                            '+' if has_lazy => {
-                                quantifier = Some(parser::quantifier::Quantifier::OneOrMoreLazy);
-                                after_group += 2;
-                            }
-                            '+' => {
-                                quantifier = Some(parser::quantifier::Quantifier::OneOrMore);
-                                after_group += 1;
-                            }
-                            '?' if has_lazy => {
-                                quantifier = Some(parser::quantifier::Quantifier::ZeroOrOneLazy);
-                                after_group += 2;
-                            }
-                            '?' => {
-                                quantifier = Some(parser::quantifier::Quantifier::ZeroOrOne);
-                                after_group += 1;
-                            }
-                            _ => {}
+                let quantifier = if after_group < pattern.len() {
+                    match parser::quantifier::parse_quantifier_at(&pattern[after_group..]) {
+                        Ok(Some((q, q_len))) => {
+                            after_group += q_len;
+                            Some(q)
                         }
+                        Ok(None) => None,
+                        Err(e) => return Err(PatternError::ParseError(e)),
                     }
-                }
+                } else {
+                    None
+                };
 
                 // Build the capture AST with optional quantifier
                 if let Some(q) = quantifier {

@@ -386,10 +386,13 @@ pub(crate) fn parse_group_with_flags(
     // Check for quantifier after group
     if bytes_consumed < pattern.len() {
         let remaining = &pattern[bytes_consumed..];
-        let (quantifier_opt, qlen) = parse_quantifier_with_lazy(remaining);
-        if let Some(quantifier) = quantifier_opt {
-            bytes_consumed += qlen;
-            return Ok((group.with_quantifier(quantifier), bytes_consumed));
+        match crate::parser::quantifier::parse_quantifier_at(remaining) {
+            Ok(Some((quantifier, qlen))) => {
+                bytes_consumed += qlen;
+                return Ok((group.with_quantifier(quantifier), bytes_consumed));
+            }
+            Ok(None) => {}
+            Err(e) => return Err(e),
         }
     }
 
@@ -422,28 +425,6 @@ fn contains_anchor(pattern: &str) -> bool {
     }
 
     false
-}
-
-/// Parse quantifier including lazy variants (*, +, ?, *?, +?, ??)
-/// Returns (Option<Quantifier>, bytes_consumed)
-fn parse_quantifier_with_lazy(remaining: &str) -> (Option<Quantifier>, usize) {
-    let chars: Vec<char> = remaining.chars().take(2).collect();
-    if chars.is_empty() {
-        return (None, 0);
-    }
-
-    let first = chars[0];
-    let has_lazy = chars.len() > 1 && chars[1] == '?';
-
-    match first {
-        '*' if has_lazy => (Some(Quantifier::ZeroOrMoreLazy), 2),
-        '*' => (Some(Quantifier::ZeroOrMore), 1),
-        '+' if has_lazy => (Some(Quantifier::OneOrMoreLazy), 2),
-        '+' => (Some(Quantifier::OneOrMore), 1),
-        '?' if has_lazy => (Some(Quantifier::ZeroOrOneLazy), 2),
-        '?' => (Some(Quantifier::ZeroOrOne), 1),
-        _ => (None, 0),
-    }
 }
 
 /// Check if pattern has quantified elements like \d+, [a-z]*, etc.
