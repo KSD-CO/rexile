@@ -136,24 +136,31 @@ impl Group {
         quantifier: &Quantifier,
     ) -> Option<usize> {
         let (min, max) = quantifier_bounds(quantifier);
+        let is_lazy = quantifier.is_lazy();
+
+        if is_lazy && min == 0 {
+            return Some(0);
+        }
 
         let mut total_consumed = 0;
         let mut count = 0;
         let mut pos = start_pos;
 
-        // Greedy: match as many times as possible
         while count < max {
             match self.match_base_at(text, pos) {
                 Some(consumed) if consumed > 0 => {
                     total_consumed += consumed;
                     pos += consumed;
                     count += 1;
+                    if is_lazy && count >= min {
+                        return Some(total_consumed);
+                    }
                 }
                 _ => break,
             }
         }
 
-        if count >= min {
+        if !is_lazy && count >= min {
             Some(total_consumed)
         } else {
             None
@@ -284,9 +291,9 @@ fn quantifier_bounds(q: &Quantifier) -> (usize, usize) {
         Quantifier::ZeroOrMore | Quantifier::ZeroOrMoreLazy => (0, usize::MAX),
         Quantifier::OneOrMore | Quantifier::OneOrMoreLazy => (1, usize::MAX),
         Quantifier::ZeroOrOne | Quantifier::ZeroOrOneLazy => (0, 1),
-        Quantifier::Exactly(n) => (*n, *n),
-        Quantifier::AtLeast(n) => (*n, usize::MAX),
-        Quantifier::Between(n, m) => (*n, *m),
+        Quantifier::Exactly(n) | Quantifier::ExactlyLazy(n) => (*n, *n),
+        Quantifier::AtLeast(n) | Quantifier::AtLeastLazy(n) => (*n, usize::MAX),
+        Quantifier::Between(n, m) | Quantifier::BetweenLazy(n, m) => (*n, *m),
     }
 }
 

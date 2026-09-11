@@ -107,7 +107,6 @@ fn test_invalid_group_quantifiers_fail_to_compile() {
         r"(?:a){",
         r"(a){invalid}",
         r"(a){1,2,3}",
-        r"(a){1}?", // lazy bounded quantifier not yet supported
     ];
 
     for pat in invalid_patterns {

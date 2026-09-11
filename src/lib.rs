@@ -2678,6 +2678,7 @@ impl Matcher {
         quantifier: &parser::quantifier::Quantifier,
     ) -> Option<(usize, usize)> {
         let (min, max) = quantifier_bounds(quantifier);
+        let is_lazy = quantifier.is_lazy();
 
         // Special case: empty text can match if min is 0
         if text.is_empty() {
@@ -2689,7 +2690,11 @@ impl Matcher {
             let mut pos = start_pos;
             let mut count = 0;
 
-            // Match inner pattern as many times as possible (greedy)
+            if is_lazy && min == 0 {
+                return Some((start_pos, start_pos));
+            }
+
+            // Match inner pattern
             while count < max && pos < text.len() {
                 if let Some((rel_start, rel_end)) =
                     inner_matcher.find(safe_slice(text, pos).unwrap_or(""))
@@ -2703,12 +2708,15 @@ impl Matcher {
                     }
                     pos += rel_end;
                     count += 1;
+                    if is_lazy && count >= min {
+                        return Some((start_pos, pos));
+                    }
                 } else {
                     break;
                 }
             }
 
-            if count >= min {
+            if !is_lazy && count >= min {
                 return Some((start_pos, pos));
             }
         }
@@ -4132,9 +4140,9 @@ fn quantifier_bounds(q: &parser::quantifier::Quantifier) -> (usize, usize) {
         Quantifier::ZeroOrMore | Quantifier::ZeroOrMoreLazy => (0, usize::MAX),
         Quantifier::OneOrMore | Quantifier::OneOrMoreLazy => (1, usize::MAX),
         Quantifier::ZeroOrOne | Quantifier::ZeroOrOneLazy => (0, 1),
-        Quantifier::Exactly(n) => (*n, *n),
-        Quantifier::AtLeast(n) => (*n, usize::MAX),
-        Quantifier::Between(n, m) => (*n, *m),
+        Quantifier::Exactly(n) | Quantifier::ExactlyLazy(n) => (*n, *n),
+        Quantifier::AtLeast(n) | Quantifier::AtLeastLazy(n) => (*n, usize::MAX),
+        Quantifier::Between(n, m) | Quantifier::BetweenLazy(n, m) => (*n, *m),
     }
 }
 
