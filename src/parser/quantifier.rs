@@ -59,6 +59,12 @@ pub enum Quantifier {
     OneOrMoreLazy,
     /// ?? - Zero or one (non-greedy/lazy)
     ZeroOrOneLazy,
+    /// {n}? - Exactly n times (non-greedy/lazy)
+    ExactlyLazy(usize),
+    /// {n,}? - At least n times (non-greedy/lazy)
+    AtLeastLazy(usize),
+    /// {n,m}? - Between n and m times (non-greedy/lazy)
+    BetweenLazy(usize, usize),
 }
 
 impl Quantifier {
@@ -67,7 +73,12 @@ impl Quantifier {
     pub fn is_lazy(&self) -> bool {
         matches!(
             self,
-            Quantifier::ZeroOrMoreLazy | Quantifier::OneOrMoreLazy | Quantifier::ZeroOrOneLazy
+            Quantifier::ZeroOrMoreLazy
+                | Quantifier::OneOrMoreLazy
+                | Quantifier::ZeroOrOneLazy
+                | Quantifier::ExactlyLazy(_)
+                | Quantifier::AtLeastLazy(_)
+                | Quantifier::BetweenLazy(_, _)
         )
     }
 
@@ -78,9 +89,9 @@ impl Quantifier {
             Quantifier::ZeroOrMore | Quantifier::ZeroOrMoreLazy => 0,
             Quantifier::OneOrMore | Quantifier::OneOrMoreLazy => 1,
             Quantifier::ZeroOrOne | Quantifier::ZeroOrOneLazy => 0,
-            Quantifier::Exactly(n) => *n,
-            Quantifier::AtLeast(n) => *n,
-            Quantifier::Between(min, _) => *min,
+            Quantifier::Exactly(n) | Quantifier::ExactlyLazy(n) => *n,
+            Quantifier::AtLeast(n) | Quantifier::AtLeastLazy(n) => *n,
+            Quantifier::Between(min, _) | Quantifier::BetweenLazy(min, _) => *min,
         }
     }
 
@@ -91,9 +102,9 @@ impl Quantifier {
             Quantifier::ZeroOrMore | Quantifier::ZeroOrMoreLazy => usize::MAX,
             Quantifier::OneOrMore | Quantifier::OneOrMoreLazy => usize::MAX,
             Quantifier::ZeroOrOne | Quantifier::ZeroOrOneLazy => 1,
-            Quantifier::Exactly(n) => *n,
-            Quantifier::AtLeast(_) => usize::MAX,
-            Quantifier::Between(_, max) => *max,
+            Quantifier::Exactly(n) | Quantifier::ExactlyLazy(n) => *n,
+            Quantifier::AtLeast(_) | Quantifier::AtLeastLazy(_) => usize::MAX,
+            Quantifier::Between(_, max) | Quantifier::BetweenLazy(_, max) => *max,
         }
     }
 }
@@ -376,52 +387,93 @@ fn find_class_end(pattern: &str) -> Option<usize> {
 }
 
 fn parse_quantifier(s: &str) -> Result<Quantifier, String> {
-    match s {
-        // Greedy quantifiers
-        "*" => Ok(Quantifier::ZeroOrMore),
-        "+" => Ok(Quantifier::OneOrMore),
-        "?" => Ok(Quantifier::ZeroOrOne),
-        // Non-greedy (lazy) quantifiers
-        "*?" => Ok(Quantifier::ZeroOrMoreLazy),
-        "+?" => Ok(Quantifier::OneOrMoreLazy),
-        "??" => Ok(Quantifier::ZeroOrOneLazy),
-        "" => Ok(Quantifier::Exactly(1)), // No quantifier = exactly once
-        _ if s.starts_with('{') && s.ends_with('}') => {
-            let inner = &s[1..s.len() - 1];
-            if let Ok(n) = inner.parse::<usize>() {
-                Ok(Quantifier::Exactly(n))
-            } else if inner.contains(',') {
-                let parts: Vec<&str> = inner.split(',').collect();
-                if parts.len() == 2 {
-                    if parts[1].is_empty() {
-                        // {n,}
-                        let min = parts[0].parse().map_err(|_| "Invalid number")?;
-                        Ok(Quantifier::AtLeast(min))
-                    } else {
-                        // {n,m}
-                        let min = parts[0].parse().map_err(|_| "Invalid min")?;
-                        let max = parts[1].parse().map_err(|_| "Invalid max")?;
-                        if min > max {
-                            return Err("Quantifier minimum exceeds maximum".to_string());
-                        }
-                        Ok(Quantifier::Between(min, max))
-                    }
-                } else {
-                    Err("Invalid quantifier format".to_string())
-                }
+    if s.is_empty() {
+        return Ok(Quantifier::Exactly(1)); // No quantifier = exactly once
+    }
+    match parse_quantifier_at(s)? {
+        Some((q, len)) if len == s.len() => Ok(q),
+        Some(_) => Err(format!("Unexpected characters after quantifier: {}", s)),
+        None => Err(format!("Unknown quantifier: {}", s)),
+    }
+}
+
+/// Parse a quantifier at the start of `s`, returning the quantifier and number of bytes consumed.
+///
+/// Returns `Ok(None)` if `s` does not begin with a quantifier token (`*`, `+`, `?`, `{`).
+/// Returns an error if the quantifier syntax is malformed (e.g., `{2,1}` or unclosed `{`).
+pub(crate) fn parse_quantifier_at(s: &str) -> Result<Option<(Quantifier, usize)>, String> {
+    let mut chars = s.chars();
+    let Some(first) = chars.next() else {
+        return Ok(None);
+    };
+
+    match first {
+        '*' => {
+            if chars.next() == Some('?') {
+                Ok(Some((Quantifier::ZeroOrMoreLazy, 2)))
             } else {
-                Err("Invalid quantifier".to_string())
+                Ok(Some((Quantifier::ZeroOrMore, 1)))
             }
         }
-        // Handle {n}? and {n,m}? lazy quantifiers
-        _ if s.ends_with("?") && s.len() > 1 => {
-            // Strip the trailing ? and parse the base quantifier
-            let _base = &s[..s.len() - 1];
-            // For now, just parse without lazy support for bounded quantifiers
-            // This will fall through to the error case
-            Err(format!("Lazy bounded quantifiers not yet supported: {}", s))
+        '+' => {
+            if chars.next() == Some('?') {
+                Ok(Some((Quantifier::OneOrMoreLazy, 2)))
+            } else {
+                Ok(Some((Quantifier::OneOrMore, 1)))
+            }
         }
-        _ => Err(format!("Unknown quantifier: {}", s)),
+        '?' => {
+            if chars.next() == Some('?') {
+                Ok(Some((Quantifier::ZeroOrOneLazy, 2)))
+            } else {
+                Ok(Some((Quantifier::ZeroOrOne, 1)))
+            }
+        }
+        '{' => {
+            let close_idx = s
+                .find('}')
+                .ok_or_else(|| "Unclosed quantifier".to_string())?;
+            let inner = &s[1..close_idx];
+            let has_lazy = s[close_idx + 1..].starts_with('?');
+            let end_idx = if has_lazy {
+                close_idx + 2
+            } else {
+                close_idx + 1
+            };
+
+            let quantifier = if let Ok(n) = inner.parse::<usize>() {
+                if has_lazy {
+                    Quantifier::ExactlyLazy(n)
+                } else {
+                    Quantifier::Exactly(n)
+                }
+            } else if let Some((min_str, max_str)) = inner.split_once(',') {
+                if max_str.is_empty() {
+                    let min = min_str.parse().map_err(|_| "Invalid number")?;
+                    if has_lazy {
+                        Quantifier::AtLeastLazy(min)
+                    } else {
+                        Quantifier::AtLeast(min)
+                    }
+                } else {
+                    let min = min_str.parse().map_err(|_| "Invalid min")?;
+                    let max = max_str.parse().map_err(|_| "Invalid max")?;
+                    if min > max {
+                        return Err("Quantifier minimum exceeds maximum".to_string());
+                    }
+                    if has_lazy {
+                        Quantifier::BetweenLazy(min, max)
+                    } else {
+                        Quantifier::Between(min, max)
+                    }
+                }
+            } else {
+                return Err("Invalid quantifier".to_string());
+            };
+
+            Ok(Some((quantifier, end_idx)))
+        }
+        _ => Ok(None),
     }
 }
 
@@ -448,6 +500,18 @@ mod tests {
         assert_eq!(parse_quantifier("*?").unwrap(), Quantifier::ZeroOrMoreLazy);
         assert_eq!(parse_quantifier("+?").unwrap(), Quantifier::OneOrMoreLazy);
         assert_eq!(parse_quantifier("??").unwrap(), Quantifier::ZeroOrOneLazy);
+        assert_eq!(
+            parse_quantifier("{3}?").unwrap(),
+            Quantifier::ExactlyLazy(3)
+        );
+        assert_eq!(
+            parse_quantifier("{2,}?").unwrap(),
+            Quantifier::AtLeastLazy(2)
+        );
+        assert_eq!(
+            parse_quantifier("{1,5}?").unwrap(),
+            Quantifier::BetweenLazy(1, 5)
+        );
     }
 
     #[test]
@@ -455,9 +519,15 @@ mod tests {
         assert!(!Quantifier::ZeroOrMore.is_lazy());
         assert!(!Quantifier::OneOrMore.is_lazy());
         assert!(!Quantifier::ZeroOrOne.is_lazy());
+        assert!(!Quantifier::Exactly(3).is_lazy());
+        assert!(!Quantifier::AtLeast(2).is_lazy());
+        assert!(!Quantifier::Between(1, 5).is_lazy());
         assert!(Quantifier::ZeroOrMoreLazy.is_lazy());
         assert!(Quantifier::OneOrMoreLazy.is_lazy());
         assert!(Quantifier::ZeroOrOneLazy.is_lazy());
+        assert!(Quantifier::ExactlyLazy(3).is_lazy());
+        assert!(Quantifier::AtLeastLazy(2).is_lazy());
+        assert!(Quantifier::BetweenLazy(1, 5).is_lazy());
     }
 
     #[test]
@@ -507,5 +577,63 @@ mod tests {
         let pattern = parse_quantified_pattern("[0-9]+").unwrap();
         let matches = pattern.find_all("a1b22c333");
         assert_eq!(matches, vec![(1, 2), (3, 5), (6, 9)]);
+    }
+
+    #[test]
+    fn test_parse_quantifier_at() {
+        assert_eq!(parse_quantifier_at("").unwrap(), None);
+        assert_eq!(parse_quantifier_at("abc").unwrap(), None);
+        assert_eq!(
+            parse_quantifier_at("*rest").unwrap(),
+            Some((Quantifier::ZeroOrMore, 1))
+        );
+        assert_eq!(
+            parse_quantifier_at("*?rest").unwrap(),
+            Some((Quantifier::ZeroOrMoreLazy, 2))
+        );
+        assert_eq!(
+            parse_quantifier_at("+rest").unwrap(),
+            Some((Quantifier::OneOrMore, 1))
+        );
+        assert_eq!(
+            parse_quantifier_at("+?rest").unwrap(),
+            Some((Quantifier::OneOrMoreLazy, 2))
+        );
+        assert_eq!(
+            parse_quantifier_at("?rest").unwrap(),
+            Some((Quantifier::ZeroOrOne, 1))
+        );
+        assert_eq!(
+            parse_quantifier_at("??rest").unwrap(),
+            Some((Quantifier::ZeroOrOneLazy, 2))
+        );
+        assert_eq!(
+            parse_quantifier_at("{3}rest").unwrap(),
+            Some((Quantifier::Exactly(3), 3))
+        );
+        assert_eq!(
+            parse_quantifier_at("{2,}rest").unwrap(),
+            Some((Quantifier::AtLeast(2), 4))
+        );
+        assert_eq!(
+            parse_quantifier_at("{1,5}rest").unwrap(),
+            Some((Quantifier::Between(1, 5), 5))
+        );
+        assert_eq!(
+            parse_quantifier_at("{3}?rest").unwrap(),
+            Some((Quantifier::ExactlyLazy(3), 4))
+        );
+        assert_eq!(
+            parse_quantifier_at("{2,}?rest").unwrap(),
+            Some((Quantifier::AtLeastLazy(2), 5))
+        );
+        assert_eq!(
+            parse_quantifier_at("{1,5}?rest").unwrap(),
+            Some((Quantifier::BetweenLazy(1, 5), 6))
+        );
+        assert!(parse_quantifier_at("{2,1}rest").is_err());
+        assert!(parse_quantifier_at("{2,1}?rest").is_err());
+        assert!(parse_quantifier_at("{invalid}rest").is_err());
+        assert!(parse_quantifier_at("{unclosed").is_err());
     }
 }

@@ -83,13 +83,11 @@ impl Group {
     /// Check if text matches this group at a given position
     /// Returns bytes consumed if match
     pub fn match_at(&self, text: &str, pos: usize) -> Option<usize> {
-        let base_consumed = self.match_base_at(text, pos)?;
-
         // Apply quantifier if present
         if let Some(quantifier) = &self.quantifier {
-            self.match_with_quantifier(text, pos, base_consumed, quantifier)
+            self.match_with_quantifier(text, pos, quantifier)
         } else {
-            Some(base_consumed)
+            self.match_base_at(text, pos)
         }
     }
 
@@ -132,28 +130,34 @@ impl Group {
         &self,
         text: &str,
         start_pos: usize,
-        _base_match_size: usize,
         quantifier: &Quantifier,
     ) -> Option<usize> {
         let (min, max) = quantifier_bounds(quantifier);
+        let is_lazy = quantifier.is_lazy();
+
+        if is_lazy && min == 0 {
+            return Some(0);
+        }
 
         let mut total_consumed = 0;
         let mut count = 0;
         let mut pos = start_pos;
 
-        // Greedy: match as many times as possible
         while count < max {
             match self.match_base_at(text, pos) {
                 Some(consumed) if consumed > 0 => {
                     total_consumed += consumed;
                     pos += consumed;
                     count += 1;
+                    if is_lazy && count >= min {
+                        return Some(total_consumed);
+                    }
                 }
                 _ => break,
             }
         }
 
-        if count >= min {
+        if !is_lazy && count >= min {
             Some(total_consumed)
         } else {
             None
@@ -284,9 +288,9 @@ fn quantifier_bounds(q: &Quantifier) -> (usize, usize) {
         Quantifier::ZeroOrMore | Quantifier::ZeroOrMoreLazy => (0, usize::MAX),
         Quantifier::OneOrMore | Quantifier::OneOrMoreLazy => (1, usize::MAX),
         Quantifier::ZeroOrOne | Quantifier::ZeroOrOneLazy => (0, 1),
-        Quantifier::Exactly(n) => (*n, *n),
-        Quantifier::AtLeast(n) => (*n, usize::MAX),
-        Quantifier::Between(n, m) => (*n, *m),
+        Quantifier::Exactly(n) | Quantifier::ExactlyLazy(n) => (*n, *n),
+        Quantifier::AtLeast(n) | Quantifier::AtLeastLazy(n) => (*n, usize::MAX),
+        Quantifier::Between(n, m) | Quantifier::BetweenLazy(n, m) => (*n, *m),
     }
 }
 
@@ -386,10 +390,13 @@ pub(crate) fn parse_group_with_flags(
     // Check for quantifier after group
     if bytes_consumed < pattern.len() {
         let remaining = &pattern[bytes_consumed..];
-        let (quantifier_opt, qlen) = parse_quantifier_with_lazy(remaining);
-        if let Some(quantifier) = quantifier_opt {
-            bytes_consumed += qlen;
-            return Ok((group.with_quantifier(quantifier), bytes_consumed));
+        match crate::parser::quantifier::parse_quantifier_at(remaining) {
+            Ok(Some((quantifier, qlen))) => {
+                bytes_consumed += qlen;
+                return Ok((group.with_quantifier(quantifier), bytes_consumed));
+            }
+            Ok(None) => {}
+            Err(e) => return Err(e),
         }
     }
 
@@ -424,30 +431,17 @@ fn contains_anchor(pattern: &str) -> bool {
     false
 }
 
-/// Parse quantifier including lazy variants (*, +, ?, *?, +?, ??)
-/// Returns (Option<Quantifier>, bytes_consumed)
-fn parse_quantifier_with_lazy(remaining: &str) -> (Option<Quantifier>, usize) {
-    let chars: Vec<char> = remaining.chars().take(2).collect();
-    if chars.is_empty() {
-        return (None, 0);
-    }
-
-    let first = chars[0];
-    let has_lazy = chars.len() > 1 && chars[1] == '?';
-
-    match first {
-        '*' if has_lazy => (Some(Quantifier::ZeroOrMoreLazy), 2),
-        '*' => (Some(Quantifier::ZeroOrMore), 1),
-        '+' if has_lazy => (Some(Quantifier::OneOrMoreLazy), 2),
-        '+' => (Some(Quantifier::OneOrMore), 1),
-        '?' if has_lazy => (Some(Quantifier::ZeroOrOneLazy), 2),
-        '?' => (Some(Quantifier::ZeroOrOne), 1),
-        _ => (None, 0),
-    }
-}
-
-/// Check if pattern has quantified elements like \d+, [a-z]*, etc.
+/// Check if pattern has quantified elements like \d+, [a-z]*, or a{2}.
 fn has_quantified_element(pattern: &str) -> bool {
+    if pattern.match_indices('{').any(|(index, _)| {
+        matches!(
+            crate::parser::quantifier::parse_quantifier_at(&pattern[index..]),
+            Ok(Some(_))
+        )
+    }) {
+        return true;
+    }
+
     let chars: Vec<char> = pattern.chars().collect();
     let mut i = 0;
 

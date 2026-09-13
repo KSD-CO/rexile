@@ -291,9 +291,9 @@ fn quantifier_bounds(q: &Quantifier) -> (usize, usize) {
         Quantifier::ZeroOrMore | Quantifier::ZeroOrMoreLazy => (0, usize::MAX),
         Quantifier::OneOrMore | Quantifier::OneOrMoreLazy => (1, usize::MAX),
         Quantifier::ZeroOrOne | Quantifier::ZeroOrOneLazy => (0, 1),
-        Quantifier::Exactly(n) => (*n, *n),
-        Quantifier::AtLeast(n) => (*n, usize::MAX),
-        Quantifier::Between(n, m) => (*n, *m),
+        Quantifier::Exactly(n) | Quantifier::ExactlyLazy(n) => (*n, *n),
+        Quantifier::AtLeast(n) | Quantifier::AtLeastLazy(n) => (*n, usize::MAX),
+        Quantifier::Between(n, m) | Quantifier::BetweenLazy(n, m) => (*n, *m),
     }
 }
 
@@ -1573,22 +1573,8 @@ impl Sequence {
                 continue;
             }
 
-            let mut pos = try_pos;
-            let mut matched = true;
-
-            // Try to match all before_elements forward from try_pos
-            for elem in before_elements {
-                match elem.match_at(text, pos) {
-                    Some(consumed) => pos += consumed,
-                    None => {
-                        matched = false;
-                        break;
-                    }
-                }
-            }
-
-            // Check if forward matching lands exactly at anchor_byte_pos
-            if matched && pos == anchor_byte_pos {
+            // Check if before_elements can match from try_pos to anchor_byte_pos with backtracking
+            if self.match_before_anchor(text, 0, before_count, try_pos, anchor_byte_pos) {
                 match_start = Some(try_pos);
                 break; // Found leftmost match
             }
@@ -1597,6 +1583,196 @@ impl Sequence {
         let match_start = match_start?; // Failed to find a match before the anchor
 
         Some((match_start, match_end))
+    }
+
+    /// Match elements before anchor with backtracking support, requiring match to land exactly at target_pos
+    fn match_before_anchor(
+        &self,
+        text: &str,
+        elem_idx: usize,
+        before_count: usize,
+        text_pos: usize,
+        target_pos: usize,
+    ) -> bool {
+        if elem_idx == before_count {
+            return text_pos == target_pos;
+        }
+        if text_pos > target_pos {
+            return false;
+        }
+
+        let elem = &self.elements[elem_idx];
+        match elem {
+            SequenceElement::QuantifiedChar(ch, quantifier) => {
+                let (min, max) = quantifier_bounds(quantifier);
+                let is_lazy = quantifier.is_lazy();
+                let remaining = &text[text_pos..target_pos];
+                let ch_len = ch.len_utf8();
+                let mut max_count = 0;
+                for c in remaining.chars() {
+                    if c == *ch {
+                        max_count += 1;
+                        if max_count >= max {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                if max_count < min {
+                    return false;
+                }
+                max_count = max_count.min(max);
+                if is_lazy {
+                    for try_count in min..=max_count {
+                        let consumed = try_count * ch_len;
+                        if self.match_before_anchor(
+                            text,
+                            elem_idx + 1,
+                            before_count,
+                            text_pos + consumed,
+                            target_pos,
+                        ) {
+                            return true;
+                        }
+                    }
+                } else {
+                    for try_count in (min..=max_count).rev() {
+                        let consumed = try_count * ch_len;
+                        if self.match_before_anchor(
+                            text,
+                            elem_idx + 1,
+                            before_count,
+                            text_pos + consumed,
+                            target_pos,
+                        ) {
+                            return true;
+                        }
+                    }
+                }
+                false
+            }
+            SequenceElement::QuantifiedCharClass(cc, quantifier) => {
+                let (min, max) = quantifier_bounds(quantifier);
+                let is_lazy = quantifier.is_lazy();
+                let remaining = &text[text_pos..target_pos];
+
+                let mut byte_positions = Vec::with_capacity(16);
+                byte_positions.push(0);
+                let mut max_count = 0;
+                let mut byte_offset = 0;
+                for c in remaining.chars() {
+                    if cc.matches(c) {
+                        max_count += 1;
+                        byte_offset += c.len_utf8();
+                        byte_positions.push(byte_offset);
+                        if max_count >= max {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                if max_count < min {
+                    return false;
+                }
+                max_count = max_count.min(max);
+                if is_lazy {
+                    for try_count in min..=max_count {
+                        let consumed = byte_positions[try_count];
+                        if self.match_before_anchor(
+                            text,
+                            elem_idx + 1,
+                            before_count,
+                            text_pos + consumed,
+                            target_pos,
+                        ) {
+                            return true;
+                        }
+                    }
+                } else {
+                    for try_count in (min..=max_count).rev() {
+                        let consumed = byte_positions[try_count];
+                        if self.match_before_anchor(
+                            text,
+                            elem_idx + 1,
+                            before_count,
+                            text_pos + consumed,
+                            target_pos,
+                        ) {
+                            return true;
+                        }
+                    }
+                }
+                false
+            }
+            SequenceElement::QuantifiedGroup(group, quantifier) => {
+                let (min, max) = quantifier_bounds(quantifier);
+                let is_lazy = quantifier.is_lazy();
+                let mut end_positions = Vec::with_capacity(16);
+                end_positions.push(text_pos);
+                let mut curr_pos = text_pos;
+                let mut count = 0;
+                while count < max && curr_pos <= target_pos {
+                    if let Some(consumed) = group.match_at(text, curr_pos) {
+                        if consumed == 0 {
+                            break;
+                        }
+                        curr_pos += consumed;
+                        count += 1;
+                        end_positions.push(curr_pos);
+                    } else {
+                        break;
+                    }
+                }
+                if count < min {
+                    return false;
+                }
+                let max_count = count.min(max);
+                if is_lazy {
+                    for try_count in min..=max_count {
+                        let next_pos = end_positions[try_count];
+                        if self.match_before_anchor(
+                            text,
+                            elem_idx + 1,
+                            before_count,
+                            next_pos,
+                            target_pos,
+                        ) {
+                            return true;
+                        }
+                    }
+                } else {
+                    for try_count in (min..=max_count).rev() {
+                        let next_pos = end_positions[try_count];
+                        if self.match_before_anchor(
+                            text,
+                            elem_idx + 1,
+                            before_count,
+                            next_pos,
+                            target_pos,
+                        ) {
+                            return true;
+                        }
+                    }
+                }
+                false
+            }
+            _ => {
+                if let Some(consumed) = elem.match_at(text, text_pos) {
+                    if text_pos + consumed <= target_pos {
+                        return self.match_before_anchor(
+                            text,
+                            elem_idx + 1,
+                            before_count,
+                            text_pos + consumed,
+                            target_pos,
+                        );
+                    }
+                }
+                false
+            }
+        }
     }
 
     /// Match starting from position, skipping first N elements

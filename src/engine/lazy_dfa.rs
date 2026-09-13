@@ -13,9 +13,9 @@ fn quantifier_bounds(q: &Quantifier) -> (usize, usize) {
         Quantifier::ZeroOrMore | Quantifier::ZeroOrMoreLazy => (0, usize::MAX),
         Quantifier::OneOrMore | Quantifier::OneOrMoreLazy => (1, usize::MAX),
         Quantifier::ZeroOrOne | Quantifier::ZeroOrOneLazy => (0, 1),
-        Quantifier::Exactly(n) => (*n, *n),
-        Quantifier::AtLeast(n) => (*n, usize::MAX),
-        Quantifier::Between(n, m) => (*n, *m),
+        Quantifier::Exactly(n) | Quantifier::ExactlyLazy(n) => (*n, *n),
+        Quantifier::AtLeast(n) | Quantifier::AtLeastLazy(n) => (*n, usize::MAX),
+        Quantifier::Between(n, m) | Quantifier::BetweenLazy(n, m) => (*n, *m),
     }
 }
 

@@ -207,7 +207,7 @@ pub(crate) fn parse_sequence_with_flags(pattern: &str, flags: &Flags) -> Result<
             // Check for quantifier (including lazy quantifiers like *?, +?, ??)
             if i < pattern.len() {
                 let q_remaining = &pattern[i..];
-                if let Some((quantifier, q_bytes)) = parse_quantifier_with_lazy(q_remaining) {
+                if let Some((quantifier, q_bytes)) = parse_quantifier_with_lazy(q_remaining)? {
                     i += q_bytes;
 
                     // Add quantified element
@@ -312,7 +312,7 @@ pub(crate) fn parse_sequence_with_flags(pattern: &str, flags: &Flags) -> Result<
                 // Check for quantifier
                 if i < pattern.len() {
                     let q_remaining = &pattern[i..];
-                    if let Some((quantifier, q_bytes)) = parse_quantifier_with_lazy(q_remaining) {
+                    if let Some((quantifier, q_bytes)) = parse_quantifier_with_lazy(q_remaining)? {
                         i += q_bytes;
                         elements.push(SequenceElement::QuantifiedGroup(
                             group.with_quantifier(quantifier.clone()),
@@ -339,7 +339,7 @@ pub(crate) fn parse_sequence_with_flags(pattern: &str, flags: &Flags) -> Result<
                 // Check for quantifier (including lazy)
                 if i < pattern.len() {
                     let q_remaining = &pattern[i..];
-                    if let Some((quantifier, q_bytes)) = parse_quantifier_with_lazy(q_remaining) {
+                    if let Some((quantifier, q_bytes)) = parse_quantifier_with_lazy(q_remaining)? {
                         i += q_bytes;
                         elements.push(SequenceElement::QuantifiedCharClass(char_class, quantifier));
                         continue;
@@ -360,7 +360,7 @@ pub(crate) fn parse_sequence_with_flags(pattern: &str, flags: &Flags) -> Result<
             // Check for quantifier (including lazy)
             if i < pattern.len() {
                 let q_remaining = &pattern[i..];
-                if let Some((quantifier, q_bytes)) = parse_quantifier_with_lazy(q_remaining) {
+                if let Some((quantifier, q_bytes)) = parse_quantifier_with_lazy(q_remaining)? {
                     i += q_bytes;
 
                     // Special case: dot with quantifier = a quantified wildcard.
@@ -525,62 +525,11 @@ fn parse_simple_quantifier(ch: char) -> Option<Quantifier> {
     }
 }
 
-/// Parse a quantifier that might be lazy (e.g., *?, +?, ??)
+/// Parse a quantifier that might be lazy (e.g., *?, +?, ??, {n}, {n,m})
 /// Returns (Quantifier, bytes_consumed)
-fn parse_quantifier_with_lazy(s: &str) -> Option<(Quantifier, usize)> {
-    let mut chars = s.chars();
-    let first = chars.next()?;
-
-    // Handle {n}, {n,}, {n,m} range quantifiers
-    if first == '{' {
-        // Find the closing }
-        if let Some(close_idx) = s.find('}') {
-            let inner = &s[1..close_idx];
-            let bytes_consumed = close_idx + 1;
-
-            // Parse the range quantifier
-            if let Ok(n) = inner.parse::<usize>() {
-                // {n} - exactly n times
-                return Some((Quantifier::Exactly(n), bytes_consumed));
-            } else if inner.contains(',') {
-                let parts: Vec<&str> = inner.split(',').collect();
-                if parts.len() == 2 {
-                    if parts[1].is_empty() {
-                        // {n,} - at least n times
-                        if let Ok(min) = parts[0].parse() {
-                            return Some((Quantifier::AtLeast(min), bytes_consumed));
-                        }
-                    } else {
-                        // {n,m} - between n and m times
-                        if let (Ok(min), Ok(max)) = (parts[0].parse(), parts[1].parse()) {
-                            return Some((Quantifier::Between(min, max), bytes_consumed));
-                        }
-                    }
-                }
-            }
-        }
-        return None;
-    }
-
-    let base_quantifier = match first {
-        '*' => Quantifier::ZeroOrMore,
-        '+' => Quantifier::OneOrMore,
-        '?' => Quantifier::ZeroOrOne,
-        _ => return None,
-    };
-
-    // Check for lazy modifier
-    if let Some('?') = chars.next() {
-        let lazy_quantifier = match base_quantifier {
-            Quantifier::ZeroOrMore => Quantifier::ZeroOrMoreLazy,
-            Quantifier::OneOrMore => Quantifier::OneOrMoreLazy,
-            Quantifier::ZeroOrOne => Quantifier::ZeroOrOneLazy,
-            _ => return Some((base_quantifier, 1)),
-        };
-        Some((lazy_quantifier, 2))
-    } else {
-        Some((base_quantifier, 1))
-    }
+#[inline]
+fn parse_quantifier_with_lazy(s: &str) -> Result<Option<(Quantifier, usize)>, String> {
+    crate::parser::quantifier::parse_quantifier_at(s)
 }
 
 #[cfg(test)]
