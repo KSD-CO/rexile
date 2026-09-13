@@ -2362,8 +2362,12 @@ impl Matcher {
                         let min = qp.quantifier.min_matches();
                         let bytes = text.as_bytes();
 
-                        if min <= 1 {
-                            // For +, *, ?, {0,N}, {1,N} - just find one matching byte
+                        if min == 0 {
+                            return true;
+                        }
+
+                        if min == 1 {
+                            // For +, ?, {1,N} - just find one matching byte
                             for &byte in bytes {
                                 if byte < 128 {
                                     let idx = byte as usize;
@@ -2883,6 +2887,9 @@ impl Matcher {
                         .is_some_and(|end_pos| end_pos == text.len())
                 }
             }
+            Matcher::AlternationWithCaptures { branches, .. } => branches
+                .iter()
+                .any(|branch| Self::matches_entire(branch, text)),
             _ => matcher
                 .find(text)
                 .is_some_and(|(rel_start, rel_end)| rel_start == 0 && rel_end == text.len()),

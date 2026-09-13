@@ -35,6 +35,10 @@ fn test_lazy_bounded_charclass() {
 
     let pat_alpha_lazy = Pattern::new(r"[a-z]{2,5}?").expect("Pattern should compile");
     assert_eq!(pat_alpha_lazy.find("abcdef"), Some((0, 2)));
+
+    let pat_zero_lazy = Pattern::new(r"\d{0,2}?").expect("Pattern should compile");
+    assert!(pat_zero_lazy.is_match("abc"));
+    assert_eq!(pat_zero_lazy.find("abc"), Some((0, 0)));
 }
 
 #[test]
@@ -71,6 +75,31 @@ fn test_lazy_bounded_groups() {
     // Backtracking with group
     let pat_group_bt = Pattern::new(r"(?:foo){2,4}?bar").expect("Pattern should compile");
     assert_eq!(pat_group_bt.find("foofoofoobar"), Some((0, 12)));
+
+    let pat_nested_lazy = Pattern::new(r"(?:a{2}){1}?").expect("Pattern should compile");
+    assert_eq!(pat_nested_lazy.find("aa"), Some((0, 2)));
+
+    let pat_zero_lazy = Pattern::new(r"(?:a){0}?").expect("Pattern should compile");
+    assert!(pat_zero_lazy.is_match("b"));
+    assert_eq!(pat_zero_lazy.find("b"), Some((0, 0)));
+}
+
+#[test]
+fn test_bounded_group_alternation_backtracks() {
+    let text = "abc";
+
+    for pat in [r"(?:a|ab){1}c", r"(?:a|ab){1}?c"] {
+        let rexile_pat = Pattern::new(pat).expect("Pattern should compile");
+        let regex_pat = Regex::new(pat).expect("Pattern should compile");
+        let expected = regex_pat
+            .find_iter(text)
+            .map(|m| (m.start(), m.end()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(rexile_pat.find(text), expected.first().copied());
+        assert_eq!(rexile_pat.is_match(text), regex_pat.is_match(text));
+        assert_eq!(rexile_pat.find_all(text), expected);
+    }
 }
 
 #[test]
@@ -90,6 +119,10 @@ fn test_lazy_bounded_differential_with_regex() {
         (r"\w{2,}?end", "helloend"),
         (r"\d{1,3}?ms", "123ms"),
         (r"\d{1,3}?ms", "1ms"),
+        (r"(?:a{2}){1}?", "aa"),
+        (r"(?:a|ab){1}?c", "abc"),
+        (r"(?:a){0}?", "b"),
+        (r"\d{0,2}?", "abc"),
     ];
 
     for (pat, text) in cases {

@@ -83,13 +83,11 @@ impl Group {
     /// Check if text matches this group at a given position
     /// Returns bytes consumed if match
     pub fn match_at(&self, text: &str, pos: usize) -> Option<usize> {
-        let base_consumed = self.match_base_at(text, pos)?;
-
         // Apply quantifier if present
         if let Some(quantifier) = &self.quantifier {
-            self.match_with_quantifier(text, pos, base_consumed, quantifier)
+            self.match_with_quantifier(text, pos, quantifier)
         } else {
-            Some(base_consumed)
+            self.match_base_at(text, pos)
         }
     }
 
@@ -132,7 +130,6 @@ impl Group {
         &self,
         text: &str,
         start_pos: usize,
-        _base_match_size: usize,
         quantifier: &Quantifier,
     ) -> Option<usize> {
         let (min, max) = quantifier_bounds(quantifier);
@@ -434,8 +431,17 @@ fn contains_anchor(pattern: &str) -> bool {
     false
 }
 
-/// Check if pattern has quantified elements like \d+, [a-z]*, etc.
+/// Check if pattern has quantified elements like \d+, [a-z]*, or a{2}.
 fn has_quantified_element(pattern: &str) -> bool {
+    if pattern.match_indices('{').any(|(index, _)| {
+        matches!(
+            crate::parser::quantifier::parse_quantifier_at(&pattern[index..]),
+            Ok(Some(_))
+        )
+    }) {
+        return true;
+    }
+
     let chars: Vec<char> = pattern.chars().collect();
     let mut i = 0;
 

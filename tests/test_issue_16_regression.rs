@@ -96,6 +96,13 @@ fn test_non_capturing_group_bounded_quantifier() {
     assert!(pat_nc_seq.is_match("xyyyz"));
     assert!(!pat_nc_seq.is_match("xyz"));
     assert!(!pat_nc_seq.is_match("xyyyyz"));
+
+    let pat_nested_bounded = Pattern::new(r"(?:a{2}){2}").expect("Pattern should compile");
+    assert_eq!(pat_nested_bounded.find("aaaa"), Some((0, 4)));
+
+    let pat_zero = Pattern::new(r"(?:a){0}").expect("Pattern should compile");
+    assert!(pat_zero.is_match("b"));
+    assert_eq!(pat_zero.find("b"), Some((0, 0)));
 }
 
 #[test]
@@ -142,6 +149,9 @@ fn test_issue_16_differential_with_regex() {
         (r"start_(a|b){2}_end", "start_a_end"),
         (r"(é){2}", "éé"),
         (r"(é){2}", "é"),
+        (r"(?:a{2}){2}", "aaaa"),
+        (r"(?:a|ab){1}c", "abc"),
+        (r"(?:a){0}", "b"),
     ];
 
     for (pat, text) in cases {
