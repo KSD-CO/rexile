@@ -88,6 +88,7 @@ fn main() {
         // Backreferences
         ("(\\w+)\\s+\\1", text_repeat, "backref: (\\w+)\\s+\\1"),
         ("(\\d+)\\.\\1", text_duplicate, "backref: (\\d+)\\.\\1"),
+        ("(ab)\\1+", "zababab!", "backref: (ab)\\1+"),
     ];
 
     let mem_before = get_rss_kb();

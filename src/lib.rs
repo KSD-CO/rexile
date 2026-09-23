@@ -173,6 +173,7 @@ pub use pattern_set::{
 pub struct Pattern {
     matcher: Matcher,
     capture_group_count: usize,
+    has_backreferences: bool,
     prefilter: Option<PrefilterPlan>,
     fast_path: Option<optimization::fast_path::FastPath>, // JIT-style fast path
     context_sensitive: bool,
@@ -361,6 +362,7 @@ impl Pattern {
             return Ok(Self {
                 matcher: Matcher::DigitRun,
                 capture_group_count: 0,
+                has_backreferences: false,
                 prefilter: None,
                 fast_path: Some(optimization::fast_path::FastPath::DigitRun),
                 context_sensitive: false,
@@ -373,6 +375,7 @@ impl Pattern {
             return Ok(Self {
                 matcher: Matcher::WordRun,
                 capture_group_count: 0,
+                has_backreferences: false,
                 prefilter: None,
                 fast_path: Some(optimization::fast_path::FastPath::WordRun),
                 context_sensitive: false,
@@ -434,35 +437,31 @@ impl Pattern {
         // match attempt. Keep this topology metadata with the compiled pattern
         // so `captures` and `captures_iter` share the same execution path.
         let capture_group_count = matcher.capture_group_count();
+        let has_backreferences = matcher.has_backreferences();
         let context_sensitive = matcher.has_contextual_assertion::<false>();
         let prefix_context = context_sensitive || matcher.has_contextual_assertion::<true>();
 
         // Try to detect fast path first (JIT-style optimization)
         // Note: fast path supports case_insensitive flag but not multiline/dot_matches_newline
         // Skip fast-path only if multiline or dot_matches_newline flags are set
-        let fast_path =
-            if !INDIVIDUAL || context_sensitive || flags.multiline || flags.dot_matches_newline {
-                None
-            } else {
-                // First check if we can compile a CaptureDFA for patterns with captures
-                if let Matcher::PatternWithCaptures { ref elements, .. } = matcher {
-                    // Try to compile DFA
-                    if let Some(dfa) = engine::capture_dfa::compile_capture_pattern(elements) {
-                        // Successfully compiled DFA - use it as fast path
-                        Some(optimization::fast_path::FastPath::CaptureDFA(
-                            std::sync::Arc::new(dfa),
-                        ))
-                    } else {
-                        // DFA compilation failed - fall back to normal fast path detection
-                        let fast_path_pattern = if flags.case_insensitive {
-                            pattern
-                        } else {
-                            effective_pattern
-                        };
-                        optimization::fast_path::detect_fast_path(fast_path_pattern)
-                    }
+        let fast_path = if !INDIVIDUAL
+            || has_backreferences
+            || context_sensitive
+            || flags.multiline
+            || flags.dot_matches_newline
+        {
+            None
+        } else {
+            // First check if we can compile a CaptureDFA for patterns with captures
+            if let Matcher::PatternWithCaptures { ref elements, .. } = matcher {
+                // Try to compile DFA
+                if let Some(dfa) = engine::capture_dfa::compile_capture_pattern(elements) {
+                    // Successfully compiled DFA - use it as fast path
+                    Some(optimization::fast_path::FastPath::CaptureDFA(
+                        std::sync::Arc::new(dfa),
+                    ))
                 } else {
-                    // Not a capture pattern - use normal fast path detection
+                    // DFA compilation failed - fall back to normal fast path detection
                     let fast_path_pattern = if flags.case_insensitive {
                         pattern
                     } else {
@@ -470,15 +469,25 @@ impl Pattern {
                     };
                     optimization::fast_path::detect_fast_path(fast_path_pattern)
                 }
-            };
+            } else {
+                // Not a capture pattern - use normal fast path detection
+                let fast_path_pattern = if flags.case_insensitive {
+                    pattern
+                } else {
+                    effective_pattern
+                };
+                optimization::fast_path::detect_fast_path(fast_path_pattern)
+            }
+        };
 
-        let prefilter = (INDIVIDUAL && !context_sensitive)
+        let prefilter = (INDIVIDUAL && !has_backreferences && !context_sensitive)
             .then(|| PrefilterPlan::from_ast(ast))
             .flatten();
 
         Ok(Pattern {
             matcher,
             capture_group_count,
+            has_backreferences,
             prefilter,
             fast_path,
             context_sensitive,
@@ -489,6 +498,9 @@ impl Pattern {
     }
 
     pub fn is_match(&self, text: &str) -> bool {
+        if self.has_backreferences {
+            return self.captures(text).is_some();
+        }
         if self.context_sensitive {
             if self.flags.case_insensitive && (self.unicode_case_pattern || !text.is_ascii()) {
                 return self.captures(text).is_some();
@@ -540,6 +552,9 @@ impl Pattern {
 
     #[inline]
     pub fn find(&self, text: &str) -> Option<(usize, usize)> {
+        if self.has_backreferences {
+            return self.captures(text)?.pos(0);
+        }
         if self.flags.case_insensitive {
             if let Some(fp) = &self.fast_path {
                 let found = fp.find(text);
@@ -598,6 +613,9 @@ impl Pattern {
     }
 
     pub fn find_all(&self, text: &str) -> Vec<(usize, usize)> {
+        if self.has_backreferences {
+            return self.find_iter(text).map(|m| (m.start(), m.end())).collect();
+        }
         if text.is_empty()
             || (self.flags.case_insensitive && (self.unicode_case_pattern || !text.is_ascii()))
         {
@@ -655,6 +673,9 @@ impl Pattern {
     }
 
     fn find_from(&self, text: &str, start: usize) -> Option<(usize, usize)> {
+        if self.has_backreferences {
+            return self.captures_from(text, start)?.pos(0);
+        }
         if self.context_sensitive {
             if self.flags.case_insensitive && (self.unicode_case_pattern || !text.is_ascii()) {
                 return self.captures_from(text, start)?.pos(0);
@@ -744,16 +765,17 @@ impl Pattern {
             .map(|(_, folded)| folded.text())
             .unwrap_or(text);
 
+        let mut state = capture_engine::CaptureState::new(self.capture_group_count);
         for start_pos in char_boundaries(text, search_start) {
             let match_start = match case_folded.as_ref() {
                 Some((_, folded)) => folded.folded_offset(start_pos)?,
                 None => start_pos,
             };
-            let mut state = capture_engine::CaptureState::new(self.capture_group_count);
+            state.reset(self.capture_group_count);
             if let Some(end_pos) =
                 matcher.match_at_with_captures(match_text, match_start, &mut state)
             {
-                let positions = state.into_positions((match_start, end_pos));
+                let positions = state.take_positions((match_start, end_pos));
                 let positions = match case_folded.as_ref() {
                     Some((_, folded)) => match folded.source_positions(positions) {
                         Some(positions) => positions,
@@ -2061,6 +2083,38 @@ enum CompiledCaptureElement {
 }
 
 impl Matcher {
+    fn has_backreferences(&self) -> bool {
+        match self {
+            Matcher::Backreference(_) => true,
+            Matcher::Capture(inner, _)
+            | Matcher::QuantifiedCapture(inner, _)
+            | Matcher::AnchoredPattern { inner, .. }
+            | Matcher::CaseInsensitive(inner)
+            | Matcher::Lookaround(_, inner) => inner.has_backreferences(),
+            Matcher::CombinedWithLookaround {
+                prefix,
+                lookaround_matcher,
+                ..
+            } => prefix.has_backreferences() || lookaround_matcher.has_backreferences(),
+            Matcher::LookbehindWithSuffix {
+                lookbehind_matcher,
+                suffix,
+                ..
+            } => lookbehind_matcher.has_backreferences() || suffix.has_backreferences(),
+            Matcher::PatternWithCaptures { elements, .. } => elements.iter().any(|element| {
+                let matcher = match element {
+                    CompiledCaptureElement::Capture(matcher, _)
+                    | CompiledCaptureElement::NonCapture(matcher) => matcher,
+                };
+                matcher.has_backreferences()
+            }),
+            Matcher::AlternationWithCaptures { branches, .. } => {
+                branches.iter().any(Self::has_backreferences)
+            }
+            _ => false,
+        }
+    }
+
     /// Match at one exact byte position in the full haystack.
     ///
     /// Unlike `find`, this never searches past `start`. Keeping the complete
@@ -4758,8 +4812,17 @@ fn parse_pattern_with_captures_inner(
                     if ch.is_ascii_digit() {
                         // This is a backreference like \1
                         let digit = ch.to_digit(10).unwrap() as usize;
-                        elements.push(CaptureElement::NonCapture(Ast::Backreference(digit)));
                         pos += 2; // Skip \1
+                        let mut backreference = Ast::Backreference(digit);
+                        if let Some((quantifier, len)) =
+                            parser::quantifier::parse_quantifier_at(&pattern[pos..])
+                                .map_err(PatternError::ParseError)?
+                        {
+                            backreference =
+                                Ast::QuantifiedCapture(Box::new(backreference), quantifier);
+                            pos += len;
+                        }
+                        elements.push(CaptureElement::NonCapture(backreference));
                         continue;
                     }
                 }
