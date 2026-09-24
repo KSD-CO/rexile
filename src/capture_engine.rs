@@ -143,12 +143,12 @@ impl CaptureState {
         self.positions.get(index).and_then(|&position| position)
     }
 
-    pub(super) fn into_positions(
-        mut self,
+    pub(super) fn take_positions(
+        &mut self,
         full_match: (usize, usize),
     ) -> Vec<Option<(usize, usize)>> {
         self.positions[0] = Some(full_match);
-        self.positions
+        std::mem::take(&mut self.positions)
     }
 }
 
@@ -423,6 +423,16 @@ impl Matcher {
                 let matcher = Self::element_matcher(first);
                 let remaining = safe_slice(text, start)?;
                 let prefers_lazy = Self::prefers_lazy_backtracking(matcher);
+
+                // Try the element's preferred match before exploring other lengths.
+                let preferred_checkpoint = captures.checkpoint();
+                if let Some(end) = Self::match_capture_element_at(first, text, start, captures) {
+                    if let Some(final_end) = Self::match_capture_elements(text, end, rest, captures)
+                    {
+                        return Some(final_end);
+                    }
+                }
+                captures.restore(preferred_checkpoint);
 
                 let mut result = None;
                 for length in Self::backtracking_lengths(remaining, prefers_lazy) {

@@ -288,6 +288,27 @@ fn captures_iter_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
+fn backreference_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("backreference_search");
+    configure_group(&mut group);
+    for (name, source, text) in [
+        ("direct", r"(ab)\1+", "zababab! zabab! zaba! zababab!"),
+        ("grouped", r"(ab)(\1)+", "zababab! zabab! zaba! zababab!"),
+        ("existing_hit", r"(\w+)\s+\1", "hello hello"),
+        ("existing_miss", r"(\w+)\s+\1", "hello world"),
+    ] {
+        let pattern = Pattern::new(source).unwrap();
+        group.bench_function(format!("{name}/find_all"), |b| {
+            b.iter(|| black_box(pattern.find_all(black_box(text))))
+        });
+        group.bench_function(format!("{name}/captures_iter"), |b| {
+            b.iter(|| black_box(pattern.captures_iter(black_box(text)).count()))
+        });
+    }
+
+    group.finish();
+}
+
 fn cached_api_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("cached_api");
     configure_group(&mut group);
@@ -426,6 +447,7 @@ criterion_group!(
     find_all_benchmark,
     replacement_and_split_benchmark,
     captures_iter_benchmark,
+    backreference_benchmark,
     cached_api_benchmark,
     prefix_churn_benchmark,
     flagged_context_benchmark,
